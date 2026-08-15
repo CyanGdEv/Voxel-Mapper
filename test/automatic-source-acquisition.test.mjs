@@ -90,3 +90,41 @@ test("planning provider failure degrades fidelity instead of aborting the bbox b
     assert.equal(sources.acquisitionAttempts.planning[0].status, "failed");
   });
 });
+
+test("terrain and planning acquisition start concurrently once bbox/source selection is resolved", async () => {
+  await withOsmFixture(async ({ root, osmPath }) => {
+    const started = [];
+    let releaseTerrain;
+    let releasePlanning;
+    const terrainGate = new Promise((resolve) => { releaseTerrain = resolve; });
+    const planningGate = new Promise((resolve) => { releasePlanning = resolve; });
+    let acquisition;
+    try {
+      acquisition = acquireSources({
+        bbox: ENGLAND_BBOX,
+        osm: osmPath,
+        elevation: "none",
+        cache: path.join(root, "cache"),
+        acquireElevationImpl: async () => {
+          started.push("terrain");
+          await terrainGate;
+          return { provider: "Mock Terrain", resolutionM: null, points: [] };
+        },
+        planningAcquirerImpl: async () => {
+          started.push("planning");
+          await planningGate;
+          return {
+            provider: "Mock Planning", providerId: "planning-data-england", status: "acquired",
+            applicationCount: 0, jurisdictionCount: 0, applications: [], jurisdictions: []
+          };
+        }
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepEqual(new Set(started), new Set(["terrain", "planning"]));
+    } finally {
+      releaseTerrain?.();
+      releasePlanning?.();
+      await acquisition?.catch(() => {});
+    }
+  });
+});
