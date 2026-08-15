@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { parseBbox } from "../src/lib/geo.mjs";
 import { resolveSourcePlan, SOURCE_KINDS } from "../src/lib/source-registry.mjs";
+import { RUNTIME_SOURCE_PROVIDERS } from "../src/lib/runtime-source-providers.mjs";
 
 const args = process.argv.slice(2);
 const value = (name) => {
@@ -21,6 +22,7 @@ if (args.includes("--help") || !value("--bbox")) {
 const bbox = parseBbox(value("--bbox"));
 const kinds = values("--kind");
 const plan = resolveSourcePlan(bbox, {
+  providers: RUNTIME_SOURCE_PROVIDERS,
   kinds: kinds.length ? kinds : undefined,
   preferredProviderIds: values("--prefer"),
   excludedProviderIds: values("--exclude"),
