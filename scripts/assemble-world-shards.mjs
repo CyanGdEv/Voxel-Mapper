@@ -11,6 +11,7 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { LevelDB } from "@8crafter/leveldb-zlib";
+import { openMcworld } from "@taku128/mcworld-browser";
 import { unzipSync, zipSync } from "fflate";
 import {
   entryContentTypeToFormatMap,
@@ -72,19 +73,8 @@ export async function assembleWorldShards(args, progress = (message) => console.
       progress(`Merging world shard ${record.result.shardId + 1}/${shardRecords.length}`);
       const archiveBytes = await readFile(record.mcworldPath);
       const archive = unzipSync(new Uint8Array(archiveBytes));
-      const temporaryShard = await mkdtemp(path.join(outputDir, `.merge-shard-${record.result.shardId}-`));
-      try {
-        await materializeShardDatabase(archive, temporaryShard);
-        const shardDb = new LevelDB(path.join(temporaryShard, "db"), { createIfMissing: false });
-        await shardDb.open();
-        try {
-          copiedEntries += await copyLogicalRecords(shardDb, finalDb, seenKeys, record.result.shardId);
-        } finally {
-          await shardDb.close();
-        }
-      } finally {
-        await rm(temporaryShard, { recursive: true, force: true });
-      }
+      const shardWorld = openMcworld(new Uint8Array(archiveBytes));
+      copiedEntries += await copyLogicalRecords(shardWorld.reader, finalDb, seenKeys, record.result.shardId);
 
       const palette = await readJson(record.palettePath);
       for (const block of palette.emittedBlocks || []) emittedBlocks.add(block);
@@ -207,18 +197,6 @@ async function loadShardRecords(root, plan) {
   return records;
 }
 
-async function materializeShardDatabase(archive, directory) {
-  let files = 0;
-  for (const [name, value] of Object.entries(archive)) {
-    if (!name.startsWith("db/") || name.endsWith("/")) continue;
-    const filename = path.join(directory, name);
-    await mkdir(path.dirname(filename), { recursive: true });
-    await writeFile(filename, Buffer.from(value));
-    files += 1;
-  }
-  if (!files) throw new Error("Shard .mcworld contains no LevelDB files");
-}
-
 async function copyTemplateFiles(archive, stage) {
   for (const [name, value] of Object.entries(archive)) {
     if (name.startsWith("db/") || name.endsWith("/")) continue;
@@ -228,36 +206,18 @@ async function copyTemplateFiles(archive, stage) {
   }
 }
 
-async function copyLogicalRecords(source, target, seenKeys, shardId) {
-  const iterator = source.iterator({ keyAsBuffer: true, valueAsBuffer: true });
+async function copyLogicalRecords(reader, target, seenKeys, shardId) {
   const pending = [];
   let copied = 0;
-  const push = async (entry) => {
-    if (!entry) return;
-    const [rawKey, rawValue] = Array.isArray(entry) ? entry : [entry.key, entry.value];
-    if (rawKey == null || rawValue == null) return;
-    const key = Buffer.from(rawKey), value = Buffer.from(rawValue);
+  for (const entry of reader.iterate({ values: true })) {
+    const key = Buffer.from(entry.key);
+    const value = Buffer.from(entry.value);
     const keyHex = key.toString("hex");
     if (seenKeys.has(keyHex)) throw new Error(`Duplicate logical LevelDB key while merging shard ${shardId}: ${keyHex}`);
     seenKeys.add(keyHex);
     pending.push({ type: "put", key, value });
     copied += 1;
-    if (pending.length >= 512) {
-      await target.batch(pending.splice(0));
-    }
-  };
-  if (typeof iterator?.[Symbol.asyncIterator] === "function") {
-    for await (const entry of iterator) await push(entry);
-  } else {
-    try {
-      while (true) {
-        const entry = await iterator.next();
-        if (!entry) break;
-        await push(entry);
-      }
-    } finally {
-      if (typeof iterator?.end === "function") await iterator.end();
-    }
+    if (pending.length >= 512) await target.batch(pending.splice(0));
   }
   if (pending.length) await target.batch(pending);
   return copied;
