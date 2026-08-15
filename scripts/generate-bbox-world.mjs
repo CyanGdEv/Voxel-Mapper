@@ -5,6 +5,14 @@ import { constants as fsConstants } from "node:fs";
 import { buildPark } from "../src/lib/pipeline.mjs";
 import { writeJson } from "../src/lib/io.mjs";
 
+// The generic compiler defaults to 2.5M 1 m cells, which is appropriate for
+// small/manual builds but too low for complete large theme-park bboxes. The
+// bbox player workflow has 20-way downstream chunk sharding and a controlled
+// hosted-runner environment, so allow a bounded 8M-cell preparation envelope.
+// This is still an explicit safety ceiling: very large/accidental bboxes fail
+// before allocating unbounded raster state.
+export const BBOX_RASTER_SAFETY_LIMIT = 8_000_000;
+
 export function parseGenerateArgs(argv) {
   const result = {
     out: "out/bbox-world",
@@ -44,6 +52,7 @@ export async function buildBboxWorldOptions(args, exists = fileExists, materiali
       // boundaries remain evidence features inside this verified override and
       // are not allowed to silently shrink the requested chunk roster.
       override: [boundaryOverridePath],
+      maxCells: BBOX_RASTER_SAFETY_LIMIT,
       noAddon: true,
       buildings: "shells",
       accuracyMode: "plausible",
@@ -62,7 +71,8 @@ export async function buildBboxWorldOptions(args, exists = fileExists, materiali
     generationEnvelope: {
       mode: "bbox",
       path: boundaryOverridePath,
-      bbox: args.bbox
+      bbox: args.bbox,
+      rasterSafetyLimitCells: BBOX_RASTER_SAFETY_LIMIT
     }
   };
 }
