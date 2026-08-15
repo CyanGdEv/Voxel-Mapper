@@ -1,4 +1,5 @@
 import { extractPlanningDocument } from "./planning-vector-extractor.mjs";
+import { loadPlanningPdfJsRuntime } from "./planning-pdfjs-runtime.mjs";
 
 const DEFAULT_CONCURRENCY = 2;
 
@@ -6,10 +7,13 @@ export async function processPlanningExtractionShard(catalog, options = {}) {
   const shardIndex = Number(options.shardIndex ?? 0);
   const items = (catalog?.extractionQueue || []).filter((item) => Number(item.shard) === shardIndex);
   const concurrency = clampInt(options.concurrency ?? DEFAULT_CONCURRENCY, 1, 8);
+  const needsPdf = items.some((item) => String(item.contentType || "").toLowerCase() === "application/pdf" || /\.pdf$/i.test(item.objectPath || ""));
+  const pdfEngine = needsPdf ? (options.pdfEngine || await loadPlanningPdfJsRuntime()) : options.pdfEngine;
+  const extractionOptions = { ...options, pdfEngine };
   const results = await mapLimit(items, concurrency, async (item) => {
     const extractionItem = { ...item, classification: normalizeExtractorClass(item.classification) };
     try {
-      const extraction = await extractPlanningDocument(extractionItem, options);
+      const extraction = await extractPlanningDocument(extractionItem, extractionOptions);
       return { status: extraction.status, item, extraction };
     } catch (error) {
       if (options.strictPlanningExtraction) throw error;
