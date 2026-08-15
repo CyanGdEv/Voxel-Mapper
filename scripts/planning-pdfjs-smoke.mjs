@@ -5,6 +5,7 @@ import path from "node:path";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { sha256 } from "../src/lib/io.mjs";
 import { loadPlanningPdfJsRuntime } from "../src/lib/planning-pdfjs-runtime.mjs";
+import { enrichPlanningTextEvidence } from "../src/lib/planning-text-evidence.mjs";
 import { extractPlanningDocument } from "../src/lib/planning-vector-extractor.mjs";
 
 const root = await mkdtemp(path.join(os.tmpdir(), "voxel-planning-pdfjs-"));
@@ -25,6 +26,7 @@ try {
     priority: 100,
     shard: 0
   }, { cacheDir: root, pdfEngine });
+  enrichPlanningTextEvidence(extraction);
 
   assert.equal(extraction.status, "extracted");
   assert.equal(extraction.pageCount, 1);
