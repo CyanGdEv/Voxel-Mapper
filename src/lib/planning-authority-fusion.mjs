@@ -8,6 +8,13 @@ const AUTHORITY_SOURCE = "Planning current-state authority";
 const DEFAULT_MIN_MATCH_SCORE = 0.66;
 const DEFAULT_AMBIGUITY_GAP = 0.08;
 const DEFAULT_POINT_TOLERANCE_M = 12;
+const MATERIALIZABLE_GEOMETRY_CLASSES = new Set(["site_plan", "location_plan", "ride_layout", "landscape_plan"]);
+const SURFACE_ONLY_MATERIALS = new Set([
+  "weathered_asphalt", "fresh_black_asphalt", "light_asphalt", "red_tarmac",
+  "resin_bound_beige", "resin_bound_grey", "gravel", "grass", "earth"
+]);
+const ROOF_ONLY_MATERIALS = new Set(["slate_roof", "clay_tile_roof", "metal_roof"]);
+const STRUCTURE_MATERIALS = new Set(["brick", "stone", "timber", "steel", "glass"]);
 const REQUIRED_ATTRIBUTES = {
   building: ["geometry", "height", "roof", "material"],
   structure: ["geometry", "height", "material"],
@@ -49,8 +56,8 @@ export async function integratePlanningAuthorityEvidence(map, options = {}) {
   const verticalByFeature = new Map();
 
   for (const candidate of source.geometryCandidates || []) {
+    if (!materializableGeometryCandidate(candidate)) { reject(summary, "geometry-non-materializable-semantic"); continue; }
     if (!candidate.localGeometry || !map?.projector?.inverse) { reject(summary, "geometry-missing-local-shape"); continue; }
-    if (/vertical-profile/.test(String(candidate.semantic || ""))) { reject(summary, "geometry-non-plan-view-semantic"); continue; }
     const match = matchGeometryCandidate(candidate, features, options);
     if (!match.accepted) { reject(summary, `geometry-${match.reason}`); continue; }
 
@@ -83,7 +90,12 @@ export async function integratePlanningAuthorityEvidence(map, options = {}) {
   }
 
   for (const observation of source.materialObservations || []) {
-    const match = matchPointObservation(observation, features, materialCompatibleKind, options);
+    const match = matchPointObservation(
+      observation,
+      features,
+      (kind) => materialCompatibleKind(kind, observation.material),
+      options
+    );
     if (!match.accepted) { reject(summary, `material-${match.reason}`); continue; }
     const role = materialRole(observation.material, match.feature.kind, observation.raw);
     addPlanningCandidate(match.feature, {
@@ -410,6 +422,14 @@ function matchRecord(type, entry, match, extra = {}) {
   return { type, sourceRef: entry.id || pageRef(entry), featureId: match.feature.id, featureKind: match.feature.kind, score: match.score ?? null, distanceM: match.distanceM ?? null, ...extra };
 }
 
+function materializableGeometryCandidate(candidate) {
+  const classification = String(candidate?.classification || "").toLowerCase();
+  const semantic = String(candidate?.semantic || "").toLowerCase();
+  if (!MATERIALIZABLE_GEOMETRY_CLASSES.has(classification)) return false;
+  if (/roof|vertical-profile|demolition|building-linework|unclassified/.test(semantic)) return false;
+  return Boolean(semantic);
+}
+
 function rebuildEvidenceSummary(map, options) {
   const previous = map.evidenceGraph || {};
   const summary = {
@@ -484,16 +504,23 @@ function canonicalize(value) {
 
 function semanticCompatible(semantic, kind) {
   const value = String(semantic || ""), target = String(kind || "");
-  if (/ride-centerline|ride-envelope/.test(value)) return ["ride_track", "structure"].includes(target);
-  if (/building-footprint|building-linework/.test(value)) return ["building", "structure"].includes(target);
-  if (/roof/.test(value)) return target === "building";
-  if (/landscape-area-or-path|landscape-edge-or-route/.test(value)) return ["path", "road", "water", "terrain_detail", "barrier"].includes(target);
+  if (/ride-centerline-or-edge/.test(value)) return target === "ride_track";
+  if (/ride-envelope-or-structure/.test(value)) return target === "structure";
+  if (/building-footprint-or-room/.test(value)) return ["building", "structure"].includes(target);
+  if (/landscape-area-or-path/.test(value)) return ["path", "road", "water", "terrain_detail"].includes(target);
+  if (/landscape-edge-or-route/.test(value)) return ["path", "road", "barrier"].includes(target);
   if (/site-feature-or-building-footprint/.test(value)) return ["building", "structure", "path", "road", "water", "terrain_detail"].includes(target);
   if (/site-edge-or-route/.test(value)) return ["path", "road", "barrier", "ride_track"].includes(target);
-  if (/demolition/.test(value)) return ["building", "structure"].includes(target);
-  return ["building", "structure"].includes(target);
+  return false;
 }
-function materialCompatibleKind(kind) { return ["building", "structure", "path", "road", "barrier", "ride_track"].includes(String(kind || "")); }
+function materialCompatibleKind(kind, material) {
+  const target = String(kind || "");
+  const key = String(material || "").toLowerCase();
+  if (ROOF_ONLY_MATERIALS.has(key)) return target === "building";
+  if (SURFACE_ONLY_MATERIALS.has(key)) return ["path", "road", "terrain_detail"].includes(target);
+  if (STRUCTURE_MATERIALS.has(key)) return ["building", "structure", "barrier"].includes(target);
+  return ["building", "structure", "path", "road", "barrier", "ride_track"].includes(target);
+}
 function verticalCompatibleKind(kind) { return ["building", "structure", "ride_track", "path", "road", "terrain_detail"].includes(String(kind || "")); }
 function materialRole(material, kind, raw) {
   const text = `${material || ""} ${raw || ""}`.toLowerCase();
