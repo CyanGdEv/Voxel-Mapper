@@ -25,20 +25,25 @@ function building() {
   };
 }
 
+function sitePlanCandidate(extra = {}) {
+  return {
+    contentHash: "doc",
+    pageNumber: 1,
+    classification: "site_plan",
+    semantic: "site-feature-or-building-footprint",
+    confidence: 0.99,
+    localGeometry,
+    worldGeometryAuthority: true,
+    ...extra
+  };
+}
+
 test("worldGeometryAuthority without explicit current temporal state is rejected", async () => {
   const feature = building();
   const map = { projector, features: [feature] };
   const result = await integratePlanningAuthorityEvidence(map, {
     planningAuthorityEvidenceData: {
-      geometryCandidates: [{
-        id: "unsafe-missing-temporal-state",
-        contentHash: "doc",
-        pageNumber: 1,
-        semantic: "building-footprint-or-room",
-        confidence: 0.99,
-        localGeometry,
-        worldGeometryAuthority: true
-      }],
+      geometryCandidates: [sitePlanCandidate({ id: "unsafe-missing-temporal-state" })],
       verticalObservations: [],
       materialObservations: []
     }
@@ -54,16 +59,10 @@ test("explicit current state plus world authority remains eligible", async () =>
   const map = { projector, features: [feature] };
   const result = await integratePlanningAuthorityEvidence(map, {
     planningAuthorityEvidenceData: {
-      geometryCandidates: [{
+      geometryCandidates: [sitePlanCandidate({
         id: "safe-current",
-        contentHash: "doc",
-        pageNumber: 1,
-        semantic: "building-footprint-or-room",
-        confidence: 0.99,
-        localGeometry,
-        worldGeometryAuthority: true,
         planningTemporal: { state: "current", confidence: 0.99 }
-      }],
+      })],
       verticalObservations: [],
       materialObservations: []
     }
