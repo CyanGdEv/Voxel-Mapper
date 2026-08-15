@@ -25,7 +25,7 @@ export function buildPlanningDocumentCatalog(manifests, options = {}) {
       const application = result.application || null;
       for (const document of result.documents || []) {
         if (!document?.contentHash || !["downloaded", "cached"].includes(document.status)) continue;
-        addDocument(content, applications, application || document.application, document);
+        addDocument(content, applications, application || document.application, document, manifest?.selectedShard);
       }
     }
   }
@@ -34,17 +34,24 @@ export function buildPlanningDocumentCatalog(manifests, options = {}) {
     .sort((a, b) => (b.extractionPriority || 0) - (a.extractionPriority || 0) || a.contentHash.localeCompare(b.contentHash));
   const extractionQueue = documents
     .filter((document) => isExtractablePlanningDocument(document, options))
-    .map((document) => ({
-      contentHash: document.contentHash,
-      objectPath: document.objectPath,
-      contentType: document.contentType,
-      byteLength: document.byteLength,
-      classification: document.classification,
-      priority: document.extractionPriority,
-      applicationKeys: document.applicationKeys,
-      shard: extractionShardForContent(document.contentHash, extractionShards),
-      status: "pending"
-    }));
+    .map((document) => {
+      const acquisitionShard = document.acquisitionShards.length ? document.acquisitionShards[0] : null;
+      const shard = Number.isInteger(acquisitionShard)
+        ? acquisitionShard
+        : extractionShardForContent(document.contentHash, extractionShards);
+      return {
+        contentHash: document.contentHash,
+        objectPath: document.objectPath,
+        contentType: document.contentType,
+        byteLength: document.byteLength,
+        classification: document.classification,
+        priority: document.extractionPriority,
+        applicationKeys: document.applicationKeys,
+        acquisitionShard,
+        shard,
+        status: "pending"
+      };
+    });
 
   const byApplication = Object.fromEntries([...applications.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
@@ -53,14 +60,17 @@ export function buildPlanningDocumentCatalog(manifests, options = {}) {
       documentHashes: [...value.documentHashes].sort(),
       classifications: countBy([...value.classifications])
     }]));
+  const activeExtractionShards = [...new Set(extractionQueue.map((item) => item.shard))].sort((a, b) => a - b);
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     inputShardManifests: values.length,
     uniqueDocuments: documents.length,
     applicationCount: applications.size,
     duplicateReferencesCollapsed: Math.max(0, countDocumentReferences(values) - documents.length),
     extractionShards,
+    extractionShardStrategy: "acquisition-affinity-with-hash-fallback",
+    activeExtractionShards,
     extractionQueueItems: extractionQueue.length,
     extractionShardCounts: countBy(extractionQueue.map((item) => String(item.shard))),
     classCounts: countBy(documents.map((item) => item.classification)),
@@ -83,12 +93,10 @@ export function isExtractablePlanningDocument(document, options = {}) {
 }
 
 export function extractionShardForContent(contentHash, shardCount = 20) {
-  // Reuse the stable SHA-based shard function. Content hashes, unlike application
-  // references, ensure identical bytes are extracted only once.
   return shardForApplication(`content:${contentHash}`, shardCount);
 }
 
-function addDocument(content, applications, application, document) {
+function addDocument(content, applications, application, document, selectedShard = null) {
   const hash = document.contentHash;
   let record = content.get(hash);
   if (!record) {
@@ -101,6 +109,7 @@ function addDocument(content, applications, application, document) {
       urls: new Set(),
       applicationKeys: new Set(),
       labels: new Set(),
+      acquisitionShards: new Set(),
       revisionChanged: false,
       previousContentHashes: new Set()
     };
@@ -110,6 +119,8 @@ function addDocument(content, applications, application, document) {
   if (document.finalUrl) record.urls.add(document.finalUrl);
   if (document.label) record.labels.add(document.label);
   if (document.classification) record.classifications.push(document.classification);
+  const shard = Number(selectedShard);
+  if (Number.isInteger(shard) && shard >= 0) record.acquisitionShards.add(shard);
   if (document.revisionChanged) record.revisionChanged = true;
   if (document.previousContentHash && document.previousContentHash !== hash) record.previousContentHashes.add(document.previousContentHash);
 
@@ -143,6 +154,7 @@ function finalizeContentRecord(record) {
     urls: [...record.urls].sort(),
     labels: [...record.labels].sort(),
     applicationKeys: [...record.applicationKeys].sort(),
+    acquisitionShards: [...record.acquisitionShards].sort((a, b) => a - b),
     revisionChanged: record.revisionChanged,
     previousContentHashes: [...record.previousContentHashes].sort()
   };
