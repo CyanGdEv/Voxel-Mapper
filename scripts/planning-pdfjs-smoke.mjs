@@ -28,12 +28,6 @@ try {
   }, { cacheDir: root, pdfEngine });
   enrichPlanningTextEvidence(extraction);
 
-  console.log(JSON.stringify({
-    textItems: extraction.pages[0]?.text?.items || [],
-    pageMaterials: extraction.pages[0]?.materialObservations || [],
-    normalizedMaterials: extraction.normalizedEvidence?.materialObservations || []
-  }, null, 2));
-
   assert.equal(extraction.status, "extracted");
   assert.equal(extraction.pageCount, 1);
   assert.ok(extraction.pages[0].vector.pathCount >= 1, "expected vector rectangle from real PDF.js operator list");
@@ -42,25 +36,35 @@ try {
   assert.equal(extraction.pages[0].metadata?.scaleDenominator, 100);
   assert.ok(extraction.normalizedEvidence.verticalObservations.some((entry) => entry.valueM === 12.5));
   assert.ok(extraction.normalizedEvidence.materialObservations.some((entry) => entry.material === "red_tarmac"));
+  assert.ok(extraction.normalizedEvidence.materialObservations.some((entry) => entry.source === "pdf-text-adjacent-run-material-label"));
   console.log(JSON.stringify({
     pdfJsVersion: pdfEngine.version,
     status: extraction.status,
+    textItems: extraction.pages[0].text.itemCount,
     vectorPaths: extraction.pages[0].vector.pathCount,
     geometryCandidates: extraction.normalizedEvidence.geometryCandidates.length,
     scale: extraction.pages[0].metadata?.scaleDenominator,
     verticalObservations: extraction.normalizedEvidence.verticalObservations.length,
-    materialObservations: extraction.normalizedEvidence.materialObservations.length
+    materialObservations: extraction.normalizedEvidence.materialObservations.length,
+    splitRunMaterialRecovered: true
   }, null, 2));
 } finally {
   await rm(root, { recursive: true, force: true });
 }
 
 function buildPdf() {
-  const content = "0.5 w\n10 20 100 50 re S\nBT /F1 12 Tf 20 150 Td (Proposed Site Plan Scale 1:100 FFL 12.50 Red tarmac) Tj ET\n";
+  const content = [
+    "0.5 w",
+    "10 20 100 50 re S",
+    "BT /F1 12 Tf 20 170 Td (Proposed Site Plan Scale 1:100 FFL 12.50) Tj ET",
+    "BT /F1 12 Tf 20 145 Td (Red) Tj ET",
+    "BT /F1 12 Tf 43 145 Td (tarmac) Tj ET",
+    ""
+  ].join("\n");
   const objects = [
     "<< /Type /Catalog /Pages 2 0 R >>",
     "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 220] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
     `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}endstream`,
     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"
   ];
