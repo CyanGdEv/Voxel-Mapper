@@ -9,6 +9,12 @@ import { enrichTerrainDetails } from "./terrain-detail.mjs";
 import { integrateRideProfiles } from "./ride-profile.mjs";
 import { assessAccuracy, enforceAccuracy } from "./confidence.mjs";
 import { buildEvidenceGraph } from "./evidence-graph.mjs";
+import {
+  integratePlanningAuthorityEvidence,
+  fusePlanningAuthorityIntoEvidenceGraph,
+  applyPlanningAuthorityWinners
+} from "./planning-authority-fusion.mjs";
+import { buildPlanningDocumentQueue } from "./planning-documents.mjs";
 import { compileMap } from "./raster.mjs";
 import { buildBedrockAddon } from "./bedrock.mjs";
 import { buildBedrockWorld } from "./mcworld.mjs";
@@ -23,6 +29,9 @@ export async function buildPark(options = {}, progress = () => {}) {
   const slug = slugify(parkName);
   const outputDir = path.resolve(options.out || path.join("out", slug));
   await ensureDir(outputDir);
+
+  progress("Preparing planning document acquisition queue");
+  const planningDocumentQueue = buildPlanningDocumentQueue(sources.planning, options);
 
   progress("Normalizing map geometry and provenance");
   const map = await normalizeMap(sources, options);
@@ -40,12 +49,29 @@ export async function buildPark(options = {}, progress = () => {}) {
   const rideProfiles = await integrateRideProfiles({ map, sources, options, progress });
   map.rideProfiles = rideProfiles;
   refreshMapDerivedData(map);
+
+  progress("Associating verified-current planning evidence with reconstructed features");
+  const planningAuthorityFusion = await integratePlanningAuthorityEvidence(map, options);
   progress("Resolving per-attribute evidence and temporal state");
-  const evidenceGraph = buildEvidenceGraph(map, sources, options);
+  buildEvidenceGraph(map, sources, options);
+  const planningAuthorityGraph = fusePlanningAuthorityIntoEvidenceGraph(map, options);
+  const evidenceGraph = map.evidenceGraph;
+  progress("Materializing winning current-planning attributes");
+  const planningAuthorityResolution = applyPlanningAuthorityWinners(map);
+  if (planningAuthorityResolution.appliedAttributes > 0) refreshMapDerivedData(map);
   const accuracy = assessAccuracy(map, sources, options);
 
   progress("Compiling 1 m raster and chunked Bedrock operations");
   const compilation = compileMap({ parkName, map, sources, accuracy, options });
+  const compilationPath = options.compilationOut
+    ? await writeJson(path.resolve(options.compilationOut), {
+        schemaVersion: 1,
+        parkName,
+        slug,
+        generatedAt: new Date().toISOString(),
+        compilation
+      })
+    : null;
 
   const geojsonPath = await writeJson(path.join(outputDir, `${slug}.geojson`), map.geojson);
   const sourcePlanPath = await writeJson(path.join(outputDir, "source-plan.json"), sources.sourcePlan || null);
@@ -53,6 +79,15 @@ export async function buildPark(options = {}, progress = () => {}) {
     path.join(outputDir, "planning-acquisition.json"),
     sources.planning || { provider: "none", status: "not-acquired", applications: [], jurisdictions: [] }
   );
+  const planningDocumentQueuePath = await writeJson(
+    path.join(outputDir, "planning-document-queue.json"), planningDocumentQueue
+  );
+  const planningAuthorityFusionPath = await writeJson(path.join(outputDir, "planning-authority-fusion.json"), {
+    schemaVersion: 1,
+    association: planningAuthorityFusion,
+    evidenceGraph: planningAuthorityGraph,
+    resolution: planningAuthorityResolution
+  });
   const evidencePath = await writeJson(path.join(outputDir, "evidence.json"), {
     schemaVersion: 2,
     parkName,
@@ -66,6 +101,13 @@ export async function buildPark(options = {}, progress = () => {}) {
       osm: withoutLargeData(sources.osm),
       elevation: withoutLargeData(sources.elevation),
       planning: compactPlanningAcquisition(sources.planning),
+      planningDocuments: compactPlanningDocumentQueue(planningDocumentQueue),
+      planningAuthority: {
+        status: planningAuthorityFusion.status,
+        matchedFeatures: planningAuthorityFusion.matchedFeatures,
+        winningAttributes: planningAuthorityGraph.winningAttributes,
+        appliedAttributes: planningAuthorityResolution.appliedAttributes
+      },
       orthophoto: withoutLargeData(sources.orthophoto),
       mapFusion: sources.mapFusion,
       planningFusion: sources.planningFusion,
@@ -77,6 +119,11 @@ export async function buildPark(options = {}, progress = () => {}) {
     terrainDetails,
     rideProfiles: compactRideEvidence(rideProfiles),
     evidenceGraph,
+    planningAuthority: {
+      association: planningAuthorityFusion,
+      graph: planningAuthorityGraph,
+      resolution: planningAuthorityResolution
+    },
     accuracy,
     compilation: { meta: compilation.meta, stats: compilation.stats }
   });
@@ -177,6 +224,9 @@ export async function buildPark(options = {}, progress = () => {}) {
       evidence: evidencePath,
       sourcePlan: sourcePlanPath,
       planningAcquisition: planningAcquisitionPath,
+      planningDocumentQueue: planningDocumentQueuePath,
+      planningAuthorityFusion: planningAuthorityFusionPath,
+      compilation: compilationPath,
       fidelity: fidelityPath,
       evidenceGraph: evidenceGraphPath,
       orthophotoEvidence: orthophotoEvidencePath,
@@ -204,6 +254,11 @@ export async function buildPark(options = {}, progress = () => {}) {
       ...compilation.stats,
       planningApplications: sources.planning?.applicationCount || 0,
       planningJurisdictions: sources.planning?.jurisdictionCount || 0,
+      planningDocumentQueueItems: planningDocumentQueue.itemCount,
+      planningDocumentQueueApplications: planningDocumentQueue.applicationsQueued,
+      planningAuthorityMatchedFeatures: planningAuthorityFusion.matchedFeatures,
+      planningAuthorityWinningAttributes: planningAuthorityGraph.winningAttributes,
+      planningAuthorityAppliedAttributes: planningAuthorityResolution.appliedAttributes,
       worldChunks: world?.chunkCount || 0,
       worldValidation: world?.validation?.status || null
     },
@@ -238,6 +293,12 @@ function compactPlanningAcquisition(value) {
       name: entry.name ?? null
     }))
   };
+}
+
+function compactPlanningDocumentQueue(value) {
+  if (!value) return value;
+  const { items, ...summary } = value;
+  return summary;
 }
 
 function compactRideEvidence(value) {

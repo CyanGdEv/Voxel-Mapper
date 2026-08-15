@@ -6,7 +6,9 @@ const VALUE_FLAGS = new Set([
   "open-meteo-api-key", "elevation-spacing", "dtm", "dsm", "ostn15-grid",
   "ea-dtm-wcs-url", "ea-dsm-wcs-url", "ea-index-wfs-url", "override", "overture",
   "public-data", "planning", "max-planning-applications", "planning-match-tolerance-m",
-  "planning-min-match-score", "source-fusion-tolerance-m", "scale",
+  "planning-min-match-score", "planning-authority-evidence", "planning-authority-min-match-score",
+  "planning-authority-ambiguity-gap", "planning-authority-point-tolerance-m",
+  "planning-authority-point-ambiguity-m", "source-fusion-tolerance-m", "scale",
   "max-area-km2", "max-cells", "min-confidence", "accuracy-mode",
   "minecraft-server-version", "min-engine-version", "ops-per-yield",
   "build-depth", "base-y", "palette", "world-margin", "max-world-chunks",
@@ -53,9 +55,7 @@ export function parseArgs(argv) {
 
   while (args.length) {
     const token = args.shift();
-    if (!token.startsWith("--")) {
-      throw new UserError(`Unexpected positional argument: ${token}`);
-    }
+    if (!token.startsWith("--")) throw new UserError(`Unexpected positional argument: ${token}`);
     const body = token.slice(2);
     const equals = body.indexOf("=");
     const key = equals >= 0 ? body.slice(0, equals) : body;
@@ -67,9 +67,7 @@ export function parseArgs(argv) {
     }
     if (!VALUE_FLAGS.has(key)) throw new UserError(`Unknown option: --${key}`);
     if (value === undefined) value = args.shift();
-    if (value === undefined || value.startsWith("--")) {
-      throw new UserError(`Option --${key} requires a value`);
-    }
+    if (value === undefined || value.startsWith("--")) throw new UserError(`Option --${key} requires a value`);
     const camel = toCamel(key);
     if (key === "override") options.override.push(value);
     else if (key === "overture") options.overture.push(value);
@@ -103,12 +101,13 @@ function normalize(options) {
     "pathDiscoveryExistingBufferM", "pathDiscoveryTerrainSampleM",
     "pathDiscoverySteepGradePercent", "pathDiscoveryRampGradePercent",
     "maxPathDiscoveryCells", "pathTerrainMaxCutFillM", "sourceFusionToleranceM",
-    "terrainRockDensityPer100m2",
-    "terrainRockMinSpacingM", "terrainCliffMarkerSpacingM", "maxTerrainRocks",
-    "aerialTerrainGridM", "aerialTerrainMinConfidence", "treeDensityPer100m2",
-    "shrubDensityPer100m2", "treeLineSpacingM", "vegetationMinSpacingM",
-    "maxVegetationModels", "maxPlanningApplications", "planningMatchToleranceM",
-    "planningMinMatchScore"
+    "terrainRockDensityPer100m2", "terrainRockMinSpacingM", "terrainCliffMarkerSpacingM",
+    "maxTerrainRocks", "aerialTerrainGridM", "aerialTerrainMinConfidence",
+    "treeDensityPer100m2", "shrubDensityPer100m2", "treeLineSpacingM",
+    "vegetationMinSpacingM", "maxVegetationModels", "maxPlanningApplications",
+    "planningMatchToleranceM", "planningMinMatchScore", "planningAuthorityMinMatchScore",
+    "planningAuthorityAmbiguityGap", "planningAuthorityPointToleranceM",
+    "planningAuthorityPointAmbiguityM"
   ];
   for (const key of numberKeys) {
     if (options[key] === undefined) continue;
@@ -123,46 +122,24 @@ function normalize(options) {
     }
     options.minEngineVersion = parts;
   }
-  if (options.pathWidthMode && !["inferred", "source-only"].includes(options.pathWidthMode)) {
-    throw new UserError("--path-width-mode must be inferred or source-only");
-  }
-  if (options.rideTerrainMode && !["inferred", "evidence", "off"].includes(options.rideTerrainMode)) {
-    throw new UserError("--ride-terrain-mode must be inferred, evidence, or off");
-  }
-  if (options.orthophotoMode && !["evidence", "assist", "off"].includes(options.orthophotoMode)) {
-    throw new UserError("--orthophoto-mode must be evidence, assist, or off");
-  }
-  if (options.pathGeometryMode && !["repair", "qa", "off"].includes(options.pathGeometryMode)) {
-    throw new UserError("--path-geometry-mode must be repair, qa, or off");
-  }
-  if (options.pathEdgeMode && !["evidence", "off"].includes(options.pathEdgeMode)) {
-    throw new UserError("--path-edge-mode must be evidence or off");
-  }
-  if (options.pathDiscoveryMode && !["evidence", "qa", "off"].includes(options.pathDiscoveryMode)) {
-    throw new UserError("--path-discovery-mode must be evidence, qa, or off");
-  }
-  if (options.pathTerrainMode && !["conform", "evidence", "off"].includes(options.pathTerrainMode)) {
-    throw new UserError("--path-terrain-mode must be conform, evidence, or off");
-  }
-  if (options.terrainDetailMode && !["evidence", "plausible", "off"].includes(options.terrainDetailMode)) {
-    throw new UserError("--terrain-detail-mode must be evidence, plausible, or off");
-  }
-  if (options.aerialTerrainMode && !["evidence", "qa", "off"].includes(options.aerialTerrainMode)) {
-    throw new UserError("--aerial-terrain-mode must be evidence, qa, or off");
-  }
+  if (options.pathWidthMode && !["inferred", "source-only"].includes(options.pathWidthMode)) throw new UserError("--path-width-mode must be inferred or source-only");
+  if (options.rideTerrainMode && !["inferred", "evidence", "off"].includes(options.rideTerrainMode)) throw new UserError("--ride-terrain-mode must be inferred, evidence, or off");
+  if (options.orthophotoMode && !["evidence", "assist", "off"].includes(options.orthophotoMode)) throw new UserError("--orthophoto-mode must be evidence, assist, or off");
+  if (options.pathGeometryMode && !["repair", "qa", "off"].includes(options.pathGeometryMode)) throw new UserError("--path-geometry-mode must be repair, qa, or off");
+  if (options.pathEdgeMode && !["evidence", "off"].includes(options.pathEdgeMode)) throw new UserError("--path-edge-mode must be evidence or off");
+  if (options.pathDiscoveryMode && !["evidence", "qa", "off"].includes(options.pathDiscoveryMode)) throw new UserError("--path-discovery-mode must be evidence, qa, or off");
+  if (options.pathTerrainMode && !["conform", "evidence", "off"].includes(options.pathTerrainMode)) throw new UserError("--path-terrain-mode must be conform, evidence, or off");
+  if (options.terrainDetailMode && !["evidence", "plausible", "off"].includes(options.terrainDetailMode)) throw new UserError("--terrain-detail-mode must be evidence, plausible, or off");
+  if (options.aerialTerrainMode && !["evidence", "qa", "off"].includes(options.aerialTerrainMode)) throw new UserError("--aerial-terrain-mode must be evidence, qa, or off");
   validatePathRecoveryNumbers(options);
-  if (options.orthophotoDate && !Number.isFinite(Date.parse(options.orthophotoDate))) {
-    throw new UserError("--orthophoto-date must be an ISO date or timestamp");
-  }
+  if (options.orthophotoDate && !Number.isFinite(Date.parse(options.orthophotoDate))) throw new UserError("--orthophoto-date must be an ISO date or timestamp");
   return options;
 }
 
 function validatePathRecoveryNumbers(options) {
   const range = (key, minimum, maximum, label = toKebab(key)) => {
     if (options[key] === undefined) return;
-    if (options[key] < minimum || options[key] > maximum) {
-      throw new UserError(`--${label} must be between ${minimum} and ${maximum}`);
-    }
+    if (options[key] < minimum || options[key] > maximum) throw new UserError(`--${label} must be between ${minimum} and ${maximum}`);
   };
   range("pathSnapToleranceM", 0.25, 10);
   range("pathSnapMinConfidence", 0, 1);
@@ -181,6 +158,10 @@ function validatePathRecoveryNumbers(options) {
   range("sourceFusionToleranceM", 0.25, 25);
   range("planningMatchToleranceM", 0.25, 100);
   range("planningMinMatchScore", 0.4, 1);
+  range("planningAuthorityMinMatchScore", 0.4, 1);
+  range("planningAuthorityAmbiguityGap", 0, 0.5);
+  range("planningAuthorityPointToleranceM", 0.25, 100);
+  range("planningAuthorityPointAmbiguityM", 0, 25);
   range("terrainRockDensityPer100m2", 0, 20);
   range("terrainRockMinSpacingM", 1, 50);
   range("terrainCliffMarkerSpacingM", 1, 50);
@@ -190,25 +171,11 @@ function validatePathRecoveryNumbers(options) {
   range("shrubDensityPer100m2", 0, 100);
   range("treeLineSpacingM", 1, 30);
   range("vegetationMinSpacingM", 1, 30);
-  if (options.maxPathDiscoveryCells !== undefined &&
-    (!Number.isInteger(options.maxPathDiscoveryCells) || options.maxPathDiscoveryCells < 1_000)) {
-    throw new UserError("--max-path-discovery-cells must be an integer of at least 1000");
-  }
-  if (options.maxPlanningApplications !== undefined &&
-    (!Number.isInteger(options.maxPlanningApplications) || options.maxPlanningApplications < 1 || options.maxPlanningApplications > 10000)) {
-    throw new UserError("--max-planning-applications must be an integer between 1 and 10000");
-  }
-  if (options.maxTerrainRocks !== undefined &&
-    (!Number.isInteger(options.maxTerrainRocks) || options.maxTerrainRocks < 0 || options.maxTerrainRocks > 100_000)) {
-    throw new UserError("--max-terrain-rocks must be an integer between 0 and 100000");
-  }
-  if (options.maxVegetationModels !== undefined &&
-    (!Number.isInteger(options.maxVegetationModels) || options.maxVegetationModels < 0 || options.maxVegetationModels > 200_000)) {
-    throw new UserError("--max-vegetation-models must be an integer between 0 and 200000");
-  }
-  if (options.pathDiscoveryRampGradePercent !== undefined &&
-    options.pathDiscoverySteepGradePercent !== undefined &&
-    options.pathDiscoverySteepGradePercent < options.pathDiscoveryRampGradePercent) {
+  if (options.maxPathDiscoveryCells !== undefined && (!Number.isInteger(options.maxPathDiscoveryCells) || options.maxPathDiscoveryCells < 1_000)) throw new UserError("--max-path-discovery-cells must be an integer of at least 1000");
+  if (options.maxPlanningApplications !== undefined && (!Number.isInteger(options.maxPlanningApplications) || options.maxPlanningApplications < 1 || options.maxPlanningApplications > 10000)) throw new UserError("--max-planning-applications must be an integer between 1 and 10000");
+  if (options.maxTerrainRocks !== undefined && (!Number.isInteger(options.maxTerrainRocks) || options.maxTerrainRocks < 0 || options.maxTerrainRocks > 100_000)) throw new UserError("--max-terrain-rocks must be an integer between 0 and 100000");
+  if (options.maxVegetationModels !== undefined && (!Number.isInteger(options.maxVegetationModels) || options.maxVegetationModels < 0 || options.maxVegetationModels > 200_000)) throw new UserError("--max-vegetation-models must be an integer between 0 and 200000");
+  if (options.pathDiscoveryRampGradePercent !== undefined && options.pathDiscoverySteepGradePercent !== undefined && options.pathDiscoverySteepGradePercent < options.pathDiscoveryRampGradePercent) {
     throw new UserError("--path-discovery-steep-grade-percent cannot be below the ramp-grade threshold");
   }
 }
