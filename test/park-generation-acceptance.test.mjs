@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { validateParkGeneration } from "../scripts/validate-park-generation.mjs";
+import {
+  summarizeBboxIntersection,
+  validateParkGeneration
+} from "../scripts/validate-park-generation.mjs";
 
 const BBOX = "0,0,0.01,0.01";
 
@@ -19,6 +22,7 @@ test("park acceptance certifies a complete data map and world roster", async () 
     assert.equal(report.status, "passed");
     assert.equal(report.dataMap.rideFeatureCount, 1);
     assert.equal(report.dataMap.accessFeatureCount, 20);
+    assert.equal(report.dataMap.bboxGenerationEnvelopePresent, true);
     assert.equal(report.topDownPreview.finalFeatureCoverage, 1);
     assert.equal(report.world.validation, "passed");
   } finally {
@@ -40,6 +44,16 @@ test("park acceptance rejects the historical small-world failure mode", async ()
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("bbox intersection accepts whole crossing ways but rejects unrelated outside geometry", () => {
+  const bbox = { south: 0, west: 0, north: 1, east: 1 };
+  const crossing = lineFeature("crossing", "road", [[-1, 0.5], [2, 0.5]]);
+  const outside = lineFeature("outside", "road", [[-2, 0.4], [-1, 0.6]]);
+  const result = summarizeBboxIntersection([crossing, outside], bbox);
+  assert.equal(result.entirelyOutsideFeatures, 1);
+  assert.equal(result.totalCoordinates, 4);
+  assert.equal(result.outsideCoordinates, 4);
 });
 
 test("real acceptance covers the complete Alton park and binds the newly dispatched run", async () => {
@@ -80,7 +94,10 @@ async function createFixture({ chunks }) {
   }
   features.push(lineFeature("ride", "ride_track", [[0.005, 0.005], [0.006, 0.005]]));
   features.push(polygonFeature("water", "water", 0.007, 0.007, 0.0004));
-  features.push(polygonFeature("bbox", "park_boundary", 0, 0, 0.01));
+  features.push(polygonFeature("bbox", "park_boundary", 0, 0, 0.01, {
+    subtype: "generation_bbox",
+    verified: true
+  }));
   while (features.length < 100) {
     const index = features.length;
     const x = 0.001 + (index % 20) * 0.00035;
@@ -126,11 +143,11 @@ function lineFeature(id, kind, coordinates) {
   return { type: "Feature", id, properties: { id, kind }, geometry: { type: "LineString", coordinates } };
 }
 
-function polygonFeature(id, kind, x, y, size) {
+function polygonFeature(id, kind, x, y, size, extraProperties = {}) {
   return {
     type: "Feature",
     id,
-    properties: { id, kind },
+    properties: { id, kind, ...extraProperties },
     geometry: {
       type: "Polygon",
       coordinates: [[
