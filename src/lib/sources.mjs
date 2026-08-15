@@ -4,6 +4,9 @@ import { UserError, invariant } from "./errors.mjs";
 import { cachedJson, ensureDir, fetchJson, readJson, sha256 } from "./io.mjs";
 import { acquireLidarElevation } from "./lidar.mjs";
 import { acquireOrthophotos } from "./orthophoto.mjs";
+import { resolveSourcePlan } from "./source-registry.mjs";
+import { RUNTIME_SOURCE_PROVIDERS } from "./runtime-source-providers.mjs";
+import { acquirePlanningForBbox } from "./planning-acquisition.mjs";
 
 const DEFAULT_NOMINATIM = "https://nominatim.openstreetmap.org/search";
 const DEFAULT_OVERPASS = "https://overpass-api.de/api/interpreter";
@@ -13,14 +16,14 @@ export async function acquireSources(options) {
   const cacheDir = path.resolve(options.cache || ".tpmap-cache");
   await ensureDir(cacheDir);
   const contact = options.contact || process.env.TPMAP_CONTACT;
-  const userAgent = contact ? `ThemeParkMap/0.11.3 (${contact})` : "ThemeParkMap/0.11.3";
+  const userAgent = contact ? `VoxelMapper/0.12 (${contact})` : "VoxelMapper/0.12";
 
   let bbox = options.bbox ? parseBbox(options.bbox) : undefined;
   let geocoder = null;
   let suppliedBoundary = null;
 
   if (!bbox && !options.osm) {
-    invariant(options.parkName, "Use --park-name, or provide both --osm and --bbox");
+    invariant(options.parkName, "Use --bbox for universal generation, or --park-name for legacy place lookup");
     invariant(options.acceptNominatimPolicy,
       "Live place lookup requires --accept-nominatim-policy. Read https://operations.osmfoundation.org/policies/nominatim/");
     invariant(contact,
@@ -31,7 +34,7 @@ export async function acquireSources(options) {
   }
 
   if (!bbox && options.osm) bbox = deriveBboxFromOverpass(await readJson(path.resolve(options.osm)));
-  invariant(bbox, "Could not determine a park bounding box");
+  invariant(bbox, "Could not determine a bounding box");
 
   const areaKm2 = bboxAreaKm2(bbox);
   const maxAreaKm2 = options.maxAreaKm2 ?? 12;
@@ -42,33 +45,69 @@ export async function acquireSources(options) {
     );
   }
 
+  const sourcePlan = resolveSourcePlan(bbox, {
+    providers: RUNTIME_SOURCE_PROVIDERS,
+    preferredProviderIds: options.preferredProviderIds || options.preferProvider || [],
+    excludedProviderIds: options.excludedProviderIds || options.excludeProvider || [],
+    maxPerKind: options.maxProvidersPerKind || 5
+  });
+  const automaticElevation = elevationOptionFromPlan(sourcePlan);
+  const acquisitionOptions = {
+    ...options,
+    bbox,
+    cacheDir,
+    userAgent,
+    elevation: options.elevation ?? automaticElevation
+  };
+
   let osm;
   if (options.osm) {
     const filename = path.resolve(options.osm);
     const data = await readJson(filename);
     osm = { data, dataHash: sha256(data), filename, source: "local", cacheHit: true };
   } else {
-    osm = await fetchOverpass({ ...options, bbox, cacheDir, userAgent });
+    const selectedOsm = sourcePlan.selected.osm;
+    invariant(selectedOsm?.acquisition?.adapter === "overpass", "No executable OSM provider is available for this bbox");
+    osm = await fetchOverpass(acquisitionOptions);
   }
 
   const center = bboxCenter(bbox);
-  const elevation = await acquireElevation({ ...options, bbox, cacheDir, userAgent });
+  const elevation = await acquireElevation(acquisitionOptions);
+  const planning = await acquirePlanningForBbox(acquisitionOptions, sourcePlan.selected.planning);
   const orthophoto = await acquireOrthophotos(
-    { ...options, bbox, cacheDir, userAgent },
+    acquisitionOptions,
     { center, projector: createProjector(center), elevation }
   );
   return {
-    parkName: options.parkName || geocoder?.displayName?.split(",")[0] || "Theme Park",
+    parkName: options.parkName || geocoder?.displayName?.split(",")[0] || "Bounding Box Build",
     bbox,
     areaKm2,
     center,
     suppliedBoundary,
     geocoder,
+    sourcePlan,
+    autoSelection: {
+      osm: options.osm ? "local" : sourcePlan.selected.osm?.providerId || null,
+      terrain: options.elevation != null ? `explicit:${options.elevation}` : sourcePlan.selected.terrain?.providerId || null,
+      planning: sourcePlan.selected.planning?.providerId || null,
+      imagery: sourcePlan.selected.imagery?.providerId || null,
+      trees: sourcePlan.selected.trees?.providerId || null,
+      hydrology: sourcePlan.selected.hydrology?.providerId || null,
+      landcover: sourcePlan.selected.landcover?.providerId || null
+    },
     osm,
     elevation,
+    planning,
     orthophoto,
     acquiredAt: new Date().toISOString()
   };
+}
+
+function elevationOptionFromPlan(sourcePlan) {
+  const adapter = sourcePlan.selected.terrain?.acquisition?.adapter;
+  if (adapter === "ea-lidar") return "ea-lidar";
+  if (adapter === "open-meteo") return "open-meteo";
+  return "none";
 }
 
 async function resolveWithNominatim({ parkName, nominatimUrl, cacheDir, userAgent, noCache }) {
@@ -172,6 +211,7 @@ export function buildOverpassQuery({ south, west, north, east }) {
   nwr["playground"];
   nwr["public_transport"];
   nwr["landcover"];
+  nwr["boundary"="administrative"];
 );
 out meta geom;`;
 }
@@ -183,7 +223,7 @@ async function acquireElevation(options) {
       provider: "none",
       resolutionM: null,
       points: [],
-      warning: "No terrain source was selected; a flat verified datum will be used."
+      warning: "No executable terrain source was selected; a flat verified datum will be used."
     };
   }
   if (provider === "ea-lidar" || provider === "geotiff") {
