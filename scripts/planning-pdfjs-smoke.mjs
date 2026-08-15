@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { sha256 } from "../src/lib/io.mjs";
+import { loadPlanningPdfJsRuntime } from "../src/lib/planning-pdfjs-runtime.mjs";
 import { extractPlanningDocument } from "../src/lib/planning-vector-extractor.mjs";
 
 const root = await mkdtemp(path.join(os.tmpdir(), "voxel-planning-pdfjs-"));
@@ -14,6 +15,7 @@ try {
   await mkdir(objectDir, { recursive: true });
   const objectPath = `objects/${contentHash}.pdf`;
   await writeFile(path.join(root, "planning-documents", objectPath), bytes);
+  const pdfEngine = await loadPlanningPdfJsRuntime();
   const extraction = await extractPlanningDocument({
     contentHash,
     objectPath,
@@ -22,7 +24,7 @@ try {
     applicationKeys: ["smoke:1"],
     priority: 100,
     shard: 0
-  }, { cacheDir: root });
+  }, { cacheDir: root, pdfEngine });
 
   assert.equal(extraction.status, "extracted");
   assert.equal(extraction.pageCount, 1);
@@ -33,6 +35,7 @@ try {
   assert.ok(extraction.normalizedEvidence.verticalObservations.some((entry) => entry.valueM === 12.5));
   assert.ok(extraction.normalizedEvidence.materialObservations.some((entry) => entry.material === "red_tarmac"));
   console.log(JSON.stringify({
+    pdfJsVersion: pdfEngine.version,
     status: extraction.status,
     vectorPaths: extraction.pages[0].vector.pathCount,
     geometryCandidates: extraction.normalizedEvidence.geometryCandidates.length,
