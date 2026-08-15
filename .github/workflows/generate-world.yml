@@ -1,0 +1,124 @@
+name: Generate Voxel Mapper world
+
+on:
+  workflow_dispatch:
+    inputs:
+      bbox:
+        description: "WGS84 bbox: south,west,north,east"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  planning:
+    uses: ./.github/workflows/planning-documents.yml
+    with:
+      bbox: ${{ inputs.bbox }}
+      max_applications: "680"
+      shards: "20"
+      refresh: false
+
+  generate-world:
+    needs: planning
+    if: always() && needs.planning.result != 'cancelled'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      - name: Restore bbox source cache
+        uses: actions/cache@v4
+        with:
+          path: .tpmap-cache
+          key: bbox-world-v1-${{ inputs.bbox }}-${{ github.run_id }}
+          restore-keys: |
+            bbox-world-v1-${{ inputs.bbox }}-
+            planning-index-v1-${{ inputs.bbox }}-
+
+      - name: Download verified-current planning authority when available
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-current-state-evidence
+          path: planning-authority
+
+      - name: Promote current authority artifact into the automatic handoff path
+        shell: bash
+        run: |
+          if [[ -f planning-authority/planning-current-authority-evidence.json ]]; then
+            cp planning-authority/planning-current-authority-evidence.json planning-current-authority-evidence.json
+            echo "Planning authority artifact available for reconstruction."
+          else
+            echo "No current planning authority artifact was produced; generation will use lower-authority evidence where necessary."
+          fi
+
+      - name: Generate complete bbox world
+        env:
+          TPMAP_CONTACT: ${{ secrets.TPMAP_CONTACT }}
+        run: >-
+          node scripts/generate-bbox-world.mjs
+          --bbox "${{ inputs.bbox }}"
+          --authority planning-current-authority-evidence.json
+          --cache .tpmap-cache
+          --out out/bbox-world
+          --download-dir world-download
+
+      - name: Verify standalone world output exists
+        shell: bash
+        run: |
+          shopt -s nullglob
+          worlds=(world-download/*.mcworld)
+          if (( ${#worlds[@]} != 1 )); then
+            echo "Expected exactly one generated .mcworld, found ${#worlds[@]}" >&2
+            exit 1
+          fi
+          echo "Generated world: ${worlds[0]}"
+
+      - name: Upload Minecraft world only
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxel-mapper-mcworld
+          path: world-download/*.mcworld
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload generation evidence separately
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxel-mapper-generation-evidence
+          path: |
+            world-download/bbox-generation-result.json
+            out/bbox-world/build-result.json
+            out/bbox-world/evidence.json
+            out/bbox-world/evidence-graph.json
+            out/bbox-world/planning-authority-fusion.json
+            out/bbox-world/source-plan.json
+            out/bbox-world/world-manifest.json
+            out/bbox-world/ACCURACY_REPORT.md
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Summarize generation
+        shell: bash
+        run: |
+          node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+          const fs = require('fs');
+          const result = JSON.parse(fs.readFileSync('world-download/bbox-generation-result.json', 'utf8'));
+          console.log('## Voxel Mapper world generated');
+          console.log('');
+          console.log(`- BBox: \`${result.bbox}\``);
+          console.log(`- Planning handoff: **${result.authorityHandoff.mode}**`);
+          console.log(`- Planning attributes applied: **${result.planningAuthorityAppliedAttributes}**`);
+          console.log(`- World chunks: **${result.worldChunks}**`);
+          console.log(`- World validation: **${result.worldValidation || 'unknown'}**`);
+          console.log(`- Accuracy: **${result.grade} (${result.confidence})**`);
+          console.log('');
+          console.log('The `voxel-mapper-mcworld` artifact contains only the generated `.mcworld`; QA/evidence files are in the separate evidence artifact.');
+          NODE
