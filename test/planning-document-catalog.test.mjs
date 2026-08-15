@@ -12,6 +12,7 @@ const HASH_B = "b".repeat(64);
 test("catalog collapses identical document bytes while retaining all application provenance", () => {
   const catalog = buildPlanningDocumentCatalog([
     {
+      selectedShard: 7,
       results: [{
         application: { key: "entity:1", entity: 1, reference: "26/1/FUL" },
         documents: [{
@@ -22,6 +23,7 @@ test("catalog collapses identical document bytes while retaining all application
       }], discovered: [], failures: []
     },
     {
+      selectedShard: 12,
       results: [{
         application: { key: "entity:2", entity: 2, reference: "26/2/FUL" },
         documents: [{
@@ -38,11 +40,17 @@ test("catalog collapses identical document bytes while retaining all application
   assert.equal(catalog.duplicateReferencesCollapsed, 1);
   assert.equal(catalog.documents[0].classification, "site-plan");
   assert.deepEqual(catalog.documents[0].applicationKeys, ["entity:1", "entity:2"]);
+  assert.deepEqual(catalog.documents[0].acquisitionShards, [7, 12]);
   assert.equal(catalog.extractionQueueItems, 1);
+  assert.equal(catalog.extractionQueue[0].shard, 7);
+  assert.equal(catalog.extractionQueue[0].acquisitionShard, 7);
+  assert.deepEqual(catalog.activeExtractionShards, [7]);
+  assert.equal(catalog.extractionShardStrategy, "acquisition-affinity-with-hash-fallback");
 });
 
 test("catalog excludes low-value decision/supporting PDFs from extraction by default", () => {
   const catalog = buildPlanningDocumentCatalog([{
+    selectedShard: 4,
     results: [{
       application: { key: "entity:3" },
       documents: [
@@ -54,9 +62,10 @@ test("catalog excludes low-value decision/supporting PDFs from extraction by def
   assert.equal(catalog.uniqueDocuments, 2);
   assert.equal(catalog.extractionQueueItems, 1);
   assert.equal(catalog.extractionQueue[0].contentHash, HASH_B);
+  assert.equal(catalog.extractionQueue[0].shard, 4);
 });
 
-test("extraction shard is stable by content hash", () => {
+test("extraction shard is stable by content hash when acquisition affinity is unavailable", () => {
   const first = extractionShardForContent(HASH_A, 20);
   const second = extractionShardForContent(HASH_A, 20);
   assert.equal(first, second);
