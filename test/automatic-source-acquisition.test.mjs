@@ -5,13 +5,23 @@ import path from "node:path";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { acquireSources } from "../src/lib/sources.mjs";
 
-test("acquireSources uses bbox registry and planning discovery without a park name", async () => {
+async function withOsmFixture(callback) {
   const root = await mkdtemp(path.join(os.tmpdir(), "voxel-auto-source-"));
   const osmPath = path.join(root, "osm.json");
   await writeFile(osmPath, JSON.stringify({ version: 0.6, elements: [] }));
   try {
+    return await callback({ root, osmPath });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+const ENGLAND_BBOX = "52.98,-1.90,52.99,-1.88";
+
+test("acquireSources uses bbox registry and planning discovery without a park name", async () => {
+  await withOsmFixture(async ({ root, osmPath }) => {
     const sources = await acquireSources({
-      bbox: "52.98,-1.90,52.99,-1.88",
+      bbox: ENGLAND_BBOX,
       osm: osmPath,
       elevation: "none",
       cache: path.join(root, "cache"),
@@ -34,7 +44,49 @@ test("acquireSources uses bbox registry and planning discovery without a park na
     assert.equal(sources.planning.jurisdictionCount, 1);
     assert.equal(sources.planning.applications[0].reference, "26/00001/FUL");
     assert.equal(sources.planning.jurisdictions[0].name, "BBox Planning Authority");
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
+  });
+});
+
+test("automatic terrain acquisition falls back when the best executable provider fails", async () => {
+  await withOsmFixture(async ({ root, osmPath }) => {
+    const attempts = [];
+    const sources = await acquireSources({
+      bbox: ENGLAND_BBOX,
+      osm: osmPath,
+      cache: path.join(root, "cache"),
+      acceptOpenMeteoTerms: true,
+      acquireElevationImpl: async ({ elevation }) => {
+        attempts.push(elevation);
+        if (elevation === "ea-lidar") throw new Error("mock EA coverage miss");
+        return { provider: "Mock Open-Meteo", resolutionM: 90, points: [] };
+      },
+      planningAcquirerImpl: async () => ({
+        provider: "Mock Planning", providerId: "planning-data-england", status: "acquired",
+        applicationCount: 0, jurisdictionCount: 0, applications: [], jurisdictions: []
+      })
+    });
+
+    assert.deepEqual(attempts, ["ea-lidar", "open-meteo"]);
+    assert.equal(sources.elevation.provider, "Mock Open-Meteo");
+    assert.equal(sources.autoSelection.terrain, "open-meteo-copernicus-glo90");
+    assert.deepEqual(sources.acquisitionAttempts.terrain.map((entry) => entry.status), ["failed", "success"]);
+  });
+});
+
+test("planning provider failure degrades fidelity instead of aborting the bbox build", async () => {
+  await withOsmFixture(async ({ root, osmPath }) => {
+    const sources = await acquireSources({
+      bbox: ENGLAND_BBOX,
+      osm: osmPath,
+      elevation: "none",
+      cache: path.join(root, "cache"),
+      planningAcquirerImpl: async () => { throw new Error("mock planning API outage"); }
+    });
+
+    assert.equal(sources.planning.status, "failed");
+    assert.equal(sources.planning.applicationCount, 0);
+    assert.equal(sources.planning.jurisdictionCount, 0);
+    assert.match(sources.planning.warning, /continuing with lower-authority evidence/);
+    assert.equal(sources.acquisitionAttempts.planning[0].status, "failed");
+  });
 });
