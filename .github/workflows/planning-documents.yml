@@ -1,6 +1,27 @@
 name: Planning document acquisition
 
 on:
+  workflow_call:
+    inputs:
+      bbox:
+        description: "WGS84 bbox: south,west,north,east"
+        required: true
+        type: string
+      max_applications:
+        description: "Maximum intersecting planning applications (hard cap 680)"
+        required: false
+        default: "680"
+        type: string
+      shards:
+        description: "Maximum document shards"
+        required: false
+        default: "20"
+        type: string
+      refresh:
+        description: "Refresh planning index and document caches"
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       bbox:
@@ -289,4 +310,39 @@ jobs:
             planning-registered-evidence.json
             planning-georeg-reference.json
           if-no-files-found: ignore
+          retention-days: 7
+
+  resolve-revisions:
+    needs: [catalog, georegister]
+    if: always() && needs.georegister.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download planning spatial registration evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-georegistration-evidence
+      - name: Download planning document catalog
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-document-acquisition-catalog
+      - name: Download immutable planning application snapshot
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-document-queue
+      - name: Resolve document revisions and physical current state
+        run: node scripts/planning-resolve-revisions.mjs --registered planning-registered-evidence.json --catalog planning-document-catalog.json --queue planning-document-queue.json --out planning-revision-resolution.json --resolved-out planning-current-state-evidence.json --authority-out planning-current-authority-evidence.json
+      - name: Upload planning current-state authority evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: planning-current-state-evidence
+          path: |
+            planning-revision-resolution.json
+            planning-current-state-evidence.json
+            planning-current-authority-evidence.json
           retention-days: 7
