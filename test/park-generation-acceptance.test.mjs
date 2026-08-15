@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { validateParkGeneration } from "../scripts/validate-park-generation.mjs";
@@ -40,6 +40,20 @@ test("park acceptance rejects the historical small-world failure mode", async ()
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("real acceptance covers the complete Alton park and binds the newly dispatched run", async () => {
+  const workflow = await readFile(".github/workflows/park-generation-acceptance.yml", "utf8");
+  assert.match(workflow, /52\.9820,-1\.9000,52\.9945,-1\.8665/);
+  assert.match(workflow, /before_id=/);
+  assert.match(workflow, /select\(\.databaseId > \$before\)/);
+  assert.doesNotMatch(workflow, /--limit 1 --json databaseId --jq '\.\[0\]\.databaseId \/\/ empty'/);
+});
+
+test("parallel preparation retains the canonical top-down preview", async () => {
+  const source = await readFile("scripts/prepare-bbox-world-shards.mjs", "utf8");
+  assert.match(source, /noPreview:\s*false/);
+  assert.doesNotMatch(source, /noPreview:\s*true/);
 });
 
 async function createFixture({ chunks }) {
