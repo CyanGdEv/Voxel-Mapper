@@ -6,6 +6,9 @@ on:
     paths:
       - ".github/workflows/branch-full-park-validation.yml"
       - "src/lib/planning-lpa-fallback.mjs"
+      - "src/lib/planning-portal-documents.mjs"
+      - "src/lib/planning-document-worker.mjs"
+      - "src/lib/planning-documents.mjs"
 
 permissions:
   contents: read
