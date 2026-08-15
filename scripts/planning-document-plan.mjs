@@ -1,11 +1,8 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { appendFile } from "node:fs/promises";
-import { parseBbox } from "../src/lib/geo.mjs";
 import { ensureDir, sha256, writeJson } from "../src/lib/io.mjs";
-import { resolveSourcePlan } from "../src/lib/source-registry.mjs";
-import { RUNTIME_SOURCE_PROVIDERS } from "../src/lib/runtime-source-providers.mjs";
-import { acquirePlanningForBbox } from "../src/lib/planning-acquisition.mjs";
+import { acquireSources } from "../src/lib/sources.mjs";
 import { buildPlanningDocumentQueue } from "../src/lib/planning-documents.mjs";
 
 const args = process.argv.slice(2);
@@ -15,21 +12,28 @@ const value = (name) => {
 };
 
 if (args.includes("--help") || !value("--bbox")) {
-  console.log(`Voxel Mapper planning document plan\n\nUsage:\n  node scripts/planning-document-plan.mjs --bbox south,west,north,east [options]\n\nOptions:\n  --out FILE               Queue output (default planning-document-queue.json)\n  --cache DIR              Discovery cache (default .tpmap-cache)\n  --max-applications N     Maximum intersecting planning applications (max 680)\n  --shards N               Queue shard count (default 20)\n  --refresh                Refresh Planning Data API pages\n`);
+  console.log(`Voxel Mapper planning document plan\n\nUsage:\n  node scripts/planning-document-plan.mjs --bbox south,west,north,east [options]\n\nOptions:\n  --out FILE               Queue output (default planning-document-queue.json)\n  --cache DIR              Discovery cache (default .tpmap-cache)\n  --max-applications N     Maximum intersecting planning applications (max 680)\n  --shards N               Queue shard count (default 20)\n  --refresh                Refresh Planning Data/API and local-register discovery\n`);
   process.exit(args.includes("--help") ? 0 : 2);
 }
 
-const bbox = parseBbox(value("--bbox"));
+const bbox = value("--bbox");
 const cacheDir = path.resolve(value("--cache") || ".tpmap-cache");
 await ensureDir(cacheDir);
-const sourcePlan = resolveSourcePlan(bbox, { providers: RUNTIME_SOURCE_PROVIDERS, kinds: ["planning"] });
-const planning = await acquirePlanningForBbox({
+
+// Planning Data's national planning-application feed is not complete for every
+// LPA. Use the same bbox source acquisition path as world generation so OSM
+// theme-park identity + the discovered jurisdiction can supplement the
+// national index from a supported public local register. Terrain is disabled
+// here because this job only needs application/document discovery.
+const sources = await acquireSources({
   bbox,
-  cacheDir,
+  elevation: "none",
+  cache: cacheDir,
   noCache: args.includes("--refresh"),
   maxPlanningApplications: Number(value("--max-applications") || 680),
-  userAgent: process.env.TPMAP_CONTACT ? `VoxelMapper/0.12 (${process.env.TPMAP_CONTACT})` : "VoxelMapper/0.12"
-}, sourcePlan.selected.planning);
+  contact: process.env.TPMAP_CONTACT || undefined
+});
+const planning = sources.planning;
 const queue = buildPlanningDocumentQueue(planning, {
   planningDocumentShards: Number(value("--shards") || 20)
 });
@@ -43,6 +47,9 @@ queue.planningApplicationSnapshot = Object.fromEntries((planning.applications ||
 }));
 queue.planningApplicationSnapshotAt = new Date().toISOString();
 queue.planningApplicationSnapshotProvider = planning.providerId || planning.provider || null;
+queue.planningCoverageStatus = planning.coverageStatus || null;
+queue.localPortalFallback = planning.localPortalFallback || null;
+queue.osmPlanningHints = planning.localPortalFallback?.hints || [];
 
 const out = path.resolve(value("--out") || "planning-document-queue.json");
 await writeJson(out, queue);
@@ -52,6 +59,8 @@ const activeShards = Object.entries(queue.shardCounts || {})
   .sort((a, b) => a - b);
 
 console.log(`Planning provider: ${planning.providerId || planning.provider || "none"}`);
+console.log(`Planning coverage: ${planning.coverageStatus || planning.status || "unknown"}`);
+console.log(`Local portal applications added: ${planning.localPortalFallback?.addedApplications || 0}`);
 console.log(`Applications: ${planning.applicationCount || 0}`);
 console.log(`Queue items: ${queue.itemCount}`);
 console.log(`Active shards: ${activeShards.join(",") || "none"}`);
@@ -71,6 +80,8 @@ function compactPlanningApplication(application, key) {
     description: application.description ?? application.name ?? null,
     organisationEntity: application["organisation-entity"] ?? application.organisationEntity ?? null,
     documentationUrl: firstValue(application["documentation-url"] ?? application.documentationUrl),
+    source: application.source ?? null,
+    dataset: application.dataset ?? null,
     temporal: {
       statusEvidence: unique([
         application["planning-status"],
@@ -98,7 +109,7 @@ function collectDates(application) {
     ["entry-date", application["entry-date"] ?? application.entryDate],
     ["last-updated", application["last-updated"] ?? application.lastUpdated]
   ];
-  return fields.flatMap(([kind, value]) => values(value).map((entry) => ({ kind, value: String(entry) })))
+  return fields.flatMap(([kind, fieldValue]) => values(fieldValue).map((entry) => ({ kind, value: String(entry) })))
     .filter((entry) => entry.value.trim());
 }
 
@@ -108,11 +119,11 @@ function applicationKey(application) {
   if (application.reference) return `reference:${application.reference}`;
   return `hash:${sha256(application).slice(0, 20)}`;
 }
-function values(value) {
-  if (value == null) return [];
-  if (Array.isArray(value)) return value.flatMap(values);
-  if (typeof value === "object") return Object.values(value).flatMap(values);
-  return String(value).split(/[;\n|]+/).map((entry) => entry.trim()).filter(Boolean);
+function values(input) {
+  if (input == null) return [];
+  if (Array.isArray(input)) return input.flatMap(values);
+  if (typeof input === "object") return Object.values(input).flatMap(values);
+  return String(input).split(/[;\n|]+/).map((entry) => entry.trim()).filter(Boolean);
 }
-function firstValue(value) { return values(value)[0] || null; }
+function firstValue(input) { return values(input)[0] || null; }
 function unique(valuesList) { return [...new Set(valuesList.map((entry) => String(entry).trim()).filter(Boolean))]; }
