@@ -18,16 +18,16 @@ const MATERIAL_PATTERNS = [
 ];
 
 const TITLE_STATUS_PATTERNS = [
-  ["as-built", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*(?:as[- ]?built|record)\b|\bAS[- ]?BUILT\b/],
-  ["existing", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*existing\b/],
-  ["construction", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*(?:for\s+)?construction\b|\bFOR\s+CONSTRUCTION\b/],
-  ["tender", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*(?:for\s+)?tender\b|\bFOR\s+TENDER\b/],
-  ["planning", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*(?:for\s+)?planning\b|\bFOR\s+PLANNING\b/],
-  ["approved", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*approved\b/],
-  ["proposed", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*proposed\b/],
-  ["preliminary", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*preliminary\b/],
-  ["superseded", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*(?:superseded|obsolete)\b/],
-  ["withdrawn", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*(?:withdrawn|cancelled|canceled)\b/]
+  ["as-built", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*(?:as[- ]?built|record)\b|\bas[- ]?built\b/i],
+  ["existing", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*existing\b/i],
+  ["construction", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*(?:for\s+)?construction\b|\bfor\s+construction\b/i],
+  ["tender", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*(?:for\s+)?tender\b|\bfor\s+tender\b/i],
+  ["planning", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*(?:for\s+)?planning\b|\bfor\s+planning\b/i],
+  ["approved", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*approved\b/i],
+  ["proposed", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*proposed\b/i],
+  ["preliminary", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*preliminary\b/i],
+  ["superseded", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*(?:superseded|obsolete)\b/i],
+  ["withdrawn", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*(?:withdrawn|cancelled|canceled)\b/i]
 ];
 
 export function enrichPlanningTextEvidence(extraction, options = {}) {
