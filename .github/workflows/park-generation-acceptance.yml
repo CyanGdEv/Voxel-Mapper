@@ -1,0 +1,132 @@
+name: Real park generation acceptance
+run-name: Park acceptance · ${{ inputs.bbox || 'Alton Towers full-park fixture' }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      bbox:
+        description: "WGS84 bbox: south,west,north,east"
+        required: false
+        default: "52.9813,-1.8942,52.9953,-1.8722"
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/park-generation-acceptance.yml"
+      - "scripts/validate-park-generation.mjs"
+      - "scripts/generate-bbox-world.mjs"
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: real-park-generation-acceptance
+  cancel-in-progress: false
+
+jobs:
+  generate-and-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      DEFAULT_BBOX: "52.9813,-1.8942,52.9953,-1.8722"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      - id: target
+        name: Resolve acceptance bbox
+        shell: bash
+        env:
+          REQUESTED_BBOX: ${{ inputs.bbox }}
+        run: |
+          bbox="${REQUESTED_BBOX:-$DEFAULT_BBOX}"
+          echo "bbox=$bbox" >> "$GITHUB_OUTPUT"
+          echo "Acceptance bbox: $bbox"
+
+      - id: dispatch
+        name: Dispatch the production bbox generation workflow
+        shell: bash
+        env:
+          BBOX: ${{ steps.target.outputs.bbox }}
+        run: |
+          gh workflow run generate-world.yml --ref main -f bbox="$BBOX"
+          for attempt in {1..12}; do
+            run_id="$(gh run list --workflow generate-world.yml --branch main --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+            if [[ -n "$run_id" ]]; then
+              echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+              echo "Production generation run: $run_id"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Could not resolve the dispatched generation run id" >&2
+          exit 1
+
+      - id: watch
+        name: Require the production generation run to complete successfully
+        shell: bash
+        env:
+          RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+        run: gh run watch "$RUN_ID" --exit-status --interval 10
+
+      - name: Surface generation failures
+        if: failure() && steps.dispatch.outputs.run_id != ''
+        shell: bash
+        env:
+          RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+        run: gh run view "$RUN_ID" --log-failed || true
+
+      - name: Download generated world and all QA evidence
+        if: steps.watch.outcome == 'success'
+        shell: bash
+        env:
+          RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+        run: |
+          mkdir -p acceptance-download/world acceptance-download/evidence acceptance-download/preparation
+          gh run download "$RUN_ID" -n voxel-mapper-mcworld -D acceptance-download/world
+          gh run download "$RUN_ID" -n voxel-mapper-generation-evidence -D acceptance-download/evidence
+          gh run download "$RUN_ID" -n voxel-world-preparation -D acceptance-download/preparation
+
+      - id: validate
+        name: Validate full park data map, chunk roster and Bedrock world
+        if: steps.watch.outcome == 'success'
+        shell: bash
+        env:
+          BBOX: ${{ steps.target.outputs.bbox }}
+        run: >-
+          node scripts/validate-park-generation.mjs
+          --root acceptance-download
+          --bbox "$BBOX"
+          --report park-acceptance-report.json
+          --markdown PARK_ACCEPTANCE.md
+
+      - name: Publish acceptance summary
+        if: always() && hashFiles('PARK_ACCEPTANCE.md') != ''
+        shell: bash
+        run: cat PARK_ACCEPTANCE.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload top-down maps and acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-park-acceptance-evidence
+          path: |
+            PARK_ACCEPTANCE.md
+            park-acceptance-report.json
+            acceptance-download/preparation/**/preview.svg
+            acceptance-download/preparation/**/preview.html
+            acceptance-download/preparation/**/*.geojson
+            acceptance-download/preparation/**/ACCURACY_REPORT.md
+            acceptance-download/preparation/**/evidence.json
+            acceptance-download/preparation/**/planning-authority-fusion.json
+            acceptance-download/preparation/**/preparation-profile.json
+            acceptance-download/evidence/**
+          if-no-files-found: warn
+          retention-days: 14
