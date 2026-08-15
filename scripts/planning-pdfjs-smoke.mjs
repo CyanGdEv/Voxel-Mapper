@@ -28,6 +28,12 @@ try {
   }, { cacheDir: root, pdfEngine });
   enrichPlanningTextEvidence(extraction);
 
+  console.log(JSON.stringify({
+    textItems: extraction.pages[0]?.text?.items || [],
+    pageMaterials: extraction.pages[0]?.materialObservations || [],
+    normalizedMaterials: extraction.normalizedEvidence?.materialObservations || []
+  }, null, 2));
+
   assert.equal(extraction.status, "extracted");
   assert.equal(extraction.pageCount, 1);
   assert.ok(extraction.pages[0].vector.pathCount >= 1, "expected vector rectangle from real PDF.js operator list");
