@@ -49,6 +49,7 @@ test("park acceptance rejects the historical small-world failure mode", async ()
 
 test("acceptance surfaces inactive public evidence as fidelity limitations without failing the world", async () => {
   const root = await createFixture({ chunks: 5_000 });
+  const evidenceDir = path.join(root, "evidence");
   const preparationDir = path.join(root, "preparation", "out", "bbox-world");
   try {
     await json(path.join(preparationDir, "path-topology-qa.geojson"), {
@@ -60,7 +61,7 @@ test("acceptance surfaces inactive public evidence as fidelity limitations witho
     await json(path.join(preparationDir, "build-result.json"), {
       confidence: 0.785,
       grade: "C",
-      stats: { worldChunks: 5_000, planningApplications: 0 }
+      stats: { worldChunks: 5_000, planningApplications: 0, planningAuthorityAppliedAttributes: 0 }
     });
     await json(path.join(preparationDir, "evidence.json"), {
       source: {
@@ -68,6 +69,14 @@ test("acceptance surfaces inactive public evidence as fidelity limitations witho
         elevation: { provider: "Environment Agency LiDAR" },
         planning: { provider: "Planning Data / MHCLG (England)", status: "acquired", applicationCount: 0 }
       }
+    });
+    await json(path.join(evidenceDir, "bbox-generation-result.json"), {
+      worldChunks: 5_000,
+      worldValidation: "passed",
+      confidence: 0.785,
+      grade: "C",
+      planningAuthorityAppliedAttributes: 0,
+      parallelWorldBuild: { shards: 20, copiedLevelDbEntries: 1000 }
     });
 
     const report = await validateParkGeneration({
@@ -170,12 +179,13 @@ async function createFixture({ chunks }) {
     worldValidation: "passed",
     confidence: 0.9,
     grade: "A",
+    planningAuthorityAppliedAttributes: 2,
     parallelWorldBuild: { shards: 20, copiedLevelDbEntries: 1000 }
   });
   await json(path.join(preparationDir, "build-result.json"), {
     confidence: 0.9,
     grade: "A",
-    stats: { worldChunks: chunks, planningApplications: 3 }
+    stats: { worldChunks: chunks, planningApplications: 3, planningAuthorityAppliedAttributes: 2 }
   });
   await json(path.join(preparationDir, "evidence.json"), {
     source: {
