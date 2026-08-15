@@ -9,6 +9,7 @@ import { enrichTerrainDetails } from "./terrain-detail.mjs";
 import { integrateRideProfiles } from "./ride-profile.mjs";
 import { assessAccuracy, enforceAccuracy } from "./confidence.mjs";
 import { buildEvidenceGraph } from "./evidence-graph.mjs";
+import { buildPlanningDocumentQueue } from "./planning-documents.mjs";
 import { compileMap } from "./raster.mjs";
 import { buildBedrockAddon } from "./bedrock.mjs";
 import { buildBedrockWorld } from "./mcworld.mjs";
@@ -23,6 +24,9 @@ export async function buildPark(options = {}, progress = () => {}) {
   const slug = slugify(parkName);
   const outputDir = path.resolve(options.out || path.join("out", slug));
   await ensureDir(outputDir);
+
+  progress("Preparing planning document acquisition queue");
+  const planningDocumentQueue = buildPlanningDocumentQueue(sources.planning, options);
 
   progress("Normalizing map geometry and provenance");
   const map = await normalizeMap(sources, options);
@@ -53,6 +57,9 @@ export async function buildPark(options = {}, progress = () => {}) {
     path.join(outputDir, "planning-acquisition.json"),
     sources.planning || { provider: "none", status: "not-acquired", applications: [], jurisdictions: [] }
   );
+  const planningDocumentQueuePath = await writeJson(
+    path.join(outputDir, "planning-document-queue.json"), planningDocumentQueue
+  );
   const evidencePath = await writeJson(path.join(outputDir, "evidence.json"), {
     schemaVersion: 2,
     parkName,
@@ -66,6 +73,7 @@ export async function buildPark(options = {}, progress = () => {}) {
       osm: withoutLargeData(sources.osm),
       elevation: withoutLargeData(sources.elevation),
       planning: compactPlanningAcquisition(sources.planning),
+      planningDocuments: compactPlanningDocumentQueue(planningDocumentQueue),
       orthophoto: withoutLargeData(sources.orthophoto),
       mapFusion: sources.mapFusion,
       planningFusion: sources.planningFusion,
@@ -177,6 +185,7 @@ export async function buildPark(options = {}, progress = () => {}) {
       evidence: evidencePath,
       sourcePlan: sourcePlanPath,
       planningAcquisition: planningAcquisitionPath,
+      planningDocumentQueue: planningDocumentQueuePath,
       fidelity: fidelityPath,
       evidenceGraph: evidenceGraphPath,
       orthophotoEvidence: orthophotoEvidencePath,
@@ -204,6 +213,8 @@ export async function buildPark(options = {}, progress = () => {}) {
       ...compilation.stats,
       planningApplications: sources.planning?.applicationCount || 0,
       planningJurisdictions: sources.planning?.jurisdictionCount || 0,
+      planningDocumentQueueItems: planningDocumentQueue.itemCount,
+      planningDocumentQueueApplications: planningDocumentQueue.applicationsQueued,
       worldChunks: world?.chunkCount || 0,
       worldValidation: world?.validation?.status || null
     },
@@ -238,6 +249,12 @@ function compactPlanningAcquisition(value) {
       name: entry.name ?? null
     }))
   };
+}
+
+function compactPlanningDocumentQueue(value) {
+  if (!value) return value;
+  const { items, ...summary } = value;
+  return summary;
 }
 
 function compactRideEvidence(value) {
