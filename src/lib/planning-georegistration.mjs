@@ -1,4 +1,4 @@
-import { geometryMapCoordinates, walkPositions } from "./geo.mjs";
+import { geometryMapCoordinates } from "./geo.mjs";
 
 const DEFAULT_INLIER_THRESHOLD_M = 1.5;
 const DEFAULT_MAX_RMSE_M = 1.25;
@@ -419,26 +419,29 @@ function shouldPreferAffine(similarity, affine, options) {
 }
 
 function fitShapePair(sourcePoints, targetPoints) {
-  const sourcePair = farthestPair(sourcePoints), targetPair = farthestPair(targetPoints);
-  if (!sourcePair || !targetPair || sourcePair.distance < 1e-9 || targetPair.distance < 0.5) return null;
-  const hypotheses = [
-    [targetPair.a, targetPair.b],
-    [targetPair.b, targetPair.a]
-  ];
+  const sourcePairs = nearDiameterPairs(sourcePoints, 8);
+  const targetPairs = nearDiameterPairs(targetPoints, 8);
+  if (!sourcePairs.length || !targetPairs.length) return null;
   let best = null;
-  for (const [ta, tb] of hypotheses) {
-    const transform = fitSimilarity([
-      { source: sourcePair.a, target: ta, weight: 1 },
-      { source: sourcePair.b, target: tb, weight: 1 }
-    ]);
-    if (!transform) continue;
-    const transformed = sourcePoints.map((point) => applyPlanningGeoregistrationPoint(point, { model: "similarity", ...transform }));
-    const distances = transformed.map((point) => nearestPointDistance(point, targetPoints));
-    const value = rmse(distances);
-    const coverage = distances.filter((distance) => distance <= Math.max(1.5, targetPair.distance * 0.04)).length / distances.length;
-    const metrics = transformMetrics(transform);
-    const current = { transform, rmseM: value, coverage, ...metrics };
-    if (!best || current.rmseM < best.rmseM) best = current;
+  for (const sourcePair of sourcePairs) {
+    if (sourcePair.distance < 1e-9) continue;
+    for (const targetPair of targetPairs) {
+      if (targetPair.distance < 0.5) continue;
+      for (const [ta, tb] of [[targetPair.a, targetPair.b], [targetPair.b, targetPair.a]]) {
+        const transform = fitSimilarity([
+          { source: sourcePair.a, target: ta, weight: 1 },
+          { source: sourcePair.b, target: tb, weight: 1 }
+        ]);
+        if (!transform) continue;
+        const transformed = sourcePoints.map((point) => applyPlanningGeoregistrationPoint(point, { model: "similarity", ...transform }));
+        const distances = transformed.map((point) => nearestPointDistance(point, targetPoints));
+        const value = rmse(distances);
+        const coverage = distances.filter((distance) => distance <= Math.max(1.5, targetPair.distance * 0.04)).length / distances.length;
+        const metrics = transformMetrics(transform);
+        const current = { transform, rmseM: value, coverage, ...metrics };
+        if (!best || current.rmseM < best.rmseM || (current.rmseM === best.rmseM && current.coverage > best.coverage)) best = current;
+      }
+    }
   }
   return best;
 }
@@ -571,14 +574,17 @@ function combinations(n, k) {
   return values;
 }
 
-function farthestPair(points) {
+function nearDiameterPairs(points, maxPairs = 8) {
   const values = sampledPoints(points, 96);
-  let best = null;
+  const pairs = [];
   for (let i = 0; i < values.length; i += 1) for (let j = i + 1; j < values.length; j += 1) {
     const distance = Math.hypot(values[j][0] - values[i][0], values[j][1] - values[i][1]);
-    if (!best || distance > best.distance) best = { a: values[i], b: values[j], distance };
+    if (distance > 0) pairs.push({ a: values[i], b: values[j], distance });
   }
-  return best;
+  pairs.sort((a, b) => b.distance - a.distance);
+  if (!pairs.length) return [];
+  const longest = pairs[0].distance;
+  return pairs.filter((pair) => pair.distance >= longest * 0.985).slice(0, maxPairs);
 }
 
 function nearestPointDistance(point, points) { return nearestPoint(point, points).distance; }
