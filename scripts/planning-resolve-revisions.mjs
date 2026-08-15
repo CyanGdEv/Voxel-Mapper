@@ -52,12 +52,13 @@ function filterAuthorityEvidence(evidence) {
   const verticalObservations = (evidence?.verticalObservations || []).filter((entry) => entry.worldGeometryAuthority === true);
   const materialObservations = (evidence?.materialObservations || []).filter((entry) => entry.worldGeometryAuthority === true);
   const drawingMetadata = (evidence?.drawingMetadata || []).filter((entry) => entry.worldGeometryAuthority === true);
+  const hasAuthority = geometryCandidates.length > 0 || verticalObservations.length > 0 || materialObservations.length > 0 || drawingMetadata.length > 0;
   return {
     schemaVersion: 1,
     coordinateSpace: "local-world-metres",
     authorityScope: "planning-current-state-only",
     worldGeometryReady: geometryCandidates.length > 0,
-    worldGeometryAuthority: true,
+    worldGeometryAuthority: hasAuthority,
     temporalResolutionRequired: false,
     geometryCandidates,
     verticalObservations,
