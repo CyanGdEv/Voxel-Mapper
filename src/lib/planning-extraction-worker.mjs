@@ -7,8 +7,9 @@ export async function processPlanningExtractionShard(catalog, options = {}) {
   const items = (catalog?.extractionQueue || []).filter((item) => Number(item.shard) === shardIndex);
   const concurrency = clampInt(options.concurrency ?? DEFAULT_CONCURRENCY, 1, 8);
   const results = await mapLimit(items, concurrency, async (item) => {
+    const extractionItem = { ...item, classification: normalizeExtractorClass(item.classification) };
     try {
-      const extraction = await extractPlanningDocument(item, options);
+      const extraction = await extractPlanningDocument(extractionItem, options);
       return { status: extraction.status, item, extraction };
     } catch (error) {
       if (options.strictPlanningExtraction) throw error;
@@ -91,6 +92,10 @@ export function mergePlanningExtractionManifests(manifests) {
     },
     rasterFallbackQueue: fallback
   };
+}
+
+function normalizeExtractorClass(value) {
+  return String(value || "unknown").replaceAll("-", "_");
 }
 
 function dedupeFallback(values) {
