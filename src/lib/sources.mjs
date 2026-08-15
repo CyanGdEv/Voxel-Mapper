@@ -132,7 +132,13 @@ async function acquireAutomaticTerrain(options, sourcePlan) {
     try {
       const result = await acquirer({ ...options, elevation });
       attempts.push({ providerId: candidate.providerId, adapter: elevation, status: "success" });
-      return { result: { ...result, acquisitionAttempts: attempts }, providerId: candidate.providerId, attempts };
+      // Keep the acquired object itself. LiDAR deliberately exposes its live
+      // projection/sampling functions as non-enumerable properties so evidence
+      // JSON stays compact. Spreading the object used to drop those functions,
+      // causing the raster compiler to fall back to a zero-elevation sampler
+      // while still subtracting the real LiDAR datum.
+      result.acquisitionAttempts = attempts;
+      return { result, providerId: candidate.providerId, attempts };
     } catch (error) {
       attempts.push({
         providerId: candidate.providerId,
