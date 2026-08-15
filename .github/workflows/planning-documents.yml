@@ -65,9 +65,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .tpmap-cache/planning-data-england
-          key: planning-index-v1-${{ inputs.bbox }}-${{ github.run_id }}
+          # GitHub cache keys reject commas. The directory is URL-keyed
+          # internally, so a shared generation prefix is safe across bboxes.
+          key: planning-index-v2-${{ github.run_id }}
           restore-keys: |
-            planning-index-v1-${{ inputs.bbox }}-
+            planning-index-v2-
       - id: plan
         name: Discover applications and build document queue
         shell: bash
@@ -105,9 +107,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .tpmap-cache/planning-documents
-          key: planning-documents-v1-${{ inputs.bbox }}-shard-${{ matrix.shard }}-${{ github.run_id }}
+          key: planning-documents-v2-shard-${{ matrix.shard }}-${{ github.run_id }}
           restore-keys: |
-            planning-documents-v1-${{ inputs.bbox }}-shard-${{ matrix.shard }}-
+            planning-documents-v2-shard-${{ matrix.shard }}-
       - name: Discover and acquire shard
         shell: bash
         run: |
@@ -205,9 +207,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .tpmap-cache/planning-documents
-          key: planning-documents-v1-${{ inputs.bbox }}-shard-${{ matrix.shard }}-${{ github.run_id }}
+          key: planning-documents-v2-shard-${{ matrix.shard }}-${{ github.run_id }}
           restore-keys: |
-            planning-documents-v1-${{ inputs.bbox }}-shard-${{ matrix.shard }}-
+            planning-documents-v2-shard-${{ matrix.shard }}-
       - name: Extract vector and text evidence
         run: node scripts/planning-vector-extract.mjs --catalog planning-document-catalog.json --shard "${{ matrix.shard }}" --cache .tpmap-cache --out "planning-extraction-shard-${{ matrix.shard }}.json" --concurrency 2
       - name: Upload extraction shard
@@ -262,9 +264,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .tpmap-cache/planning-georeg-osm
-          key: planning-georeg-osm-v1-${{ inputs.bbox }}-${{ github.run_id }}
+          key: planning-georeg-osm-v2-${{ github.run_id }}
           restore-keys: |
-            planning-georeg-osm-v1-${{ inputs.bbox }}-
+            planning-georeg-osm-v2-
       - id: reference
         name: Build current OSM spatial reference
         continue-on-error: true
