@@ -105,33 +105,36 @@ jobs:
     if: always() && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - name: Download shard manifests
         uses: actions/download-artifact@v4
         with:
           pattern: planning-documents-shard-*
           path: shard-manifests
           merge-multiple: true
+      - name: Build deduplicated extraction catalog
+        run: node scripts/planning-document-catalog.mjs --manifests shard-manifests --out planning-document-catalog.json --extraction-shards 20
       - name: Write acquisition summary
         shell: bash
         run: |
           node - <<'NODE'
           const fs = require('fs');
-          const path = require('path');
-          const dir = 'shard-manifests';
-          const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => f.endsWith('.json')) : [];
-          const manifests = files.map(f => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
+          const catalog = JSON.parse(fs.readFileSync('planning-document-catalog.json', 'utf8'));
           const summary = {
             schemaVersion: 1,
             bbox: process.env.BBOX,
             applications: Number(process.env.APPLICATIONS || 0),
             queueItems: Number(process.env.QUEUE_ITEMS || 0),
-            shards: manifests.length,
-            inputItems: manifests.reduce((n, m) => n + (m.inputItems || 0), 0),
-            downloadedDocuments: manifests.reduce((n, m) => n + (m.downloadedDocuments || 0), 0),
-            uniqueContentObjectsByShard: manifests.reduce((n, m) => n + (m.uniqueContentObjects || 0), 0),
-            discoveredLinks: manifests.reduce((n, m) => n + (m.discoveredLinks || 0), 0),
-            pendingPortalLinks: manifests.reduce((n, m) => n + (m.pendingPortalLinks || 0), 0),
-            failures: manifests.flatMap(m => m.failures || [])
+            shardManifests: catalog.inputShardManifests,
+            uniqueDocuments: catalog.uniqueDocuments,
+            duplicateReferencesCollapsed: catalog.duplicateReferencesCollapsed,
+            extractionQueueItems: catalog.extractionQueueItems,
+            pendingPortalLinks: catalog.pendingPortalLinks.length,
+            revisionChanges: catalog.revisionChanges,
+            failures: catalog.failures
           };
           fs.writeFileSync('planning-document-acquisition-summary.json', JSON.stringify(summary, null, 2) + '\n');
           console.log(JSON.stringify(summary, null, 2));
@@ -140,9 +143,11 @@ jobs:
           BBOX: ${{ inputs.bbox }}
           APPLICATIONS: ${{ needs.prepare.outputs.applications }}
           QUEUE_ITEMS: ${{ needs.prepare.outputs.queue_items }}
-      - name: Upload acquisition summary
+      - name: Upload acquisition catalog and summary
         uses: actions/upload-artifact@v4
         with:
-          name: planning-document-acquisition-summary
-          path: planning-document-acquisition-summary.json
+          name: planning-document-acquisition-catalog
+          path: |
+            planning-document-catalog.json
+            planning-document-acquisition-summary.json
           retention-days: 7
