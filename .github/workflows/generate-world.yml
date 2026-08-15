@@ -1,0 +1,300 @@
+name: Generate Voxel Mapper world
+
+on:
+  workflow_dispatch:
+    inputs:
+      bbox:
+        description: "WGS84 bbox: south,west,north,east"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  planning:
+    uses: ./.github/workflows/planning-documents.yml
+    with:
+      bbox: ${{ inputs.bbox }}
+      max_applications: "680"
+      shards: "20"
+      refresh: false
+
+  prepare-world:
+    needs: planning
+    if: always() && needs.planning.result != 'cancelled'
+    runs-on: ubuntu-latest
+    outputs:
+      active_shards: ${{ steps.prepare.outputs.active_shards }}
+      shard_count: ${{ steps.prepare.outputs.shard_count }}
+      chunk_count: ${{ steps.prepare.outputs.chunk_count }}
+      plan_hash: ${{ steps.prepare.outputs.plan_hash }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      - name: Restore bbox source cache
+        uses: actions/cache@v4
+        with:
+          path: .tpmap-cache
+          key: bbox-world-v2-${{ inputs.bbox }}-${{ github.run_id }}
+          restore-keys: |
+            bbox-world-v2-${{ inputs.bbox }}-
+            bbox-world-v1-${{ inputs.bbox }}-
+            planning-index-v1-${{ inputs.bbox }}-
+
+      - name: Download verified-current planning authority when available
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-current-state-evidence
+          path: planning-authority
+
+      - name: Promote current authority artifact into the automatic handoff path
+        shell: bash
+        run: |
+          if [[ -f planning-authority/planning-current-authority-evidence.json ]]; then
+            cp planning-authority/planning-current-authority-evidence.json planning-current-authority-evidence.json
+            echo "Planning authority artifact available for reconstruction."
+          else
+            echo "No current planning authority artifact was produced; generation will use lower-authority evidence where necessary."
+          fi
+
+      - id: prepare
+        name: Compile reconstruction once and plan parallel chunk shards
+        env:
+          TPMAP_CONTACT: ${{ secrets.TPMAP_CONTACT }}
+        run: >-
+          node scripts/prepare-bbox-world-shards.mjs
+          --bbox "${{ inputs.bbox }}"
+          --authority planning-current-authority-evidence.json
+          --cache .tpmap-cache
+          --out out/bbox-world
+          --shard-dir world-shard-inputs
+          --shards 20
+
+      - name: Remove duplicated full compilation before evidence upload
+        run: rm -f out/bbox-world/world-compilation.json
+
+      - name: Upload common preparation and QA evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxel-world-preparation
+          path: |
+            world-preparation.json
+            world-shard-inputs/world-shard-plan.json
+            out/bbox-world/**
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 7
+
+      - name: Upload shard input 0
+        if: ${{ hashFiles('world-shard-inputs/shard-0.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-0, path: world-shard-inputs/shard-0.json, retention-days: 7 }
+      - name: Upload shard input 1
+        if: ${{ hashFiles('world-shard-inputs/shard-1.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-1, path: world-shard-inputs/shard-1.json, retention-days: 7 }
+      - name: Upload shard input 2
+        if: ${{ hashFiles('world-shard-inputs/shard-2.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-2, path: world-shard-inputs/shard-2.json, retention-days: 7 }
+      - name: Upload shard input 3
+        if: ${{ hashFiles('world-shard-inputs/shard-3.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-3, path: world-shard-inputs/shard-3.json, retention-days: 7 }
+      - name: Upload shard input 4
+        if: ${{ hashFiles('world-shard-inputs/shard-4.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-4, path: world-shard-inputs/shard-4.json, retention-days: 7 }
+      - name: Upload shard input 5
+        if: ${{ hashFiles('world-shard-inputs/shard-5.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-5, path: world-shard-inputs/shard-5.json, retention-days: 7 }
+      - name: Upload shard input 6
+        if: ${{ hashFiles('world-shard-inputs/shard-6.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-6, path: world-shard-inputs/shard-6.json, retention-days: 7 }
+      - name: Upload shard input 7
+        if: ${{ hashFiles('world-shard-inputs/shard-7.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-7, path: world-shard-inputs/shard-7.json, retention-days: 7 }
+      - name: Upload shard input 8
+        if: ${{ hashFiles('world-shard-inputs/shard-8.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-8, path: world-shard-inputs/shard-8.json, retention-days: 7 }
+      - name: Upload shard input 9
+        if: ${{ hashFiles('world-shard-inputs/shard-9.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-9, path: world-shard-inputs/shard-9.json, retention-days: 7 }
+      - name: Upload shard input 10
+        if: ${{ hashFiles('world-shard-inputs/shard-10.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-10, path: world-shard-inputs/shard-10.json, retention-days: 7 }
+      - name: Upload shard input 11
+        if: ${{ hashFiles('world-shard-inputs/shard-11.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-11, path: world-shard-inputs/shard-11.json, retention-days: 7 }
+      - name: Upload shard input 12
+        if: ${{ hashFiles('world-shard-inputs/shard-12.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-12, path: world-shard-inputs/shard-12.json, retention-days: 7 }
+      - name: Upload shard input 13
+        if: ${{ hashFiles('world-shard-inputs/shard-13.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-13, path: world-shard-inputs/shard-13.json, retention-days: 7 }
+      - name: Upload shard input 14
+        if: ${{ hashFiles('world-shard-inputs/shard-14.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-14, path: world-shard-inputs/shard-14.json, retention-days: 7 }
+      - name: Upload shard input 15
+        if: ${{ hashFiles('world-shard-inputs/shard-15.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-15, path: world-shard-inputs/shard-15.json, retention-days: 7 }
+      - name: Upload shard input 16
+        if: ${{ hashFiles('world-shard-inputs/shard-16.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-16, path: world-shard-inputs/shard-16.json, retention-days: 7 }
+      - name: Upload shard input 17
+        if: ${{ hashFiles('world-shard-inputs/shard-17.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-17, path: world-shard-inputs/shard-17.json, retention-days: 7 }
+      - name: Upload shard input 18
+        if: ${{ hashFiles('world-shard-inputs/shard-18.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-18, path: world-shard-inputs/shard-18.json, retention-days: 7 }
+      - name: Upload shard input 19
+        if: ${{ hashFiles('world-shard-inputs/shard-19.json') != '' }}
+        uses: actions/upload-artifact@v4
+        with: { name: voxel-world-shard-input-19, path: world-shard-inputs/shard-19.json, retention-days: 7 }
+
+  build-world-shards:
+    needs: prepare-world
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: ${{ fromJSON(needs.prepare-world.outputs.active_shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download this shard's compiled chunk plan
+        uses: actions/download-artifact@v4
+        with:
+          name: voxel-world-shard-input-${{ matrix.shard }}
+          path: shard-input
+      - name: Build deterministic Bedrock chunk shard
+        run: >-
+          node scripts/build-world-shard.mjs
+          --input shard-input/shard-${{ matrix.shard }}.json
+          --out world-shard-output-${{ matrix.shard }}
+      - name: Upload built shard world
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxel-built-world-shard-${{ matrix.shard }}
+          path: world-shard-output-${{ matrix.shard }}/**
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  assemble-world:
+    needs: [prepare-world, build-world-shards]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      - name: Download preparation and QA evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: voxel-world-preparation
+          path: preparation
+
+      - name: Download every completed Bedrock shard
+        uses: actions/download-artifact@v4
+        with:
+          pattern: voxel-built-world-shard-*
+          path: built-shards
+          merge-multiple: false
+
+      - name: Assemble and validate complete Bedrock world
+        run: >-
+          node scripts/assemble-world-shards.mjs
+          --plan preparation/world-shard-inputs/world-shard-plan.json
+          --shards-dir built-shards
+          --preparation preparation/world-preparation.json
+          --build-result preparation/out/bbox-world/build-result.json
+          --out preparation/out/bbox-world
+          --download-dir world-download
+
+      - name: Verify standalone world output exists
+        shell: bash
+        run: |
+          shopt -s nullglob
+          worlds=(world-download/*.mcworld)
+          if (( ${#worlds[@]} != 1 )); then
+            echo "Expected exactly one generated .mcworld, found ${#worlds[@]}" >&2
+            exit 1
+          fi
+          echo "Generated world: ${worlds[0]}"
+
+      - name: Upload Minecraft world only
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxel-mapper-mcworld
+          path: world-download/*.mcworld
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Upload generation evidence separately
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxel-mapper-generation-evidence
+          path: |
+            world-download/bbox-generation-result.json
+            preparation/out/bbox-world/build-result.json
+            preparation/out/bbox-world/evidence.json
+            preparation/out/bbox-world/evidence-graph.json
+            preparation/out/bbox-world/planning-authority-fusion.json
+            preparation/out/bbox-world/source-plan.json
+            preparation/out/bbox-world/world-manifest.json
+            preparation/out/bbox-world/block-palette.json
+            preparation/out/bbox-world/ACCURACY_REPORT.md
+            preparation/world-shard-inputs/world-shard-plan.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Summarize generation
+        shell: bash
+        run: |
+          node - <<'NODE' >> "$GITHUB_STEP_SUMMARY"
+          const fs = require('fs');
+          const result = JSON.parse(fs.readFileSync('world-download/bbox-generation-result.json', 'utf8'));
+          console.log('## Voxel Mapper world generated');
+          console.log('');
+          console.log(`- BBox: \`${result.bbox}\``);
+          console.log(`- Planning handoff: **${result.authorityHandoff.mode}**`);
+          console.log(`- Planning attributes applied: **${result.planningAuthorityAppliedAttributes}**`);
+          console.log(`- World chunks: **${result.worldChunks}**`);
+          console.log(`- Bedrock chunk shards: **${result.parallelWorldBuild.shards}**`);
+          console.log(`- Logical LevelDB records merged: **${result.parallelWorldBuild.copiedLevelDbEntries}**`);
+          console.log(`- World validation: **${result.worldValidation || 'unknown'}**`);
+          console.log(`- Accuracy: **${result.grade} (${result.confidence})**`);
+          console.log('');
+          console.log('The `voxel-mapper-mcworld` artifact contains only the generated `.mcworld`; QA/evidence files are in the separate evidence artifact.');
+          NODE
