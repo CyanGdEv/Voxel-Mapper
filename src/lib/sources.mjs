@@ -7,6 +7,7 @@ import { acquireOrthophotos } from "./orthophoto.mjs";
 import { resolveSourcePlan } from "./source-registry.mjs";
 import { RUNTIME_SOURCE_PROVIDERS } from "./runtime-source-providers.mjs";
 import { acquirePlanningForBbox } from "./planning-acquisition.mjs";
+import { augmentPlanningFromLocalPortals } from "./planning-lpa-fallback.mjs";
 
 const DEFAULT_NOMINATIM = "https://nominatim.openstreetmap.org/search";
 const DEFAULT_OVERPASS = "https://overpass-api.de/api/interpreter";
@@ -57,9 +58,10 @@ export async function acquireSources(options) {
     invariant(selectedOsm?.acquisition?.adapter === "overpass", "No executable OSM provider is available for this bbox");
   }
 
-  // OSM, terrain and planning are independent once the bbox/source plan is
-  // resolved. Starting them together removes avoidable network/IO wall time
-  // without changing source priority or downstream reconstruction order.
+  // OSM, terrain and the national planning index are independent once the
+  // bbox/source plan is resolved. Start them together, then use the acquired
+  // OSM park identity and discovered jurisdiction to supplement incomplete
+  // national planning coverage from a supported public LPA register.
   const osmPromise = options.osm
     ? (async () => {
         const filename = path.resolve(options.osm);
@@ -76,11 +78,12 @@ export async function acquireSources(options) {
     : acquireAutomaticTerrain(acquisitionOptions, sourcePlan);
   const planningPromise = acquirePlanningSafely(acquisitionOptions, sourcePlan.selected.planning);
 
-  const [osm, terrainAcquisition, planning] = await Promise.all([
+  const [osm, terrainAcquisition, primaryPlanning] = await Promise.all([
     osmPromise,
     terrainPromise,
     planningPromise
   ]);
+  const planning = await augmentPlanningFromLocalPortals(acquisitionOptions, primaryPlanning, osm.data);
   const center = bboxCenter(bbox);
   const elevation = terrainAcquisition.result;
   // Orthophoto interpretation can depend on the chosen terrain/elevation
