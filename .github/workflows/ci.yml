@@ -22,3 +22,7 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run doctor
+      - name: Install PDF.js planning extraction runtime
+        run: npm install --no-save --package-lock=false --ignore-scripts pdfjs-dist@6.2.108
+      - name: Smoke-test real vector PDF extraction
+        run: node scripts/planning-pdfjs-smoke.mjs
