@@ -1,6 +1,27 @@
 name: Planning document acquisition
 
 on:
+  workflow_call:
+    inputs:
+      bbox:
+        description: "WGS84 bbox: south,west,north,east"
+        required: true
+        type: string
+      max_applications:
+        description: "Maximum intersecting planning applications (hard cap 680)"
+        required: false
+        default: "680"
+        type: string
+      shards:
+        description: "Maximum document shards"
+        required: false
+        default: "20"
+        type: string
+      refresh:
+        description: "Refresh planning index and document caches"
+        required: false
+        default: false
+        type: boolean
   workflow_dispatch:
     inputs:
       bbox:

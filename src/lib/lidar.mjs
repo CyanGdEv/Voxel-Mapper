@@ -31,48 +31,26 @@ export async function acquireLidarElevation(options, provider) {
   if (!isLive && provider !== "geotiff") throw new UserError(`Unsupported LiDAR provider: ${provider}`);
   if (!isLive && !options.dtm) throw new UserError("--elevation geotiff requires --dtm FILE");
 
-  const dtmSource = isLive
-    ? await acquireCoverage({
-      endpoint: options.eaDtmWcsUrl || EA_DTM_WCS,
-      coverageId: `${EA_DTM_DATASET}__Lidar_Composite_Elevation_DTM_1m`,
-      bounds: projectedBounds,
-      cacheDir,
-      userAgent: options.userAgent,
-      noCache: options.noCache,
-      role: "dtm"
-    })
-    : { filename: path.resolve(options.dtm), cacheHit: true, endpoint: null, queryHash: null };
-
   const wantsDsm = !options.noDsm && (isLive || options.dsm);
-  const dsmSource = !wantsDsm ? null : isLive
-    ? await acquireCoverage({
-      endpoint: options.eaDsmWcsUrl || EA_DSM_WCS,
-      coverageId: `${EA_DSM_DATASET}__Lidar_Composite_Elevation_LZ_DSM_1m`,
-      bounds: projectedBounds,
-      cacheDir,
-      userAgent: options.userAgent,
-      noCache: options.noCache,
-      role: "dsm"
-    })
-    : { filename: path.resolve(options.dsm), cacheHit: true, endpoint: null, queryHash: null };
+  const { dtmSource, dsmSource, survey } = await acquireLidarSourceSet({
+    isLive,
+    wantsDsm,
+    options,
+    projectedBounds,
+    cacheDir
+  });
 
-  const dtm = await readGeoTiffRaster(dtmSource.filename, "DTM");
-  const dsm = dsmSource ? await readGeoTiffRaster(dsmSource.filename, "DSM") : null;
-  if (dsm) validateAlignedRasters(dtm, dsm);
-  const [dtmHash, dsmHash] = await Promise.all([
-    sha256File(dtmSource.filename),
-    dsmSource ? sha256File(dsmSource.filename) : null
+  const gridHashPromise = sha256File(transform.gridPath);
+  const [dtm, dsm] = await Promise.all([
+    readGeoTiffRaster(dtmSource.filename, "DTM"),
+    dsmSource ? readGeoTiffRaster(dsmSource.filename, "DSM") : null
   ]);
-
-  const survey = isLive
-    ? await acquireSurveyMetadata({
-      endpoint: options.eaIndexWfsUrl || EA_INDEX_WFS,
-      bounds: projectedBounds,
-      cacheDir,
-      userAgent: options.userAgent,
-      noCache: options.noCache
-    })
-    : null;
+  if (dsm) validateAlignedRasters(dtm, dsm);
+  const [dtmHash, dsmHash, gridHash] = await Promise.all([
+    sha256File(dtmSource.filename),
+    dsmSource ? sha256File(dsmSource.filename) : null,
+    gridHashPromise
+  ]);
 
   const localProjector = createProjector(bboxCenter(options.bbox));
   const terrainSampler = createProjectedRasterSampler(dtm);
@@ -96,10 +74,16 @@ export async function acquireLidarElevation(options, provider) {
     dtm: publicRasterMetadata(dtm, dtmSource, dtmHash),
     dsm: dsm ? publicRasterMetadata(dsm, dsmSource, dsmHash) : null,
     survey,
+    preparationConcurrency: {
+      schemaVersion: 1,
+      sourceFetches: isLive ? (wantsDsm ? 3 : 2) : 0,
+      rasterDecodes: dsm ? 2 : 1,
+      strategy: "independent-lidar-inputs-v1"
+    },
     transformation: {
       name: "OSTN15",
       grid: path.basename(transform.gridPath),
-      gridHash: await sha256File(transform.gridPath),
+      gridHash,
       gridSource: transform.gridSource,
       license: "BSD-2-Clause"
     },
@@ -143,6 +127,61 @@ export async function acquireLidarElevation(options, provider) {
     }
   });
   return result;
+}
+
+export async function acquireLidarSourceSet({
+  isLive,
+  wantsDsm,
+  options,
+  projectedBounds,
+  cacheDir,
+  acquireCoverageImpl = acquireCoverage,
+  acquireSurveyMetadataImpl = acquireSurveyMetadata
+}) {
+  if (!isLive) {
+    return {
+      dtmSource: { filename: path.resolve(options.dtm), cacheHit: true, endpoint: null, queryHash: null },
+      dsmSource: wantsDsm
+        ? { filename: path.resolve(options.dsm), cacheHit: true, endpoint: null, queryHash: null }
+        : null,
+      survey: null
+    };
+  }
+
+  const dtmPromise = acquireCoverageImpl({
+    endpoint: options.eaDtmWcsUrl || EA_DTM_WCS,
+    coverageId: `${EA_DTM_DATASET}__Lidar_Composite_Elevation_DTM_1m`,
+    bounds: projectedBounds,
+    cacheDir,
+    userAgent: options.userAgent,
+    noCache: options.noCache,
+    role: "dtm"
+  });
+  const dsmPromise = wantsDsm
+    ? acquireCoverageImpl({
+      endpoint: options.eaDsmWcsUrl || EA_DSM_WCS,
+      coverageId: `${EA_DSM_DATASET}__Lidar_Composite_Elevation_LZ_DSM_1m`,
+      bounds: projectedBounds,
+      cacheDir,
+      userAgent: options.userAgent,
+      noCache: options.noCache,
+      role: "dsm"
+    })
+    : Promise.resolve(null);
+  const surveyPromise = acquireSurveyMetadataImpl({
+    endpoint: options.eaIndexWfsUrl || EA_INDEX_WFS,
+    bounds: projectedBounds,
+    cacheDir,
+    userAgent: options.userAgent,
+    noCache: options.noCache
+  });
+
+  const [dtmSource, dsmSource, survey] = await Promise.all([
+    dtmPromise,
+    dsmPromise,
+    surveyPromise
+  ]);
+  return { dtmSource, dsmSource, survey };
 }
 
 export async function readGeoTiffRaster(filename, role = "raster") {
