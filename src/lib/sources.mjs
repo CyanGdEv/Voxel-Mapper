@@ -52,28 +52,39 @@ export async function acquireSources(options) {
     maxPerKind: options.maxProvidersPerKind || 5
   });
   const acquisitionOptions = { ...options, bbox, cacheDir, userAgent };
-
-  let osm;
-  if (options.osm) {
-    const filename = path.resolve(options.osm);
-    const data = await readJson(filename);
-    osm = { data, dataHash: sha256(data), filename, source: "local", cacheHit: true };
-  } else {
-    const selectedOsm = sourcePlan.selected.osm;
+  const selectedOsm = sourcePlan.selected.osm;
+  if (!options.osm) {
     invariant(selectedOsm?.acquisition?.adapter === "overpass", "No executable OSM provider is available for this bbox");
-    osm = await fetchOverpass(acquisitionOptions);
   }
 
-  const center = bboxCenter(bbox);
-  const terrainAcquisition = options.elevation != null
-    ? {
+  // OSM, terrain and planning are independent once the bbox/source plan is
+  // resolved. Starting them together removes avoidable network/IO wall time
+  // without changing source priority or downstream reconstruction order.
+  const osmPromise = options.osm
+    ? (async () => {
+        const filename = path.resolve(options.osm);
+        const data = await readJson(filename);
+        return { data, dataHash: sha256(data), filename, source: "local", cacheHit: true };
+      })()
+    : fetchOverpass(acquisitionOptions);
+  const terrainPromise = options.elevation != null
+    ? (async () => ({
         result: await (options.acquireElevationImpl || acquireElevation)({ ...acquisitionOptions, elevation: options.elevation }),
         providerId: `explicit:${options.elevation}`,
         attempts: [{ providerId: `explicit:${options.elevation}`, status: "success" }]
-      }
-    : await acquireAutomaticTerrain(acquisitionOptions, sourcePlan);
+      }))()
+    : acquireAutomaticTerrain(acquisitionOptions, sourcePlan);
+  const planningPromise = acquirePlanningSafely(acquisitionOptions, sourcePlan.selected.planning);
+
+  const [osm, terrainAcquisition, planning] = await Promise.all([
+    osmPromise,
+    terrainPromise,
+    planningPromise
+  ]);
+  const center = bboxCenter(bbox);
   const elevation = terrainAcquisition.result;
-  const planning = await acquirePlanningSafely(acquisitionOptions, sourcePlan.selected.planning);
+  // Orthophoto interpretation can depend on the chosen terrain/elevation
+  // frame, so it intentionally remains after terrain acquisition.
   const orthophoto = await acquireOrthophotos(
     acquisitionOptions,
     { center, projector: createProjector(center), elevation }
