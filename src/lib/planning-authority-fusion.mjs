@@ -397,7 +397,7 @@ async function loadAuthorityEvidence(options) {
   };
 }
 function isAuthorityEntry(entry) {
-  return entry?.worldGeometryAuthority === true && String(entry?.planningTemporal?.state || "current") === "current";
+  return entry?.worldGeometryAuthority === true && entry?.planningTemporal?.state === "current";
 }
 function authorityConfidence(entry, spatialScore = 1) {
   const extraction = Number(entry?.confidence ?? 0.9), temporal = Number(entry?.planningTemporal?.confidence ?? 0.99);
