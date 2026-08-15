@@ -18,6 +18,7 @@ const DEFAULT_MAX_DISCOVERY_HTML_MB = 8;
 const DEFAULT_CACHE_MAX_AGE_HOURS = 168;
 const DEFAULT_DISCOVERY_CACHE_MAX_AGE_HOURS = 24;
 const DEFAULT_MAX_DISCOVERED_LINKS_PER_APPLICATION = 120;
+const DISCOVERY_PARSER_VERSION = 2;
 
 export async function processPlanningDocumentShard(queue, options = {}) {
   const selected = options.shardIndex == null ? queue : selectPlanningDocumentShard(queue, Number(options.shardIndex));
@@ -115,7 +116,10 @@ export async function discoverPlanningPage(item, options = {}) {
   if (!isSafePublicHttpUrl(item.url)) throw new Error(`Unsafe planning documentation URL: ${item.url}`);
   const cacheDir = path.join(options.cacheDir || ".tpmap-cache", "planning-documents", "discovery");
   await ensureDir(cacheDir);
-  const cacheFile = path.join(cacheDir, `${sha256(item.url)}.json`);
+  // Parser upgrades must not reuse discovery results produced by an older
+  // HTML/portal adapter. The underlying page can still be cached for the normal
+  // TTL once it has been parsed by this schema version.
+  const cacheFile = path.join(cacheDir, `${sha256(`${DISCOVERY_PARSER_VERSION}\n${item.url}`)}.json`);
   const maxAgeHours = Number(options.discoveryCacheMaxAgeHours ?? DEFAULT_DISCOVERY_CACHE_MAX_AGE_HOURS);
   if (!options.refreshPlanningDocuments && await isFreshCache(cacheFile, maxAgeHours)) {
     return { ...(await readJson(cacheFile)), cacheHit: true };
@@ -143,6 +147,7 @@ export async function discoverPlanningPage(item, options = {}) {
     }))
   );
   const result = {
+    parserVersion: DISCOVERY_PARSER_VERSION,
     url: item.url,
     finalUrl,
     contentType,
