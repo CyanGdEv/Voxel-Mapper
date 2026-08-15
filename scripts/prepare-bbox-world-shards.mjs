@@ -2,6 +2,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { performance } from "node:perf_hooks";
 import { buildPark } from "../src/lib/pipeline.mjs";
 import { readJson, writeJson } from "../src/lib/io.mjs";
 import { buildBboxWorldOptions } from "./generate-bbox-world.mjs";
@@ -57,8 +58,12 @@ export async function prepareBboxWorldShards(args, progress = (message) => conso
     noPreview: true,
     compilationOut: compilationPath
   };
-  const result = await buildPark(buildOptions, progress);
+  const preparationStarted = performance.now();
+  const profiler = createStageProfiler(progress);
+  const result = await buildPark(buildOptions, profiler.progress);
+  const stageTimings = profiler.finish();
   const envelope = await readJson(compilationPath);
+  const shardPlanningStarted = performance.now();
   const plan = planWorldShards(envelope.compilation, {
     maxShards: args.shards,
     worldMargin: Number.isInteger(buildOptions.worldMargin) ? buildOptions.worldMargin : 32
@@ -70,6 +75,14 @@ export async function prepareBboxWorldShards(args, progress = (message) => conso
     await writeJson(path.join(shardDir, `shard-${shard.id}.json`), bundle);
   }
   const planPath = await writeJson(path.join(shardDir, "world-shard-plan.json"), plan);
+  const preparationTiming = {
+    schemaVersion: 1,
+    totalMs: Math.round(performance.now() - preparationStarted),
+    reconstructionMs: stageTimings.reduce((sum, entry) => sum + entry.durationMs, 0),
+    shardPlanningAndWriteMs: Math.round(performance.now() - shardPlanningStarted),
+    stages: stageTimings
+  };
+  const profilePath = await writeJson(path.join(outputDir, "preparation-profile.json"), preparationTiming);
   const summary = {
     schemaVersion: 1,
     bbox: args.bbox,
@@ -88,12 +101,42 @@ export async function prepareBboxWorldShards(args, progress = (message) => conso
     shardCount: plan.shards.length,
     activeShardIds: plan.activeShardIds,
     spawnShard: plan.spawnShard,
-    outputDir
+    outputDir,
+    preparationProfile: profilePath,
+    preparationTiming
   };
   await writeJson("world-preparation.json", summary);
   await emitGitHubOutputs(plan);
   console.log(JSON.stringify(summary, null, 2));
   return { result, summary, plan };
+}
+
+export function createStageProfiler(sink = () => {}) {
+  const stages = [];
+  let currentStage = null;
+  let stageStarted = performance.now();
+  const record = (finishedAt) => {
+    if (!currentStage) return;
+    stages.push({
+      stage: currentStage,
+      durationMs: Math.max(0, Math.round(finishedAt - stageStarted))
+    });
+  };
+  return {
+    progress(message) {
+      const now = performance.now();
+      record(now);
+      sink(message);
+      currentStage = message === "Build complete" ? null : String(message);
+      stageStarted = now;
+    },
+    finish() {
+      const now = performance.now();
+      record(now);
+      currentStage = null;
+      return stages;
+    }
+  };
 }
 
 function selectWorldOptions(options) {
@@ -111,7 +154,8 @@ async function emitGitHubOutputs(plan) {
     `shard_count=${plan.shards.length}`,
     `chunk_count=${plan.chunkCount}`,
     `spawn_shard=${plan.spawnShard}`,
-    `plan_hash=${plan.planHash}`
+    `plan_hash=${plan.planHash}`,
+    "preparation_reused=false"
   ];
   await appendFile(process.env.GITHUB_OUTPUT, `${lines.join("\n")}\n`);
 }
