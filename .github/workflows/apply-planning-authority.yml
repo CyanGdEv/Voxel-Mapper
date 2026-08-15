@@ -49,6 +49,26 @@ jobs:
                 .bootstrap/current-architecture.patch.xz.b64.part03
           rmdir .bootstrap 2>/dev/null || true
 
+      - name: Preserve marker-mode integration coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('test/core.test.mjs')
+          text = path.read_text()
+          old = '''    maxCells: 200_000,
+              accuracyMode: "verified"
+            });'''
+          new = '''    maxCells: 200_000,
+              accuracyMode: "verified",
+              buildings: "markers"
+            });'''
+          if old not in text:
+              raise SystemExit('expected offline integration fixture block not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -91,6 +111,7 @@ jobs:
           test -f src/lib/material-palettes.mjs
           test -f test/planning-fusion.test.mjs
           test -f test/lidar-roof-authority.test.mjs
+          grep -q 'buildings: "markers"' test/core.test.mjs
 
       - name: Commit certified v0.12 source
         shell: bash
