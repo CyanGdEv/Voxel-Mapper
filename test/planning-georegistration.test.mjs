@@ -49,6 +49,36 @@ test("drawing scale is a quality gate rather than a decorative metadata value", 
   assert.ok(solution.rejectionReasons.some((reason) => reason.includes("drawing title-block")));
 });
 
+test("affine fit is rejected when it would hide excessive drawing stretch", () => {
+  const sources = [[0, 0], [100, 0], [100, 100], [0, 100], [50, 35]];
+  const controls = sources.map(([x, y]) => ({ source: [x, y], target: [200 + x * 0.05, -80 + y * 0.07] }));
+  const solution = solvePlanningGeoregistration(controls, {
+    model: "affine",
+    maxAffineAnisotropy: 0.08,
+    maxAffineShear: 0.08,
+    maxRmseM: 0.01,
+    maxResidualM: 0.01,
+    minInliers: 4
+  });
+  assert.equal(solution.pass, false);
+  assert.equal(solution.status, "rejected");
+  assert.ok(solution.rejectionReasons.some((reason) => reason.includes("affine anisotropy")));
+});
+
+test("reflected planning control geometry is never accepted as a valid registration", () => {
+  const sources = [[0, 0], [100, 0], [100, 80], [0, 80]];
+  const controls = sources.map(([x, y]) => ({ source: [x, y], target: [300 - x * 0.05, 40 + y * 0.05] }));
+  const solution = solvePlanningGeoregistration(controls, {
+    model: "affine",
+    maxRmseM: 0.01,
+    maxResidualM: 0.01,
+    minInliers: 3
+  });
+  assert.equal(solution.pass, false);
+  assert.equal(solution.status, "rejected");
+  assert.ok(solution.rejectionReasons.some((reason) => reason.includes("unsolved-transform") || reason.includes("reflected")));
+});
+
 test("automatic footprint matching yields control points without granting authority itself", () => {
   const sourceRing = [[10, 20], [110, 20], [110, 70], [10, 70]];
   const targetRing = sourceRing.map((point) => similarityPoint(point, 0.04, -17, 220, 310));
