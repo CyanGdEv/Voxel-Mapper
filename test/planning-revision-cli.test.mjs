@@ -23,6 +23,7 @@ test("planning revision CLI consumes immutable application snapshot and emits au
   const queueFile = path.join(dir, "queue.json");
   const reportFile = path.join(dir, "report.json");
   const resolvedFile = path.join(dir, "resolved.json");
+  const authorityFile = path.join(dir, "authority.json");
 
   await writeFile(registeredFile, JSON.stringify({
     worldGeometryReady: true,
@@ -50,14 +51,20 @@ test("planning revision CLI consumes immutable application snapshot and emits au
     "--queue", queueFile,
     "--out", reportFile,
     "--resolved-out", resolvedFile,
+    "--authority-out", authorityFile,
     "--reference-date", "2026-08-15T00:00:00Z"
   ], process.cwd());
 
   const report = JSON.parse(await readFile(reportFile, "utf8"));
   const resolved = JSON.parse(await readFile(resolvedFile, "utf8"));
+  const authority = JSON.parse(await readFile(authorityFile, "utf8"));
   assert.equal(report.status, "resolved");
   assert.equal(report.applicationSnapshotProvider, "planning-data-england");
   assert.equal(report.summary.authoritativeCurrentPages, 1);
   assert.equal(resolved.geometryCandidates[0].worldGeometryAuthority, true);
   assert.equal(resolved.geometryCandidates[0].planningTemporal.state, "current");
+  assert.equal(authority.authorityScope, "planning-current-state-only");
+  assert.equal(authority.counts.geometryCandidates, 1);
+  assert.equal(authority.geometryCandidates[0].id, "g");
+  assert.equal(authority.temporalResolutionRequired, false);
 });
