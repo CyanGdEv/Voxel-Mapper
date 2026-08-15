@@ -315,7 +315,7 @@ jobs:
         with:
           name: planning-document-queue
       - name: Resolve document revisions and physical current state
-        run: node scripts/planning-resolve-revisions.mjs --registered planning-registered-evidence.json --catalog planning-document-catalog.json --queue planning-document-queue.json --out planning-revision-resolution.json --resolved-out planning-current-state-evidence.json
+        run: node scripts/planning-resolve-revisions.mjs --registered planning-registered-evidence.json --catalog planning-document-catalog.json --queue planning-document-queue.json --out planning-revision-resolution.json --resolved-out planning-current-state-evidence.json --authority-out planning-current-authority-evidence.json
       - name: Upload planning current-state authority evidence
         uses: actions/upload-artifact@v4
         with:
@@ -323,4 +323,5 @@ jobs:
           path: |
             planning-revision-resolution.json
             planning-current-state-evidence.json
+            planning-current-authority-evidence.json
           retention-days: 7
