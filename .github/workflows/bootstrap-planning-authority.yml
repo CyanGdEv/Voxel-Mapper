@@ -1,0 +1,70 @@
+name: Bootstrap planning-authority architecture
+
+on:
+  push:
+    branches:
+      - agent/planning-authority-architecture
+
+permissions:
+  contents: write
+
+jobs:
+  import-and-validate:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout bootstrap branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/planning-authority-architecture
+          fetch-depth: 0
+
+      - name: Restore exact v0.11.3 baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL "https://api.github.com/repos/CyanGdEv/Voxel-Mapping-Engine-/tarball/5ee087fb8d49d4a33319308a04427915f2b7f498" -o /tmp/baseline.tar.gz
+          mkdir -p /tmp/baseline
+          tar -xzf /tmp/baseline.tar.gz --strip-components=1 -C /tmp/baseline
+          cp -a /tmp/baseline/. .
+
+      - name: Reconstruct and apply architecture delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .bootstrap/architecture.patch.xz.b64.part* | base64 --decode > /tmp/architecture.patch.xz
+          echo "94da0e8d6ae09038cd6db09d1d1583183f3301ccf34a828797d453e1d38eda3c  /tmp/architecture.patch.xz" | sha256sum --check
+          xz -dc /tmp/architecture.patch.xz > /tmp/architecture.patch
+          patch -p1 < /tmp/architecture.patch
+          rm -rf .bootstrap
+          rm -f .github/workflows/bootstrap-planning-authority.yml
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies cleanly
+        run: npm ci
+
+      - name: Run complete test suite
+        run: npm test
+
+      - name: Run repository doctor
+        run: npm run doctor
+
+      - name: Commit validated source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No source changes to commit."
+            exit 0
+          fi
+          git commit -m "Import v0.11.3 baseline and planning-authority architecture"
+          git push origin HEAD:agent/planning-authority-architecture
