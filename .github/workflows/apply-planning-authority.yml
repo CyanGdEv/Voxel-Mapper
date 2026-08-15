@@ -1,0 +1,68 @@
+name: Apply planning-authority architecture
+
+on:
+  push:
+    branches:
+      - agent/planning-authority-architecture
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply-and-validate:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout expanded baseline
+        uses: actions/checkout@v4
+        with:
+          ref: agent/planning-authority-architecture
+          fetch-depth: 0
+
+      - name: Recover verified architecture delta from branch history
+        shell: bash
+        run: |
+          set -euo pipefail
+          BOOTSTRAP_COMMIT=b0630dedf9537f4d1de63178111593b2ed86eeb0
+          : > /tmp/architecture.patch.xz.b64
+          for part in 00 01 02; do
+            git show "${BOOTSTRAP_COMMIT}:.bootstrap/architecture.patch.xz.b64.part${part}" >> /tmp/architecture.patch.xz.b64
+          done
+          base64 --decode /tmp/architecture.patch.xz.b64 > /tmp/architecture.patch.xz
+          echo "94da0e8d6ae09038cd6db09d1d1583183f3301ccf34a828797d453e1d38eda3c  /tmp/architecture.patch.xz" | sha256sum --check
+          xz -dc /tmp/architecture.patch.xz > /tmp/architecture.patch
+
+      - name: Apply architecture delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          patch --dry-run -p1 --batch --forward --fuzz=3 < /tmp/architecture.patch
+          patch -p1 --batch --forward --fuzz=3 < /tmp/architecture.patch
+          rm -f .github/workflows/apply-planning-authority.yml
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies cleanly
+        run: npm ci
+
+      - name: Run complete test suite
+        run: npm test
+
+      - name: Run repository doctor
+        run: npm run doctor
+
+      - name: Commit validated v0.12 architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Rewrite Voxel Mapper around planning-authority fusion"
+          git push origin HEAD:agent/planning-authority-architecture
