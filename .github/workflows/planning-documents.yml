@@ -100,10 +100,13 @@ jobs:
           path: planning-documents-shard-${{ matrix.shard }}.json
           retention-days: 7
 
-  summary:
+  catalog:
     needs: [prepare, acquire]
     if: always() && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
+    outputs:
+      active_extraction_shards: ${{ steps.catalog.outputs.active_extraction_shards }}
+      extraction_queue_items: ${{ steps.catalog.outputs.extraction_queue_items }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -115,7 +118,8 @@ jobs:
           pattern: planning-documents-shard-*
           path: shard-manifests
           merge-multiple: true
-      - name: Build deduplicated extraction catalog
+      - id: catalog
+        name: Build deduplicated extraction catalog
         run: node scripts/planning-document-catalog.mjs --manifests shard-manifests --out planning-document-catalog.json --extraction-shards 20
       - name: Write acquisition summary
         shell: bash
@@ -124,7 +128,7 @@ jobs:
           const fs = require('fs');
           const catalog = JSON.parse(fs.readFileSync('planning-document-catalog.json', 'utf8'));
           const summary = {
-            schemaVersion: 1,
+            schemaVersion: 2,
             bbox: process.env.BBOX,
             applications: Number(process.env.APPLICATIONS || 0),
             queueItems: Number(process.env.QUEUE_ITEMS || 0),
@@ -132,6 +136,8 @@ jobs:
             uniqueDocuments: catalog.uniqueDocuments,
             duplicateReferencesCollapsed: catalog.duplicateReferencesCollapsed,
             extractionQueueItems: catalog.extractionQueueItems,
+            activeExtractionShards: catalog.activeExtractionShards,
+            extractionShardStrategy: catalog.extractionShardStrategy,
             pendingPortalLinks: catalog.pendingPortalLinks.length,
             revisionChanges: catalog.revisionChanges,
             failures: catalog.failures
@@ -150,4 +156,68 @@ jobs:
           path: |
             planning-document-catalog.json
             planning-document-acquisition-summary.json
+          retention-days: 7
+
+  extract-vector:
+    needs: [prepare, catalog]
+    if: needs.catalog.outputs.extraction_queue_items != '0'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: ${{ fromJSON(needs.catalog.outputs.active_extraction_shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Install PDF.js extraction runtime
+        run: npm install --no-save --package-lock=false --ignore-scripts pdfjs-dist@6.2.108
+      - name: Download extraction catalog
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-document-acquisition-catalog
+      - name: Restore the matching immutable document shard
+        uses: actions/cache@v4
+        with:
+          path: .tpmap-cache/planning-documents
+          key: planning-documents-v1-${{ inputs.bbox }}-shard-${{ matrix.shard }}-${{ github.run_id }}
+          restore-keys: |
+            planning-documents-v1-${{ inputs.bbox }}-shard-${{ matrix.shard }}-
+      - name: Extract vector and text evidence
+        run: node scripts/planning-vector-extract.mjs --catalog planning-document-catalog.json --shard "${{ matrix.shard }}" --cache .tpmap-cache --out "planning-extraction-shard-${{ matrix.shard }}.json" --concurrency 2
+      - name: Upload extraction shard
+        uses: actions/upload-artifact@v4
+        with:
+          name: planning-extraction-shard-${{ matrix.shard }}
+          path: planning-extraction-shard-${{ matrix.shard }}.json
+          retention-days: 7
+
+  merge-extraction:
+    needs: [catalog, extract-vector]
+    if: always() && needs.catalog.outputs.extraction_queue_items != '0' && needs.extract-vector.result != 'cancelled'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Download vector extraction manifests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: planning-extraction-shard-*
+          path: extraction-manifests
+          merge-multiple: true
+      - name: Merge normalized planning evidence
+        run: node scripts/planning-vector-merge.mjs --manifests extraction-manifests --out planning-vector-evidence.json --raster-fallback-out planning-raster-fallback-queue.json
+      - name: Upload normalized planning extraction evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: planning-vector-extraction-evidence
+          path: |
+            planning-vector-evidence.json
+            planning-raster-fallback-queue.json
           retention-days: 7
