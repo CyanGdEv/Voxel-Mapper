@@ -90,3 +90,46 @@ test("planning provider failure degrades fidelity instead of aborting the bbox b
     assert.equal(sources.acquisitionAttempts.planning[0].status, "failed");
   });
 });
+
+test("terrain and planning acquisition start concurrently once bbox/source selection is resolved", async () => {
+  await withOsmFixture(async ({ root, osmPath }) => {
+    let releaseTerrain;
+    let releasePlanning;
+    let terrainStartedResolve;
+    let planningStartedResolve;
+    const terrainGate = new Promise((resolve) => { releaseTerrain = resolve; });
+    const planningGate = new Promise((resolve) => { releasePlanning = resolve; });
+    const terrainStarted = new Promise((resolve) => { terrainStartedResolve = resolve; });
+    const planningStarted = new Promise((resolve) => { planningStartedResolve = resolve; });
+    let acquisition;
+    try {
+      acquisition = acquireSources({
+        bbox: ENGLAND_BBOX,
+        osm: osmPath,
+        elevation: "none",
+        cache: path.join(root, "cache"),
+        acquireElevationImpl: async () => {
+          terrainStartedResolve();
+          await terrainGate;
+          return { provider: "Mock Terrain", resolutionM: null, points: [] };
+        },
+        planningAcquirerImpl: async () => {
+          planningStartedResolve();
+          await planningGate;
+          return {
+            provider: "Mock Planning", providerId: "planning-data-england", status: "acquired",
+            applicationCount: 0, jurisdictionCount: 0, applications: [], jurisdictions: []
+          };
+        }
+      });
+      await Promise.race([
+        Promise.all([terrainStarted, planningStarted]),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("independent source acquisition did not overlap")), 250))
+      ]);
+    } finally {
+      releaseTerrain?.();
+      releasePlanning?.();
+      await acquisition?.catch(() => {});
+    }
+  });
+});
