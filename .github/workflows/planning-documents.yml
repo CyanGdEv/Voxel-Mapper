@@ -175,7 +175,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Install PDF.js extraction runtime
-        run: npm install --no-save --package-lock=false --ignore-scripts pdfjs-dist@6.2.108
+        run: npm install --no-save --package-lock=false --ignore-scripts pdfjs-dist@4.10.38
       - name: Download extraction catalog
         uses: actions/download-artifact@v4
         with:
