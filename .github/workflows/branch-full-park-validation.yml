@@ -5,6 +5,7 @@ on:
     branches: [agent/bedrock-terrain-materialization-fix]
     paths:
       - ".github/workflows/branch-full-park-validation.yml"
+      - "src/lib/planning-lpa-fallback.mjs"
 
 permissions:
   contents: read
