@@ -1,11 +1,15 @@
 #!/usr/bin/env node
-import { appendFile, mkdir } from "node:fs/promises";
+import { access, appendFile, cp, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { performance } from "node:perf_hooks";
 import { buildPark } from "../src/lib/pipeline.mjs";
-import { readJson, writeJson } from "../src/lib/io.mjs";
+import { readJson, sha256, sha256File, writeJson } from "../src/lib/io.mjs";
 import { buildBboxWorldOptions } from "./generate-bbox-world.mjs";
 import { createWorldShardBundle, planWorldShards } from "../src/lib/world-shards.mjs";
+import { validatePreparation } from "./replay-world-preparation.mjs";
+
+const PREPARATION_CACHE_VERSION = 1;
 
 export function parsePrepareArgs(argv) {
   const result = {
@@ -45,10 +49,6 @@ export async function prepareBboxWorldShards(args, progress = (message) => conso
   await mkdir(outputDir, { recursive: true });
   await mkdir(shardDir, { recursive: true });
 
-  progress(handoff.authority.available
-    ? "Preparing reconstruction with verified-current planning authority"
-    : "Preparing reconstruction with lower-authority fallback evidence");
-
   const buildOptions = {
     ...handoff.options,
     out: outputDir,
@@ -57,8 +57,38 @@ export async function prepareBboxWorldShards(args, progress = (message) => conso
     noPreview: true,
     compilationOut: compilationPath
   };
-  const result = await buildPark(buildOptions, progress);
+  const cacheIdentity = await buildPreparationCacheIdentity(args, handoff, buildOptions);
+  const preparationCacheDir = path.join(path.resolve(args.cache), "world-preparation-v1", cacheIdentity);
+  const restored = await restorePreparationCache({ preparationCacheDir, outputDir, shardDir });
+  if (restored) {
+    progress(`Reusing validated reconstruction preparation cache ${cacheIdentity.slice(0, 12)}`);
+    const summary = {
+      ...restored.summary,
+      preparationCache: {
+        schemaVersion: 1,
+        version: PREPARATION_CACHE_VERSION,
+        key: cacheIdentity,
+        status: "hit",
+        gitSha: process.env.GITHUB_SHA || null,
+        restoredAt: new Date().toISOString()
+      }
+    };
+    await writeJson("world-preparation.json", summary);
+    await emitGitHubOutputs(restored.plan, true);
+    console.log(JSON.stringify(summary, null, 2));
+    return { result: null, summary, plan: restored.plan, reused: true };
+  }
+
+  progress(handoff.authority.available
+    ? "Preparing reconstruction with verified-current planning authority"
+    : "Preparing reconstruction with lower-authority fallback evidence");
+
+  const preparationStarted = performance.now();
+  const profiler = createStageProfiler(progress);
+  const result = await buildPark(buildOptions, profiler.progress);
+  const stageTimings = profiler.finish();
   const envelope = await readJson(compilationPath);
+  const shardPlanningStarted = performance.now();
   const plan = planWorldShards(envelope.compilation, {
     maxShards: args.shards,
     worldMargin: Number.isInteger(buildOptions.worldMargin) ? buildOptions.worldMargin : 32
@@ -70,6 +100,14 @@ export async function prepareBboxWorldShards(args, progress = (message) => conso
     await writeJson(path.join(shardDir, `shard-${shard.id}.json`), bundle);
   }
   const planPath = await writeJson(path.join(shardDir, "world-shard-plan.json"), plan);
+  const preparationTiming = {
+    schemaVersion: 1,
+    totalMs: Math.round(performance.now() - preparationStarted),
+    reconstructionMs: stageTimings.reduce((sum, entry) => sum + entry.durationMs, 0),
+    shardPlanningAndWriteMs: Math.round(performance.now() - shardPlanningStarted),
+    stages: stageTimings
+  };
+  const profilePath = await writeJson(path.join(outputDir, "preparation-profile.json"), preparationTiming);
   const summary = {
     schemaVersion: 1,
     bbox: args.bbox,
@@ -88,12 +126,105 @@ export async function prepareBboxWorldShards(args, progress = (message) => conso
     shardCount: plan.shards.length,
     activeShardIds: plan.activeShardIds,
     spawnShard: plan.spawnShard,
-    outputDir
+    outputDir,
+    preparationProfile: profilePath,
+    preparationTiming,
+    preparationCache: {
+      schemaVersion: 1,
+      version: PREPARATION_CACHE_VERSION,
+      key: cacheIdentity,
+      status: "saved",
+      gitSha: process.env.GITHUB_SHA || null
+    }
   };
   await writeJson("world-preparation.json", summary);
-  await emitGitHubOutputs(plan);
+  await savePreparationCache({ preparationCacheDir, outputDir, shardDir, summary, plan });
+  await emitGitHubOutputs(plan, false);
   console.log(JSON.stringify(summary, null, 2));
-  return { result, summary, plan };
+  return { result, summary, plan, reused: false };
+}
+
+export function createStageProfiler(sink = () => {}) {
+  const stages = [];
+  let currentStage = null;
+  let stageStarted = performance.now();
+  const record = (finishedAt) => {
+    if (!currentStage) return;
+    stages.push({
+      stage: currentStage,
+      durationMs: Math.max(0, Math.round(finishedAt - stageStarted))
+    });
+  };
+  return {
+    progress(message) {
+      const now = performance.now();
+      record(now);
+      sink(message);
+      currentStage = message === "Build complete" ? null : String(message);
+      stageStarted = now;
+    },
+    finish() {
+      const now = performance.now();
+      record(now);
+      currentStage = null;
+      return stages;
+    }
+  };
+}
+
+export async function buildPreparationCacheIdentity(args, handoff, buildOptions) {
+  const authorityHash = handoff.authority.available
+    ? await sha256File(handoff.authority.requestedPath)
+    : "none";
+  return sha256({
+    schemaVersion: PREPARATION_CACHE_VERSION,
+    gitSha: process.env.GITHUB_SHA || "local",
+    bbox: args.bbox,
+    authorityHash,
+    shards: args.shards,
+    worldOptions: selectWorldOptions(buildOptions),
+    reconstructionOptions: {
+      buildings: buildOptions.buildings,
+      accuracyMode: buildOptions.accuracyMode,
+      pathGeometryMode: buildOptions.pathGeometryMode,
+      pathEdgeMode: buildOptions.pathEdgeMode,
+      pathTerrainMode: buildOptions.pathTerrainMode,
+      terrainDetailMode: buildOptions.terrainDetailMode,
+      rideTerrainMode: buildOptions.rideTerrainMode
+    }
+  });
+}
+
+async function restorePreparationCache({ preparationCacheDir, outputDir, shardDir }) {
+  const summaryPath = path.join(preparationCacheDir, "world-preparation.json");
+  const planPath = path.join(preparationCacheDir, "world-shard-plan.json");
+  if (!await fileExists(summaryPath) || !await fileExists(planPath)) return null;
+  const [summary, plan] = await Promise.all([readJson(summaryPath), readJson(planPath)]);
+  validatePreparation(summary, plan);
+  const cachedOut = path.join(preparationCacheDir, "out");
+  const cachedShards = path.join(preparationCacheDir, "shards");
+  if (!await fileExists(cachedOut) || !await fileExists(cachedShards)) return null;
+  await rm(outputDir, { recursive: true, force: true });
+  await rm(shardDir, { recursive: true, force: true });
+  await cp(cachedOut, outputDir, { recursive: true, force: true });
+  await cp(cachedShards, shardDir, { recursive: true, force: true });
+  validatePreparation(summary, await readJson(path.join(shardDir, "world-shard-plan.json")));
+  return { summary, plan };
+}
+
+async function savePreparationCache({ preparationCacheDir, outputDir, shardDir, summary, plan }) {
+  const temp = `${preparationCacheDir}.tmp-${process.pid}`;
+  await rm(temp, { recursive: true, force: true });
+  await mkdir(temp, { recursive: true });
+  await cp(outputDir, path.join(temp, "out"), { recursive: true, force: true });
+  await rm(path.join(temp, "out", "world-compilation.json"), { force: true });
+  await cp(shardDir, path.join(temp, "shards"), { recursive: true, force: true });
+  await writeJson(path.join(temp, "world-preparation.json"), summary);
+  await writeJson(path.join(temp, "world-shard-plan.json"), plan);
+  await rm(preparationCacheDir, { recursive: true, force: true });
+  await mkdir(path.dirname(preparationCacheDir), { recursive: true });
+  await cp(temp, preparationCacheDir, { recursive: true, force: true });
+  await rm(temp, { recursive: true, force: true });
 }
 
 function selectWorldOptions(options) {
@@ -104,16 +235,26 @@ function selectWorldOptions(options) {
   return selected;
 }
 
-async function emitGitHubOutputs(plan) {
+async function emitGitHubOutputs(plan, reused) {
   if (!process.env.GITHUB_OUTPUT) return;
   const lines = [
     `active_shards=${JSON.stringify(plan.activeShardIds)}`,
     `shard_count=${plan.shards.length}`,
     `chunk_count=${plan.chunkCount}`,
     `spawn_shard=${plan.spawnShard}`,
-    `plan_hash=${plan.planHash}`
+    `plan_hash=${plan.planHash}`,
+    `preparation_reused=${reused ? "true" : "false"}`
   ];
   await appendFile(process.env.GITHUB_OUTPUT, `${lines.join("\n")}\n`);
+}
+
+async function fileExists(filename) {
+  try {
+    await access(filename);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
