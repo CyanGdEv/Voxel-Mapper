@@ -1,5 +1,6 @@
 import { extractPlanningDocument } from "./planning-vector-extractor.mjs";
 import { loadPlanningPdfJsRuntime } from "./planning-pdfjs-runtime.mjs";
+import { enrichPlanningTextEvidence } from "./planning-text-evidence.mjs";
 
 const DEFAULT_CONCURRENCY = 2;
 
@@ -14,6 +15,7 @@ export async function processPlanningExtractionShard(catalog, options = {}) {
     const extractionItem = { ...item, classification: normalizeExtractorClass(item.classification) };
     try {
       const extraction = await extractPlanningDocument(extractionItem, extractionOptions);
+      enrichPlanningTextEvidence(extraction, extractionOptions);
       return { status: extraction.status, item, extraction };
     } catch (error) {
       if (options.strictPlanningExtraction) throw error;
