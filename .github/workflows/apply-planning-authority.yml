@@ -1,4 +1,4 @@
-name: Apply planning-authority architecture
+name: Materialize and certify v0.12
 
 on:
   push:
@@ -10,47 +10,44 @@ permissions:
   contents: write
 
 jobs:
-  apply-and-validate:
+  materialize-and-certify:
     if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - name: Checkout expanded baseline
+      - name: Checkout current PR branch
         uses: actions/checkout@v4
         with:
           ref: agent/planning-authority-architecture
           fetch-depth: 1
 
-      - name: Recover verified architecture delta from repository API
+      - name: Recover verified architecture delta from current branch
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          BOOTSTRAP_COMMIT=b0630dedf9537f4d1de63178111593b2ed86eeb0
           : > /tmp/architecture.patch.xz.b64
-          for part in 00 01 02; do
-            api="https://api.github.com/repos/${GITHUB_REPOSITORY}/contents/.bootstrap/architecture.patch.xz.b64.part${part}?ref=${BOOTSTRAP_COMMIT}"
-            curl --fail --silent --show-error --location \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              -H "X-GitHub-Api-Version: 2022-11-28" \
-              "${api}" \
-              | python -c 'import json,sys,base64; print(base64.b64decode(json.load(sys.stdin)["content"]).decode("utf-8"), end="")' \
-              >> /tmp/architecture.patch.xz.b64
+          for part in 00 01 02 03; do
+            file=".bootstrap/current-architecture.patch.xz.b64.part${part}"
+            test -s "${file}"
+            cat "${file}" >> /tmp/architecture.patch.xz.b64
           done
           base64 --decode /tmp/architecture.patch.xz.b64 > /tmp/architecture.patch.xz
           echo "94da0e8d6ae09038cd6db09d1d1583183f3301ccf34a828797d453e1d38eda3c  /tmp/architecture.patch.xz" | sha256sum --check
           xz -t /tmp/architecture.patch.xz
           xz -dc /tmp/architecture.patch.xz > /tmp/architecture.patch
 
-      - name: Apply architecture delta
+      - name: Materialize v0.12 source
         shell: bash
         run: |
           set -euo pipefail
           patch --dry-run -p1 --batch --forward --fuzz=3 < /tmp/architecture.patch
           patch -p1 --batch --forward --fuzz=3 < /tmp/architecture.patch
           rm -f .github/workflows/apply-planning-authority.yml
+          rm -f .bootstrap/current-architecture.patch.xz.b64.part00 \
+                .bootstrap/current-architecture.patch.xz.b64.part01 \
+                .bootstrap/current-architecture.patch.xz.b64.part02 \
+                .bootstrap/current-architecture.patch.xz.b64.part03
+          rmdir .bootstrap 2>/dev/null || true
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -67,12 +64,28 @@ jobs:
       - name: Run repository doctor
         run: npm run doctor
 
-      - name: Commit validated v0.12 architecture
+      - name: Verify materialized tree is clean of bootstrap machinery
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e .github/workflows/apply-planning-authority.yml
+          test ! -e .bootstrap/current-architecture.patch.xz.b64.part00
+          test ! -e .bootstrap/current-architecture.patch.xz.b64.part01
+          test ! -e .bootstrap/current-architecture.patch.xz.b64.part02
+          test ! -e .bootstrap/current-architecture.patch.xz.b64.part03
+          test -f .github/workflows/ci.yml
+          test -f .github/workflows/build-park.yml
+          test -f src/lib/planning.mjs
+          test -f src/lib/material-palettes.mjs
+          test -f test/planning-fusion.test.mjs
+          test -f test/lidar-roof-authority.test.mjs
+
+      - name: Commit certified v0.12 source
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Rewrite Voxel Mapper around planning-authority fusion"
+          git commit -m "Materialize Voxel Mapper v0.12 planning-authority architecture"
           git push origin HEAD:agent/planning-authority-architecture
