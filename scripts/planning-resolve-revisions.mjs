@@ -5,7 +5,7 @@ import { resolvePlanningRevisionAuthority } from "../src/lib/planning-revision-r
 
 const args = parseArgs(process.argv.slice(2));
 if (!args.registered || !args.catalog || !args.out) {
-  console.error("Usage: planning-resolve-revisions.mjs --registered planning-registered-evidence.json --catalog planning-document-catalog.json --out FILE [--queue planning-document-queue.json] [--resolved-out FILE] [--reference-date ISO] [--strict]");
+  console.error("Usage: planning-resolve-revisions.mjs --registered planning-registered-evidence.json --catalog planning-document-catalog.json --out FILE [--queue planning-document-queue.json] [--resolved-out FILE] [--authority-out FILE] [--reference-date ISO] [--strict]");
   process.exit(2);
 }
 
@@ -29,6 +29,8 @@ await writeJson(args.out, {
   applicationSnapshotProvider: catalog.planningApplicationSnapshotProvider || null
 });
 if (args.resolvedOut) await writeJson(args.resolvedOut, result.resolvedEvidence);
+const authorityEvidence = filterAuthorityEvidence(result.resolvedEvidence);
+if (args.authorityOut) await writeJson(args.authorityOut, authorityEvidence);
 
 console.log(JSON.stringify({
   status: result.status,
@@ -39,11 +41,36 @@ console.log(JSON.stringify({
   conflicts: result.summary.conflicts,
   authoritativeGeometryCandidates: result.summary.authoritativeGeometryCandidates,
   out: path.resolve(args.out),
-  resolvedOut: args.resolvedOut ? path.resolve(args.resolvedOut) : null
+  resolvedOut: args.resolvedOut ? path.resolve(args.resolvedOut) : null,
+  authorityOut: args.authorityOut ? path.resolve(args.authorityOut) : null
 }, null, 2));
 
 if (args.strict && result.summary.unresolvedPages > 0) process.exitCode = 1;
 
+function filterAuthorityEvidence(evidence) {
+  const geometryCandidates = (evidence?.geometryCandidates || []).filter((entry) => entry.worldGeometryAuthority === true);
+  const verticalObservations = (evidence?.verticalObservations || []).filter((entry) => entry.worldGeometryAuthority === true);
+  const materialObservations = (evidence?.materialObservations || []).filter((entry) => entry.worldGeometryAuthority === true);
+  const drawingMetadata = (evidence?.drawingMetadata || []).filter((entry) => entry.worldGeometryAuthority === true);
+  return {
+    schemaVersion: 1,
+    coordinateSpace: "local-world-metres",
+    authorityScope: "planning-current-state-only",
+    worldGeometryReady: geometryCandidates.length > 0,
+    worldGeometryAuthority: true,
+    temporalResolutionRequired: false,
+    geometryCandidates,
+    verticalObservations,
+    materialObservations,
+    drawingMetadata,
+    counts: {
+      geometryCandidates: geometryCandidates.length,
+      verticalObservations: verticalObservations.length,
+      materialObservations: materialObservations.length,
+      drawingMetadata: drawingMetadata.length
+    }
+  };
+}
 function mergeApplicationSnapshots(existing, snapshot) {
   const keys = new Set([...Object.keys(existing || {}), ...Object.keys(snapshot || {})]);
   return Object.fromEntries([...keys].sort().map((key) => [key, {
