@@ -221,3 +221,72 @@ jobs:
             planning-vector-evidence.json
             planning-raster-fallback-queue.json
           retention-days: 7
+
+  georegister:
+    needs: [prepare, merge-extraction]
+    if: always() && needs.merge-extraction.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download normalized planning evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-vector-extraction-evidence
+      - name: Restore bbox OSM georegistration cache
+        uses: actions/cache@v4
+        with:
+          path: .tpmap-cache/planning-georeg-osm
+          key: planning-georeg-osm-v1-${{ inputs.bbox }}-${{ github.run_id }}
+          restore-keys: |
+            planning-georeg-osm-v1-${{ inputs.bbox }}-
+      - id: reference
+        name: Build current OSM spatial reference
+        continue-on-error: true
+        shell: bash
+        run: |
+          args=(--bbox "${{ inputs.bbox }}" --cache .tpmap-cache --out planning-georeg-reference.json)
+          if [[ "${{ inputs.refresh }}" == "true" ]]; then args+=(--refresh); fi
+          node scripts/planning-osm-reference.mjs "${args[@]}"
+      - name: Register planning pages against current spatial evidence
+        if: steps.reference.outcome == 'success'
+        run: node scripts/planning-georegister.mjs --evidence planning-vector-evidence.json --reference planning-georeg-reference.json --out planning-georegistration.json --registered-out planning-registered-evidence.json
+      - name: Record degraded registration when the reference is unavailable
+        if: steps.reference.outcome != 'success'
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const report = {
+            schemaVersion: 1,
+            status: 'unregistered',
+            reason: 'bbox-osm-reference-unavailable',
+            worldGeometryReady: false,
+            worldGeometryAuthority: false,
+            temporalResolutionRequired: true,
+            note: 'Planning extraction remains valid document-space evidence; generation should fall back to lower-authority spatial evidence rather than fail.'
+          };
+          fs.writeFileSync('planning-georegistration.json', JSON.stringify(report, null, 2) + '\n');
+          fs.writeFileSync('planning-registered-evidence.json', JSON.stringify({
+            schemaVersion: 1,
+            coordinateSpace: 'local-world-metres',
+            georegistrationStatus: 'unregistered',
+            worldGeometryReady: false,
+            worldGeometryAuthority: false,
+            geometryCandidates: [], verticalObservations: [], materialObservations: [], drawingMetadata: []
+          }, null, 2) + '\n');
+          NODE
+      - name: Upload planning spatial registration evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: planning-georegistration-evidence
+          path: |
+            planning-georegistration.json
+            planning-registered-evidence.json
+            planning-georeg-reference.json
+          if-no-files-found: ignore
+          retention-days: 7
