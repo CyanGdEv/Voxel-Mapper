@@ -58,7 +58,7 @@ test("current planning evidence wins geometry, height, elevation and material at
     })],
     materialObservations: [current({
       contentHash: "doc-a", pageNumber: 1, localX: 5, localZ: 5,
-      material: "red_tarmac", raw: "Red tarmac", confidence: 0.91
+      material: "brick", raw: "Brickwork", confidence: 0.91
     })],
     verticalObservations: [
       current({ contentHash: "doc-a", pageNumber: 1, localX: 4, localZ: 4, label: "FFL", valueM: 100, confidence: 0.94, datum: "AOD" }),
@@ -80,7 +80,7 @@ test("current planning evidence wins geometry, height, elevation and material at
   assert.equal(building.evidenceGraph.attributes.geometry.winner.authorityLayer, "planning-current-authority");
   assert.equal(building.evidenceGraph.attributes.height.winner.value, 12);
   assert.equal(building.evidenceGraph.attributes.groundElevation.winner.value, 100);
-  assert.equal(building.evidenceGraph.attributes.material.winner.value, "red_tarmac");
+  assert.equal(building.evidenceGraph.attributes.material.winner.value, "brick");
   assert.ok(building.evidenceGraph.attributes.geometry.alternatives.some((entry) => entry.authorityLayer === "osm"));
 
   const resolution = applyPlanningAuthorityWinners(map);
@@ -89,8 +89,8 @@ test("current planning evidence wins geometry, height, elevation and material at
   assert.deepEqual(building.localGeometry, polygon(0, 0, 10, 10));
   assert.equal(building.vertical.heightM, 12);
   assert.equal(building.vertical.elevationM, 100);
-  assert.equal(building.tags.material, "red_tarmac");
-  assert.equal(building.materialPalette.wall.key, "red_tarmac");
+  assert.equal(building.tags.material, "brick");
+  assert.equal(building.materialPalette.wall.key, "brick");
   assert.equal(building.evidenceResolution.geometry.authorityLayer, "planning-current-authority");
 });
 
@@ -132,7 +132,7 @@ test("current planning material does not replace a stronger manually surveyed ov
   await integratePlanningAuthorityEvidence(map, {
     planningAuthorityEvidenceData: {
       geometryCandidates: [], verticalObservations: [],
-      materialObservations: [current({ contentHash: "doc", pageNumber: 1, localX: 5, localZ: 5, material: "red_tarmac", raw: "Red tarmac", confidence: 0.9 })]
+      materialObservations: [current({ contentHash: "doc", pageNumber: 1, localX: 5, localZ: 5, material: "brick", raw: "Brickwork", confidence: 0.9 })]
     }
   });
   buildEvidenceGraph(map, {}, { referenceDate: "2026-08-15T00:00:00Z" });
