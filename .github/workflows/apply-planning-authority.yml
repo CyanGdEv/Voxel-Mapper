@@ -59,7 +59,19 @@ jobs:
         run: npm ci
 
       - name: Run complete test suite
-        run: npm test
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test-output.log
+
+      - name: Upload test diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v012-test-output-${{ github.run_id }}
+          path: test-output.log
+          if-no-files-found: error
+          retention-days: 3
 
       - name: Run repository doctor
         run: npm run doctor
@@ -84,6 +96,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -f test-output.log
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
