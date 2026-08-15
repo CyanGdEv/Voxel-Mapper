@@ -1,11 +1,74 @@
-name: Bootstrap planning-authority architecture
+name: Materialize v0.11.3 baseline
 
 on:
+  push:
+    branches:
+      - agent/planning-authority-architecture
   workflow_dispatch:
 
-# Temporarily disabled while the exact v0.12 source payload is staged.
+permissions:
+  contents: write
+
 jobs:
-  staged:
+  materialize-baseline:
+    if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - run: echo "Source payload staging in progress"
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/planning-authority-architecture
+          fetch-depth: 0
+
+      - name: Reconstruct exact historical v0.11.3 generator
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL "https://api.github.com/repos/CyanGdEv/Voxel-Mapping-Engine-/tarball/5ee087fb8d49d4a33319308a04427915f2b7f498" -o /tmp/v0113-wrapper.tar.gz
+          mkdir -p /tmp/v0113-wrapper /tmp/v0113-baseline
+          tar -xzf /tmp/v0113-wrapper.tar.gz --strip-components=1 -C /tmp/v0113-wrapper
+
+          SOURCE_ZIP=/tmp/v0113-wrapper/ThemePark_Map_v0.11.1_Aerial_Surface_Vegetation_Source.zip
+          echo "cdc31ca95010458ed967c37f735a6fbf723cae230c97b85deb9a7ee620370ba6  $SOURCE_ZIP" | sha256sum --check
+          unzip -q "$SOURCE_ZIP" -d /tmp/v0113-baseline
+          node /tmp/v0113-wrapper/scripts/apply-v0112-direct-world-palette-fix.mjs /tmp/v0113-baseline
+
+          cat /tmp/v0113-wrapper/patches/v0113-path-geometry-phase1/part-*.b64 > /tmp/v0113.patch.gz.b64
+          echo "39aeecf1c95c8aa83a876bc63f4e3bf98a228b06b94aa5f1ddd67802d39c436f  /tmp/v0113.patch.gz.b64" | sha256sum --check
+          base64 -d /tmp/v0113.patch.gz.b64 | gzip -dc > /tmp/v0113.patch
+          echo "6392166bfbbc51e07496bc8e78b5ca5a9f43d5d6c1c2cad8148c47a2eba74425  /tmp/v0113.patch" | sha256sum --check
+          patch -d /tmp/v0113-baseline -p1 --batch --forward < /tmp/v0113.patch
+
+          node --input-type=module - /tmp/v0113-baseline/package.json <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const pkg = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+          if (pkg.version !== '0.11.3') throw new Error(`Expected v0.11.3, got ${pkg.version}`);
+          console.log(`Verified baseline version ${pkg.version}`);
+          NODE
+
+          cp -a /tmp/v0113-baseline/. .
+          rm -rf .bootstrap
+          rm -f .github/workflows/bootstrap-planning-authority.yml
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies cleanly
+        run: npm ci
+
+      - name: Run baseline tests
+        run: npm test
+
+      - name: Commit expanded baseline source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Materialize v0.11.3 baseline source"
+          git push origin HEAD:agent/planning-authority-architecture
