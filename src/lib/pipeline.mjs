@@ -48,6 +48,11 @@ export async function buildPark(options = {}, progress = () => {}) {
   const compilation = compileMap({ parkName, map, sources, accuracy, options });
 
   const geojsonPath = await writeJson(path.join(outputDir, `${slug}.geojson`), map.geojson);
+  const sourcePlanPath = await writeJson(path.join(outputDir, "source-plan.json"), sources.sourcePlan || null);
+  const planningAcquisitionPath = await writeJson(
+    path.join(outputDir, "planning-acquisition.json"),
+    sources.planning || { provider: "none", status: "not-acquired", applications: [], jurisdictions: [] }
+  );
   const evidencePath = await writeJson(path.join(outputDir, "evidence.json"), {
     schemaVersion: 2,
     parkName,
@@ -56,8 +61,11 @@ export async function buildPark(options = {}, progress = () => {}) {
     areaKm2: sources.areaKm2,
     source: {
       geocoder: sources.geocoder,
+      sourcePlan: sources.sourcePlan,
+      autoSelection: sources.autoSelection,
       osm: withoutLargeData(sources.osm),
       elevation: withoutLargeData(sources.elevation),
+      planning: compactPlanningAcquisition(sources.planning),
       orthophoto: withoutLargeData(sources.orthophoto),
       mapFusion: sources.mapFusion,
       planningFusion: sources.planningFusion,
@@ -163,9 +171,12 @@ export async function buildPark(options = {}, progress = () => {}) {
     confidence: accuracy.score,
     grade: accuracy.grade,
     exact3d: accuracy.exact3d,
+    sourceGaps: sources.sourcePlan?.gaps || [],
     paths: {
       geojson: geojsonPath,
       evidence: evidencePath,
+      sourcePlan: sourcePlanPath,
+      planningAcquisition: planningAcquisitionPath,
       fidelity: fidelityPath,
       evidenceGraph: evidenceGraphPath,
       orthophotoEvidence: orthophotoEvidencePath,
@@ -191,6 +202,8 @@ export async function buildPark(options = {}, progress = () => {}) {
     },
     stats: {
       ...compilation.stats,
+      planningApplications: sources.planning?.applicationCount || 0,
+      planningJurisdictions: sources.planning?.jurisdictionCount || 0,
       worldChunks: world?.chunkCount || 0,
       worldValidation: world?.validation?.status || null
     },
@@ -209,6 +222,21 @@ function withoutLargeData(value) {
     dataHash: data ? sha256(data) : undefined,
     pointCount: points?.length,
     query: query || undefined
+  };
+}
+
+function compactPlanningAcquisition(value) {
+  if (!value) return value;
+  const { applications, jurisdictions, ...summary } = value;
+  return {
+    ...summary,
+    jurisdictionCount: value.jurisdictionCount ?? jurisdictions?.length ?? 0,
+    applicationCount: value.applicationCount ?? applications?.length ?? 0,
+    jurisdictions: (jurisdictions || []).map((entry) => ({
+      entity: entry.entity ?? null,
+      reference: entry.reference ?? null,
+      name: entry.name ?? null
+    }))
   };
 }
 
