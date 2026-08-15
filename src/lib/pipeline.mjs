@@ -63,6 +63,15 @@ export async function buildPark(options = {}, progress = () => {}) {
 
   progress("Compiling 1 m raster and chunked Bedrock operations");
   const compilation = compileMap({ parkName, map, sources, accuracy, options });
+  const compilationPath = options.compilationOut
+    ? await writeJson(path.resolve(options.compilationOut), {
+        schemaVersion: 1,
+        parkName,
+        slug,
+        generatedAt: new Date().toISOString(),
+        compilation
+      })
+    : null;
 
   const geojsonPath = await writeJson(path.join(outputDir, `${slug}.geojson`), map.geojson);
   const sourcePlanPath = await writeJson(path.join(outputDir, "source-plan.json"), sources.sourcePlan || null);
@@ -217,6 +226,7 @@ export async function buildPark(options = {}, progress = () => {}) {
       planningAcquisition: planningAcquisitionPath,
       planningDocumentQueue: planningDocumentQueuePath,
       planningAuthorityFusion: planningAuthorityFusionPath,
+      compilation: compilationPath,
       fidelity: fidelityPath,
       evidenceGraph: evidenceGraphPath,
       orthophotoEvidence: orthophotoEvidencePath,
