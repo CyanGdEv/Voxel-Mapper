@@ -28,12 +28,6 @@ try {
   }, { cacheDir: root, pdfEngine });
   enrichPlanningTextEvidence(extraction);
 
-  console.log(JSON.stringify({
-    pdfJsVersion: pdfEngine.version,
-    positionedText: extraction.pages[0]?.text?.items || [],
-    materialEvidence: extraction.normalizedEvidence?.materialObservations || []
-  }, null, 2));
-
   assert.equal(extraction.status, "extracted");
   assert.equal(extraction.pageCount, 1);
   assert.ok(extraction.pages[0].vector.pathCount >= 1, "expected vector rectangle from real PDF.js operator list");
@@ -41,9 +35,11 @@ try {
   assert.equal(extraction.normalizedEvidence.worldGeometryReady, false);
   assert.equal(extraction.pages[0].metadata?.scaleDenominator, 100);
   assert.ok(extraction.normalizedEvidence.verticalObservations.some((entry) => entry.valueM === 12.5));
-  assert.ok(extraction.normalizedEvidence.materialObservations.some((entry) => entry.material === "red_tarmac"));
-  assert.ok(extraction.normalizedEvidence.materialObservations.some((entry) => entry.source === "pdf-text-adjacent-run-material-label"));
+  const redTarmac = extraction.normalizedEvidence.materialObservations.find((entry) => entry.material === "red_tarmac");
+  assert.ok(redTarmac, "expected CAD-joined Redtarmac to normalize to red_tarmac");
+  assert.match(redTarmac.raw, /red\s*tarmac/i);
   console.log(JSON.stringify({
+    pdfJsVersion: pdfEngine.version,
     status: extraction.status,
     textItems: extraction.pages[0].text.itemCount,
     vectorPaths: extraction.pages[0].vector.pathCount,
@@ -51,7 +47,7 @@ try {
     scale: extraction.pages[0].metadata?.scaleDenominator,
     verticalObservations: extraction.normalizedEvidence.verticalObservations.length,
     materialObservations: extraction.normalizedEvidence.materialObservations.length,
-    splitRunMaterialRecovered: true
+    cadJoinedMaterialRecovered: redTarmac.raw
   }, null, 2));
 } finally {
   await rm(root, { recursive: true, force: true });
