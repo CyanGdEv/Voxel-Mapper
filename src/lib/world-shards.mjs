@@ -60,6 +60,7 @@ export function planWorldShards(compilation, options = {}) {
   const spawn = compilation?.meta?.spawnLocal || { x: 0, z: 0 };
   const spawnChunk = { x: floorDiv(Number(spawn.x) || 0, 16), z: floorDiv(Number(spawn.z) || 0, 16) };
   const spawnShard = shards.find((shard) => containsChunk(shard, spawnChunk.x, spawnChunk.z))?.id ?? shards[0].id;
+  const signs = compilation.signs || [];
   const plan = {
     schemaVersion: 1,
     strategy: "balanced-long-axis-bands-v1",
@@ -73,8 +74,9 @@ export function planWorldShards(compilation, options = {}) {
     activeShardIds: shards.map((shard) => shard.id),
     spawnChunk,
     spawnShard,
-    fullSignCount: (compilation.signs || []).length,
-    signs: compilation.signs || [],
+    fullSignCount: signs.length,
+    buildingSignCount: signs.filter((sign) => !sign.role || sign.role === "building").length,
+    signs,
     shards
   };
   plan.planHash = contentHash(plan);
@@ -100,7 +102,8 @@ export function createWorldShardBundle(envelope, plan, shardId, worldOptions = {
       bounds: plan.bounds,
       chunkCount: plan.chunkCount,
       worldMargin: plan.worldMargin,
-      fullSignCount: plan.fullSignCount
+      fullSignCount: plan.fullSignCount,
+      buildingSignCount: plan.buildingSignCount
     },
     worldOptions: {
       ...worldOptions,
