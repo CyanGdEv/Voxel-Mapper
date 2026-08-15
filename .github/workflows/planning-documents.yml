@@ -1,0 +1,148 @@
+name: Planning document acquisition
+
+on:
+  workflow_dispatch:
+    inputs:
+      bbox:
+        description: "WGS84 bbox: south,west,north,east"
+        required: true
+        type: string
+      max_applications:
+        description: "Maximum intersecting planning applications (hard cap 680)"
+        required: false
+        default: "680"
+        type: string
+      shards:
+        description: "Maximum document shards"
+        required: false
+        default: "20"
+        type: string
+      refresh:
+        description: "Refresh planning index and document caches"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      active_shards: ${{ steps.plan.outputs.active_shards }}
+      queue_items: ${{ steps.plan.outputs.queue_items }}
+      applications: ${{ steps.plan.outputs.applications }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Restore planning index cache
+        uses: actions/cache@v4
+        with:
+          path: .tpmap-cache/planning-data-england
+          key: planning-index-v1-${{ inputs.bbox }}-${{ github.run_id }}
+          restore-keys: |
+            planning-index-v1-${{ inputs.bbox }}-
+      - id: plan
+        name: Discover applications and build document queue
+        shell: bash
+        run: |
+          args=(--bbox "${{ inputs.bbox }}" --max-applications "${{ inputs.max_applications }}" --shards "${{ inputs.shards }}" --out planning-document-queue.json)
+          if [[ "${{ inputs.refresh }}" == "true" ]]; then args+=(--refresh); fi
+          node scripts/planning-document-plan.mjs "${args[@]}"
+      - name: Upload document queue
+        uses: actions/upload-artifact@v4
+        with:
+          name: planning-document-queue
+          path: planning-document-queue.json
+          retention-days: 7
+
+  acquire:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: ${{ fromJSON(needs.prepare.outputs.active_shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download document queue
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-document-queue
+      - name: Restore immutable planning document cache
+        uses: actions/cache@v4
+        with:
+          path: .tpmap-cache/planning-documents
+          key: planning-documents-v1-${{ inputs.bbox }}-shard-${{ matrix.shard }}-${{ github.run_id }}
+          restore-keys: |
+            planning-documents-v1-${{ inputs.bbox }}-shard-${{ matrix.shard }}-
+      - name: Discover and acquire shard
+        shell: bash
+        run: |
+          args=(--queue planning-document-queue.json --shard "${{ matrix.shard }}" --cache .tpmap-cache --out "planning-documents-shard-${{ matrix.shard }}.json" --concurrency 6)
+          if [[ "${{ inputs.refresh }}" == "true" ]]; then args+=(--refresh); fi
+          node scripts/planning-document-worker.mjs "${args[@]}"
+      - name: Upload shard manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: planning-documents-shard-${{ matrix.shard }}
+          path: planning-documents-shard-${{ matrix.shard }}.json
+          retention-days: 7
+
+  summary:
+    needs: [prepare, acquire]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download shard manifests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: planning-documents-shard-*
+          path: shard-manifests
+          merge-multiple: true
+      - name: Write acquisition summary
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const dir = 'shard-manifests';
+          const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => f.endsWith('.json')) : [];
+          const manifests = files.map(f => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
+          const summary = {
+            schemaVersion: 1,
+            bbox: process.env.BBOX,
+            applications: Number(process.env.APPLICATIONS || 0),
+            queueItems: Number(process.env.QUEUE_ITEMS || 0),
+            shards: manifests.length,
+            inputItems: manifests.reduce((n, m) => n + (m.inputItems || 0), 0),
+            downloadedDocuments: manifests.reduce((n, m) => n + (m.downloadedDocuments || 0), 0),
+            uniqueContentObjectsByShard: manifests.reduce((n, m) => n + (m.uniqueContentObjects || 0), 0),
+            discoveredLinks: manifests.reduce((n, m) => n + (m.discoveredLinks || 0), 0),
+            pendingPortalLinks: manifests.reduce((n, m) => n + (m.pendingPortalLinks || 0), 0),
+            failures: manifests.flatMap(m => m.failures || [])
+          };
+          fs.writeFileSync('planning-document-acquisition-summary.json', JSON.stringify(summary, null, 2) + '\n');
+          console.log(JSON.stringify(summary, null, 2));
+          NODE
+        env:
+          BBOX: ${{ inputs.bbox }}
+          APPLICATIONS: ${{ needs.prepare.outputs.applications }}
+          QUEUE_ITEMS: ${{ needs.prepare.outputs.queue_items }}
+      - name: Upload acquisition summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: planning-document-acquisition-summary
+          path: planning-document-acquisition-summary.json
+          retention-days: 7
