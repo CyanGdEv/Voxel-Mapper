@@ -30,14 +30,20 @@ export function parseGenerateArgs(argv) {
   return result;
 }
 
-export async function buildBboxWorldOptions(args, exists = fileExists) {
+export async function buildBboxWorldOptions(args, exists = fileExists, materializeBoundary = true) {
   const authorityPath = path.resolve(args.authority);
   const hasAuthority = await exists(authorityPath);
+  const boundaryOverridePath = path.resolve(args.cache, "bbox-world-boundary.geojson");
+  if (materializeBoundary) await writeBboxBoundaryOverride(args.bbox, boundaryOverridePath);
   return {
     options: {
       bbox: args.bbox,
       out: path.resolve(args.out),
       cache: path.resolve(args.cache),
+      // The player bbox is the world-generation envelope. OSM/planning park
+      // boundaries remain evidence features inside this verified override and
+      // are not allowed to silently shrink the requested chunk roster.
+      override: [boundaryOverridePath],
       noAddon: true,
       buildings: "shells",
       accuracyMode: "plausible",
@@ -52,8 +58,57 @@ export async function buildBboxWorldOptions(args, exists = fileExists) {
       requestedPath: authorityPath,
       available: hasAuthority,
       mode: hasAuthority ? "current-planning-authority" : "lower-authority-fallback"
+    },
+    generationEnvelope: {
+      mode: "bbox",
+      path: boundaryOverridePath,
+      bbox: args.bbox
     }
   };
+}
+
+export async function writeBboxBoundaryOverride(bboxText, filename) {
+  const bbox = parseBboxText(bboxText);
+  await mkdir(path.dirname(filename), { recursive: true });
+  return writeJson(filename, {
+    type: "FeatureCollection",
+    name: "Voxel Mapper generation bbox",
+    features: [{
+      type: "Feature",
+      id: "bbox:world-generation-envelope",
+      properties: {
+        id: "bbox:world-generation-envelope",
+        name: "World generation bbox",
+        kind: "park_boundary",
+        subtype: "generation_bbox",
+        verified: true,
+        source_name: "User supplied generation bbox",
+        license: null
+      },
+      geometry: {
+        type: "Polygon",
+        coordinates: [[
+          [bbox.west, bbox.south],
+          [bbox.east, bbox.south],
+          [bbox.east, bbox.north],
+          [bbox.west, bbox.north],
+          [bbox.west, bbox.south]
+        ]]
+      }
+    }]
+  });
+}
+
+export function parseBboxText(value) {
+  const parts = String(value).split(",").map((entry) => Number(entry.trim()));
+  if (parts.length !== 4 || parts.some((entry) => !Number.isFinite(entry))) {
+    throw new Error("bbox must be south,west,north,east");
+  }
+  const [south, west, north, east] = parts;
+  if (south < -90 || north > 90 || west < -180 || east > 180 || south >= north || west >= east) {
+    throw new Error("bbox coordinates are invalid or reversed");
+  }
+  return { south, west, north, east };
 }
 
 export async function generateBboxWorld(args, progress = (message) => console.error(`• ${message}`)) {
@@ -73,6 +128,7 @@ export async function generateBboxWorld(args, progress = (message) => console.er
   const summary = {
     schemaVersion: 1,
     bbox: args.bbox,
+    generationEnvelope: handoff.generationEnvelope,
     authorityHandoff: handoff.authority,
     generatedWorld: downloadPath,
     worldChunks: result.stats?.worldChunks || 0,
