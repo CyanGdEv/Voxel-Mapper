@@ -141,3 +141,13 @@
 - Added variable-width tagged path rasterization.
 - Added explicit kerb/path-edge rendering.
 - Improved guest/service/queue route classification and path evidence metrics.
+
+## 0.12.0
+
+- Rebased Voxel Mapper on the v0.11.3 high-fidelity source baseline.
+- Added planning application / architect drawing authority fusion with a 680-application default cap.
+- Added explicit and automatic geometry replace/delete/retag/add operations.
+- Added planning material schedule palettes and planning-authoritative path appearance.
+- Changed LiDAR roof handling so DSM roof geometry is retained even when building height comes from a tagged/planning source.
+- Defaulted building compilation to 3D shells so LiDAR roof evidence is represented.
+- Preserved the existing terrain slope/DTM logic.

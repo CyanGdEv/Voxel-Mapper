@@ -57,6 +57,7 @@ export async function buildPark(options = {}, progress = () => {}) {
       elevation: withoutLargeData(sources.elevation),
       orthophoto: withoutLargeData(sources.orthophoto),
       mapFusion: sources.mapFusion,
+      planningFusion: sources.planningFusion,
       acquiredAt: sources.acquiredAt
     },
     fidelity,
@@ -91,6 +92,12 @@ export async function buildPark(options = {}, progress = () => {}) {
   );
   const sourceFusionPath = await writeJson(
     path.join(outputDir, "source-fusion.json"), map.sourceFusion
+  );
+  const planningFusionPath = await writeJson(
+    path.join(outputDir, "planning-fusion.json"), map.planningFusion
+  );
+  const planningMaterialsPath = await writeJson(
+    path.join(outputDir, "planning-material-palettes.json"), map.planningFusion?.materialPalettes || { schemaVersion: 1, builtins: 0, custom: 0, customPalettes: [] }
   );
   const buildingSigns = compilation.signs.filter((sign) => !sign.role || sign.role === "building");
   const buildingLabelsPath = await writeJson(path.join(outputDir, "building-labels.json"), {
@@ -163,6 +170,8 @@ export async function buildPark(options = {}, progress = () => {}) {
       pathTopologyQa: pathTopologyQaPath,
       terrainDetails: terrainDetailsPath,
       sourceFusion: sourceFusionPath,
+      planningFusion: planningFusionPath,
+      planningMaterials: planningMaterialsPath,
       buildingLabels: buildingLabelsPath,
       rideProfiles: rideProfilesPath,
       report: reportPath,

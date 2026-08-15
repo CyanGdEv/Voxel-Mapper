@@ -3,6 +3,7 @@ import { UserError, invariant } from "./errors.mjs";
 import { RIDE_EVIDENCE_LEGEND } from "./ride-profile.mjs";
 import { blockForSurfaceStyle, isBridgeFeature } from "./fidelity.mjs";
 import { terrainStyleForAerialClass, vegetationPaletteForRgb } from "./aerial-appearance.mjs";
+import { primaryMaterialBlock } from "./material-palettes.mjs";
 
 const SURFACES = [
   "minecraft:grass_block",
@@ -33,7 +34,7 @@ export function compileMap({ parkName, map, sources, accuracy, options = {} }) {
   if (!new Set(["verified", "plausible"]).has(accuracyMode)) {
     throw new UserError("--accuracy-mode must be verified or plausible");
   }
-  const buildingMode = options.buildings || "markers";
+  const buildingMode = options.buildings || "shells";
   if (!new Set(["markers", "shells"]).has(buildingMode)) {
     throw new UserError("--buildings must be markers or shells");
   }
@@ -558,6 +559,7 @@ function compileVerticalFeatures(context) {
       let heightM = feature.vertical.heightM;
       const measuredByLidar = feature.kind === "building" &&
         String(feature.vertical.heightSource || "").endsWith("dsm-minus-dtm");
+      const lidarRoofAvailable = feature.kind === "building" && feature.roof?.source === "lidar-dsm-surface";
       if (measuredByLidar) stats.measuredBuildingHeights += 1;
       if (heightM === null) {
         if (accuracyMode === "plausible") {
@@ -569,7 +571,7 @@ function compileVerticalFeatures(context) {
         }
       }
       const wallBlock = buildingBlock(feature);
-      if (measuredByLidar && typeof elevation?.samplePairLocal === "function") {
+      if (lidarRoofAvailable && typeof elevation?.samplePairLocal === "function") {
         stats.lidarRoofCells += compileLidarBuilding({
           add, feature, polygons, rings, mask, elevationY, minX, minZ, width, height,
           minDatum, elevation, heightM, wallBlock
@@ -2852,23 +2854,29 @@ function inferredHeight(feature) {
 }
 
 function buildingBlock(feature) {
-  if (feature.tags?.material === "wood" || feature.tags?.["building:material"] === "wood") return "minecraft:spruce_planks";
-  if (feature.tags?.["building:material"] === "brick") return "minecraft:brick_block";
-  return feature.vertical.heightM === null ? "minecraft:yellow_concrete" : "minecraft:stone_bricks";
+  const fallback = feature.tags?.material === "wood" || feature.tags?.["building:material"] === "wood"
+    ? "minecraft:spruce_planks"
+    : feature.tags?.["building:material"] === "brick"
+      ? "minecraft:brick_block"
+      : feature.vertical.heightM === null ? "minecraft:yellow_concrete" : "minecraft:stone_bricks";
+  return primaryMaterialBlock(feature, "wall", fallback);
 }
 
 function roofBlock(feature) {
-  if (feature.tags?.["roof:material"] === "glass") return "minecraft:glass";
-  return feature.vertical.heightM === null ? "minecraft:yellow_concrete" : "minecraft:deepslate_tiles";
+  const fallback = feature.tags?.["roof:material"] === "glass"
+    ? "minecraft:glass"
+    : feature.vertical.heightM === null ? "minecraft:yellow_concrete" : "minecraft:deepslate_tiles";
+  return primaryMaterialBlock(feature, "roof", fallback);
 }
 
 function buildingFloorBlock(feature) {
-  if (feature.tags?.material === "wood" || feature.tags?.["building:material"] === "wood") return "minecraft:spruce_planks";
-  return "minecraft:smooth_stone";
+  const fallback = feature.tags?.material === "wood" || feature.tags?.["building:material"] === "wood"
+    ? "minecraft:spruce_planks" : "minecraft:smooth_stone";
+  return primaryMaterialBlock(feature, "floor", fallback);
 }
 
 function barrierBlock(feature) {
-  return feature.subtype === "wall" ? "minecraft:stone_bricks" : "minecraft:oak_fence";
+  return primaryMaterialBlock(feature, "barrier", feature.subtype === "wall" ? "minecraft:stone_bricks" : "minecraft:oak_fence");
 }
 
 function detailMarkerBlock(feature) {

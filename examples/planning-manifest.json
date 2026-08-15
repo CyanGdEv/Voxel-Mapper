@@ -1,0 +1,45 @@
+{
+  "materials": [
+    { "code": "P01", "name": "Red tarmac", "role": "surface", "palette": "red_tarmac" },
+    { "code": "B01", "name": "Brick", "role": "wall", "palette": "brick" },
+    { "code": "R01", "name": "Slate roof", "role": "roof", "palette": "slate_roof" }
+  ],
+  "applications": [
+    {
+      "reference": "EXAMPLE/001",
+      "source_url": "https://example.invalid/planning/EXAMPLE-001",
+      "license": "example-only",
+      "features": [
+        {
+          "type": "Feature",
+          "properties": {
+            "operation": "replace",
+            "target": "osm:way:123456",
+            "kind": "path",
+            "name": "Proposed guest path",
+            "surface_material_code": "P01",
+            "width": 5
+          },
+          "geometry": {
+            "type": "LineString",
+            "coordinates": [[-1.0001, 52.0001], [-1.0000, 52.0002]]
+          }
+        },
+        {
+          "type": "Feature",
+          "properties": {
+            "operation": "add",
+            "kind": "building",
+            "name": "New station building",
+            "building_material_code": "B01",
+            "roof_material_code": "R01"
+          },
+          "geometry": {
+            "type": "Polygon",
+            "coordinates": [[[-1.0002,52.0002],[-1.0001,52.0002],[-1.0001,52.0003],[-1.0002,52.0003],[-1.0002,52.0002]]]
+          }
+        }
+      ]
+    }
+  ]
+}

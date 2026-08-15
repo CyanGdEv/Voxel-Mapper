@@ -60,7 +60,10 @@ test("fills missing building heights from LiDAR while retaining tagged conflicts
   assert.equal(untagged.vertical.heightM, 10);
   assert.equal(untagged.vertical.heightSource, "ea-lidar-dsm-minus-dtm");
   assert.equal(untagged.verification.vertical, "measured-lidar");
+  assert.equal(untagged.roof.source, "lidar-dsm-surface");
   assert.equal(tagged.vertical.heightM, 3);
+  assert.equal(tagged.roof.source, "lidar-dsm-surface");
+  assert.equal(stats.roofProfiles, 2);
   assert.equal(tagged.vertical.lidarComparison.measuredHeightM, 10);
   assert.equal(tagged.vertical.lidarComparison.conflict, true);
 });

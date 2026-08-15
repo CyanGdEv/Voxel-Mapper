@@ -1,4 +1,28 @@
-# ThemePark Map
+# Voxel Mapper
+
+## v0.12.0 planning-authority architecture
+
+Voxel Mapper now uses **OSM as the base geometry/reference layer and planning applications as a higher geometry authority**. Architect-drawing observations can automatically or explicitly replace, delete, retag, or add geometry. LiDAR DSM/DTM is then sampled against the final fused building footprint, allowing the world compiler to retain the baseline terrain while reconstructing building roofs from the correct plan shape.
+
+The authority order is: **verified manual override > planning drawing > OSM base > secondary gap-fill evidence**. Planning geometry is locked so lower-confidence path-repair logic cannot silently reshape it. The default planning limit is **680 applications per build**.
+
+Planning material schedules are converted to Minecraft palettes by role (`surface`, `wall`, `roof`, `floor`, `barrier`). Planning material evidence wins over imagery classification for the affected feature. See [`PLANNING_FUSION_ARCHITECTURE.md`](PLANNING_FUSION_ARCHITECTURE.md) and [`examples/planning-manifest.json`](examples/planning-manifest.json).
+
+Example planning-authoritative build:
+
+```bash
+node src/cli.mjs build \
+  --park-name "Alton Towers Resort" \
+  --osm data/alton.overpass.json \
+  --bbox SOUTH,WEST,NORTH,EAST \
+  --planning data/planning-manifest.json \
+  --elevation ea-lidar \
+  --buildings shells \
+  --accuracy-mode plausible \
+  --out out/alton-towers
+```
+
+The **v0.11.3 terrain slope and terrain-detail logic is intentionally retained**. Planning features do not alter DTM terrain unless a future explicit earthworks/contour evidence layer is introduced.
 
 
 ## v0.11.1 appearance and vegetation upgrade
@@ -47,6 +71,8 @@ Each build also produces:
 - orthophoto path-edge observations and QA GeoJSON when licensed imagery is supplied;
 - recovered walkable-area polygons, junction graph evidence, and QA GeoJSON when topology recovery is enabled;
 - source-fusion and terrain-detail manifests identifying every accepted/withheld non-OSM feature and every natural-surface/rock observation;
+- `planning-fusion.json` with planning application counts, edit decisions, automatic/explicit matches and authority policy;
+- `planning-material-palettes.json` with the resolved architect/planning material schedules;
 - a per-ride 3D evidence file with vertical/banking coverage, confidence, sources, and every sampled point;
 - a world manifest with chunk bounds, spawn, format versions, SHA-256, and validation result;
 - an optional legacy `.mcaddon` runtime builder for placing the same map into another world.
@@ -156,6 +182,29 @@ node src/cli.mjs build \
 `--public-data` accepts any WGS84 GeoJSON FeatureCollection from a park open-data portal, local authority, government survey, planning dataset, or rights-cleared extraction pipeline. Each feature or collection must provide `source_name`, `source_url`, and `license`; `checked_at`, `accuracy_m`, and `verified` are retained when supplied. Use `replaces=osm:way:...` only when that source is intended to supersede a specific feature. See `examples/public-terrain-observations.geojson`.
 
 The output `source-fusion.json` records file hashes, accepted features, duplicates, partial overlaps, replacements, providers, and the merge policy. Overture is useful additional coverage, but it is not counted as independent corroboration of an OSM-derived feature.
+
+### Fuse planning applications and architect drawings
+
+Planning is deliberately separate from generic `--public-data`. Use `--planning` for higher-authority planning evidence:
+
+```bash
+node src/cli.mjs build \
+  --park-name "Park Name" \
+  --osm data/park.overpass.json \
+  --bbox SOUTH,WEST,NORTH,EAST \
+  --planning data/planning-manifest.json \
+  --max-planning-applications 680 \
+  --planning-match-tolerance-m 8 \
+  --elevation ea-lidar \
+  --buildings shells \
+  --out out/park-name
+```
+
+A planning input may be a WGS84 GeoJSON FeatureCollection or a manifest containing up to 680 applications by default. Each observation can use `operation=add|replace|delete|retag|auto`. Explicit `target=osm:way:...` is preferred when the extraction pipeline can retain a source correspondence; otherwise `auto` uses compatible feature type, geometry overlap, shape distance, centroid distance and name agreement, and refuses ambiguous matches.
+
+Architectural material schedules can define codes such as `P01`, `B01`, and `R01` and map them to built-in or custom weighted block palettes. The resolved material is attached to the planning feature before appearance/fidelity analysis, so explicit planning materials outrank orthophoto classification.
+
+LiDAR roof sampling happens after planning fusion. This means a proposed/corrected building footprint can replace stale OSM geometry first, then DSM roof elevations are sampled inside that final footprint. The declared planning height can remain intact while the actual roof surface still comes from LiDAR.
 
 ### Add a 3D coaster profile
 

@@ -5,7 +5,7 @@ import { UserError } from "./lib/errors.mjs";
 import { readJson } from "./lib/io.mjs";
 import { buildPark } from "./lib/pipeline.mjs";
 
-const HELP = `ThemePark Map 0.11.3 — universal evidence-fusion 1:1 park-to-Bedrock compiler
+const HELP = `Voxel Mapper 0.12.0 — planning-authoritative 1:1 park-to-Bedrock compiler
 
 Usage
   themepark-map build [options]
@@ -29,8 +29,12 @@ Core options
   --osm FILE                       Offline Overpass JSON; bypasses network map fetch
   --overture FILE                  Overture GeoJSON gap-fill input; repeatable
   --public-data FILE               Licensed public/park GIS GeoJSON; repeatable
+  --planning FILE                  Planning manifest or extracted WGS84 GeoJSON; repeatable
+  --max-planning-applications 680  Planning-application safety cap
+  --planning-match-tolerance-m 8   Spatial match tolerance for automatic planning overrides
+  --planning-min-match-score .64   Minimum unique match score before planning replaces base geometry
   --source-fusion-tolerance-m 3    Overture duplicate/overlap comparison tolerance
-  --override FILE                  Verified GeoJSON override; repeatable
+  --override FILE                  Final verified GeoJSON override; repeatable
   --out DIRECTORY                  Output directory
   --accuracy-mode verified|plausible
                                     Unknown vertical detail stays marked or becomes an explicit estimate
@@ -154,7 +158,7 @@ Vegetation and canopy reconstruction
 
 Direct Bedrock world compiler
   --scale 1                         Fixed: one block per metre
-  --buildings markers|shells        Ground outlines + named signs (default), or legacy 3D shells
+  --buildings markers|shells        3D shells with LiDAR roofs (default), or plan markers
   --path-width-mode inferred|source-only
                                     Use disclosed route-class priors when width is absent (default), or 1-block evidence markers
   --ride-terrain-mode inferred|evidence|off

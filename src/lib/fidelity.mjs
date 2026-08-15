@@ -144,6 +144,39 @@ export function enrichUniversalFidelity(map, sources, options = {}) {
 }
 
 export function deriveSurfaceStyle(feature, options = {}) {
+  const planningPalette = feature.materialPalette?.surface;
+  if (planningPalette?.blocks?.length) {
+    const selected = planningPalette.blocks.slice(0, 3);
+    while (selected.length < 3) selected.push(selected.at(-1));
+    const total = selected.reduce((sum, entry) => sum + Number(entry.weight || 0), 0) || 1;
+    return {
+      schemaVersion: 1,
+      material: planningPalette.key,
+      materialObservedAs: planningPalette.name,
+      materialSource: {
+        provider: feature.source?.provider || "Planning application / architect drawing",
+        applicationReference: feature.source?.applicationReference || null,
+        drawingId: feature.source?.drawingId || null,
+        method: "planning material schedule"
+      },
+      colour: null,
+      colourObservedAs: null,
+      colourSource: null,
+      nearestBlockColourDeltaE76: null,
+      pattern: planningPalette.pattern || "mixed",
+      patternObservedAs: planningPalette.pattern || null,
+      patternSource: { provider: feature.source?.provider || "Planning application / architect drawing", method: "planning material palette" },
+      primaryBlock: selected[0].block,
+      secondaryBlock: selected[1].block,
+      tertiaryBlock: selected[2].block,
+      paletteBlocks: selected.map((entry) => entry.block),
+      paletteWeights: selected.map((entry) => entry.weight / total),
+      patternScale: 1,
+      patternRotation: normalizePatternRotation(feature.tags?.pattern_direction || feature.tags?.direction),
+      appearanceStatus: "planning-authoritative",
+      confidence: 0.98
+    };
+  }
   const tags = feature.tags || {};
   const image = feature.orthophoto?.path?.status === "accepted" &&
     feature.orthophoto.path.compilationEligible !== false ? feature.orthophoto.path : null;

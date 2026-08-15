@@ -552,7 +552,8 @@ test("runs the offline 1:1 pipeline and packages a prebuilt Bedrock world", asyn
     elevation: "none",
     out: directory,
     maxCells: 200_000,
-    accuracyMode: "verified"
+    accuracyMode: "verified",
+    buildings: "markers"
   });
   assert.equal(result.parkName, "Fixture Park");
   assert.equal(result.exact3d, false);

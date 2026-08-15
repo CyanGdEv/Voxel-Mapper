@@ -116,3 +116,15 @@ The winning value retains every source record and conflict. Missing values remai
 | Evidence | Every feature exposes provider, date, resolution/accuracy where available, licence, method, and confidence |
 
 The correct product promise is “high fidelity where source capability exists, explicit gaps everywhere else,” not a universal guarantee that public data contains every real-world detail.
+
+## v0.12 planning-authority overlay
+
+The v0.11 source cascade is now wrapped by an explicit geometry-authority stack for planning reconstruction:
+
+1. OSM is normalized first and establishes the base park plan/reference frame.
+2. Overture and generic public-data inputs remain conservative gap/observation layers.
+3. Planning applications and architect-drawing extractions are applied as authority rank 300 and may add, replace, retag, or delete lower-authority features.
+4. Verified manual/survey overrides remain authority rank 400.
+5. LiDAR DSM/DTM building sampling runs after geometry authority has settled so roof samples use the final footprint.
+
+Planning geometry is locked against lower-authority path-gap repairs. Planning does not alter the existing DTM/terrain slope pipeline; explicit proposed contours/spot levels would require a separate future earthworks evidence layer.

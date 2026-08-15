@@ -9,6 +9,7 @@ import {
 } from "./geo.mjs";
 import { readJson, sha256 } from "./io.mjs";
 import { fuseAdditionalMapSources } from "./source-fusion.mjs";
+import { fusePlanningApplications } from "./planning.mjs";
 
 export async function normalizeMap(sources, options = {}) {
   const projector = createProjector(sources.center);
@@ -20,6 +21,13 @@ export async function normalizeMap(sources, options = {}) {
 
   const sourceFusion = await fuseAdditionalMapSources(features, projector, options);
   sources.mapFusion = sourceFusion;
+
+  // Planning is applied after lower-authority public map fusion so it can
+  // deterministically reshape/delete stale OSM-derived geometry. Manual
+  // verified overrides remain the final geometry authority below.
+  const planning = await fusePlanningApplications(features, projector, options);
+  const planningFusion = planning.summary;
+  sources.planningFusion = planningFusion;
 
   for (const filename of options.override || []) {
     const collection = await readJson(path.resolve(filename));
@@ -49,6 +57,7 @@ export async function normalizeMap(sources, options = {}) {
     boundary,
     geojson,
     sourceFusion,
+    planningFusion,
     topology: summarizeTopology(features),
     semantics: summarizeExplicitSemantics(features)
   };
@@ -65,6 +74,7 @@ export function applyLidarBuildingHeights(features, elevation) {
     preservedTagged: 0,
     comparedTagged: 0,
     conflicts: 0,
+    roofProfiles: 0,
     insufficientCoverage: 0
   };
 
@@ -76,6 +86,21 @@ export function applyLidarBuildingHeights(features, elevation) {
       stats.insufficientCoverage += 1;
       continue;
     }
+
+    feature.roof = {
+      schemaVersion: 1,
+      source: "lidar-dsm-surface",
+      method: "per-cell DSM roof surface sampled inside final authoritative footprint",
+      provider: elevation.provider || null,
+      resolutionM: elevation.resolutionM ?? null,
+      surveyDate,
+      samples: measurement.samples,
+      coverage: measurement.coverage,
+      heightM: measurement.heightM,
+      heightSpreadM: measurement.spreadM,
+      confidence: measurement.confidence
+    };
+    stats.roofProfiles += 1;
 
     const existingHeight = feature.vertical.heightM;
     if (Number.isFinite(existingHeight)) {
@@ -197,7 +222,8 @@ function elementToFeature(element, projector) {
     verification: {
       plan: "public-map",
       vertical: ele !== null || height !== null || Number.isFinite(levels) ? "tagged" : "unknown"
-    }
+    },
+    authority: { layer: "osm", rank: 100, geometryLocked: false }
   };
 }
 
@@ -232,7 +258,8 @@ function overrideToFeature(raw, projector, filename, featureIndex) {
     verification: {
       plan: properties.verified === true ? "surveyed" : "override-unverified",
       vertical: heightM !== null ? "surveyed" : "unknown"
-    }
+    },
+    authority: { layer: "verified-override", rank: 400, geometryLocked: true }
   };
 }
 
@@ -497,6 +524,10 @@ export function toGeoJson(feature) {
       _vertical: feature.vertical,
       _source: feature.source,
       _verification: feature.verification,
+      _authority: feature.authority || undefined,
+      _planning_match: feature.planningMatch || undefined,
+      _material_palette: feature.materialPalette || undefined,
+      _roof: feature.roof || undefined,
       _fidelity: feature.fidelity || undefined,
       _orthophoto: feature.orthophoto?.path ? compactOrthophoto(feature.orthophoto.path) : undefined,
       _path_topology: feature.pathTopology || undefined,

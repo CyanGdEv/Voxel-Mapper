@@ -44,6 +44,9 @@ export function enhancePathGeometry(map, options = {}) {
     const ranked = [];
     for (const segment of segments) {
       if (segment.feature.id === endpoint.feature.id) continue;
+      // Do not reshape or bridge authoritative planning geometry with a
+      // lower-authority inferred connector. Planning drawings remain exact.
+      if (endpoint.feature.authority?.geometryLocked || segment.feature.authority?.geometryLocked) continue;
       const compatibility = routeCompatibility(endpoint.feature, segment.feature);
       if (!compatibility.accepted) continue;
       const nearest = nearestPointOnSegment(endpoint.point, segment.a, segment.b);
@@ -153,7 +156,7 @@ export function enhancePathGeometry(map, options = {}) {
 
 function insertTargetVertex(map, candidate) {
   const feature = map.features.find((entry) => entry.id === candidate.toFeatureId);
-  if (!feature) return false;
+  if (!feature || feature.authority?.geometryLocked) return false;
   const target = candidate.localGeometry.coordinates.at(-1);
   const lines = lineParts(feature.localGeometry);
   let best = null;

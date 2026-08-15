@@ -5,7 +5,8 @@ const VALUE_FLAGS = new Set([
   "nominatim-url", "cache", "elevation", "open-meteo-url",
   "open-meteo-api-key", "elevation-spacing", "dtm", "dsm", "ostn15-grid",
   "ea-dtm-wcs-url", "ea-dsm-wcs-url", "ea-index-wfs-url", "override", "overture",
-  "public-data", "source-fusion-tolerance-m", "scale",
+  "public-data", "planning", "max-planning-applications", "planning-match-tolerance-m",
+  "planning-min-match-score", "source-fusion-tolerance-m", "scale",
   "max-area-km2", "max-cells", "min-confidence", "accuracy-mode",
   "minecraft-server-version", "min-engine-version", "ops-per-yield",
   "build-depth", "base-y", "palette", "world-margin", "max-world-chunks",
@@ -46,7 +47,7 @@ export function parseArgs(argv) {
   const args = [...argv];
   const command = args[0]?.startsWith("--") ? "help" : (args.shift() || "help");
   const options = {
-    override: [], overture: [], publicData: [],
+    override: [], overture: [], publicData: [], planning: [],
     rideProfile: [], ridePointCloud: [], orthophoto: []
   };
 
@@ -73,6 +74,7 @@ export function parseArgs(argv) {
     if (key === "override") options.override.push(value);
     else if (key === "overture") options.overture.push(value);
     else if (key === "public-data") options.publicData.push(value);
+    else if (key === "planning") options.planning.push(value);
     else if (key === "ride-profile") options.rideProfile.push(value);
     else if (key === "ride-point-cloud") options.ridePointCloud.push(value);
     else if (key === "orthophoto") options.orthophoto.push(value);
@@ -105,7 +107,8 @@ function normalize(options) {
     "terrainRockMinSpacingM", "terrainCliffMarkerSpacingM", "maxTerrainRocks",
     "aerialTerrainGridM", "aerialTerrainMinConfidence", "treeDensityPer100m2",
     "shrubDensityPer100m2", "treeLineSpacingM", "vegetationMinSpacingM",
-    "maxVegetationModels"
+    "maxVegetationModels", "maxPlanningApplications", "planningMatchToleranceM",
+    "planningMinMatchScore"
   ];
   for (const key of numberKeys) {
     if (options[key] === undefined) continue;
@@ -176,6 +179,8 @@ function validatePathRecoveryNumbers(options) {
   range("pathDiscoverySteepGradePercent", 0, 200);
   range("pathTerrainMaxCutFillM", 0, 8);
   range("sourceFusionToleranceM", 0.25, 25);
+  range("planningMatchToleranceM", 0.25, 100);
+  range("planningMinMatchScore", 0.4, 1);
   range("terrainRockDensityPer100m2", 0, 20);
   range("terrainRockMinSpacingM", 1, 50);
   range("terrainCliffMarkerSpacingM", 1, 50);
@@ -188,6 +193,10 @@ function validatePathRecoveryNumbers(options) {
   if (options.maxPathDiscoveryCells !== undefined &&
     (!Number.isInteger(options.maxPathDiscoveryCells) || options.maxPathDiscoveryCells < 1_000)) {
     throw new UserError("--max-path-discovery-cells must be an integer of at least 1000");
+  }
+  if (options.maxPlanningApplications !== undefined &&
+    (!Number.isInteger(options.maxPlanningApplications) || options.maxPlanningApplications < 1 || options.maxPlanningApplications > 10000)) {
+    throw new UserError("--max-planning-applications must be an integer between 1 and 10000");
   }
   if (options.maxTerrainRocks !== undefined &&
     (!Number.isInteger(options.maxTerrainRocks) || options.maxTerrainRocks < 0 || options.maxTerrainRocks > 100_000)) {
