@@ -14,8 +14,14 @@ on:
     paths:
       - ".github/workflows/park-generation-acceptance.yml"
       - "scripts/validate-park-generation.mjs"
+      - "scripts/validate-bedrock-content.mjs"
       - "scripts/generate-bbox-world.mjs"
       - "scripts/prepare-bbox-world-shards.mjs"
+      - "src/lib/sources.mjs"
+      - "src/lib/lidar.mjs"
+      - "src/lib/raster.mjs"
+      - "src/lib/mcworld.mjs"
+      - "src/lib/planning-lpa-fallback.mjs"
 
 permissions:
   contents: read
@@ -116,10 +122,22 @@ jobs:
           --report park-acceptance-report.json
           --markdown PARK_ACCEPTANCE.md
 
-      - name: Publish acceptance summary
-        if: always() && hashFiles('PARK_ACCEPTANCE.md') != ''
+      - id: content
+        name: Decode finished world and verify visible terrain + mapped surfaces
+        if: steps.watch.outcome == 'success'
         shell: bash
-        run: cat PARK_ACCEPTANCE.md >> "$GITHUB_STEP_SUMMARY"
+        run: >-
+          node scripts/validate-bedrock-content.mjs
+          --root acceptance-download
+          --report bedrock-content-qa.json
+          --markdown BEDROCK_CONTENT_QA.md
+
+      - name: Publish acceptance summary
+        if: always()
+        shell: bash
+        run: |
+          [[ -f PARK_ACCEPTANCE.md ]] && cat PARK_ACCEPTANCE.md >> "$GITHUB_STEP_SUMMARY"
+          [[ -f BEDROCK_CONTENT_QA.md ]] && cat BEDROCK_CONTENT_QA.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload top-down maps and acceptance evidence
         if: always()
@@ -129,6 +147,8 @@ jobs:
           path: |
             PARK_ACCEPTANCE.md
             park-acceptance-report.json
+            BEDROCK_CONTENT_QA.md
+            bedrock-content-qa.json
             acceptance-download/preparation/**/preview.svg
             acceptance-download/preparation/**/preview.html
             acceptance-download/preparation/**/*.geojson
