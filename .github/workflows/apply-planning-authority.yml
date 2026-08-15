@@ -40,7 +40,7 @@ jobs:
               >> /tmp/architecture.patch.xz.b64
           done
           base64 --decode /tmp/architecture.patch.xz.b64 > /tmp/architecture.patch.xz
-          echo "94dabda5deed892bf85aa56c921df422bb49b63875a64af00488e63bba3950e  /tmp/architecture.patch.xz" | sha256sum --check
+          echo "94da0e8d6ae09038cd6db09d1d1583183f3301ccf34a828797d453e1d38eda3c  /tmp/architecture.patch.xz" | sha256sum --check
           xz -t /tmp/architecture.patch.xz
           xz -dc /tmp/architecture.patch.xz > /tmp/architecture.patch
 
