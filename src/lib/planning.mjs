@@ -3,6 +3,7 @@ import { geometryBounds, geometryMapCoordinates, walkPositions } from "./geo.mjs
 import { UserError } from "./errors.mjs";
 import { readJson, sha256, sha256File } from "./io.mjs";
 import { createMaterialRegistry, paletteSummary, resolveFeatureMaterialPalettes } from "./material-palettes.mjs";
+import { snapshotFeatureEvidence } from "./evidence-graph.mjs";
 
 const DEFAULT_MAX_APPLICATIONS = 680;
 const DEFAULT_MATCH_TOLERANCE_M = 8;
@@ -204,6 +205,7 @@ function applyPlanningObservation(features, observation, summary, options) {
   if (observation.operation === "retag") {
     if (!match) return;
     const target = match.feature;
+    target.evidenceHistory = [...(target.evidenceHistory || []), snapshotFeatureEvidence(target, "planning-retag-prior")];
     target.tags = { ...target.tags, ...observation.feature.tags };
     target.name = observation.feature.name || target.name;
     target.source = { ...observation.feature.source, modifies: target.id };
@@ -217,6 +219,7 @@ function applyPlanningObservation(features, observation, summary, options) {
   const shouldReplace = observation.operation === "replace" || (observation.operation === "auto" && match);
   if (shouldReplace && match) {
     observation.feature.source.replaces = match.feature.id;
+    observation.feature.evidenceHistory = [...(match.feature.evidenceHistory || []), snapshotFeatureEvidence(match.feature, "planning-replaced")];
     observation.feature.planningMatch = compactMatch(match);
     features.splice(match.index, 1, observation.feature);
     summary.replaced += 1;

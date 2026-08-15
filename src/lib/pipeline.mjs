@@ -8,6 +8,7 @@ import { recoverPathTopology } from "./path-topology.mjs";
 import { enrichTerrainDetails } from "./terrain-detail.mjs";
 import { integrateRideProfiles } from "./ride-profile.mjs";
 import { assessAccuracy, enforceAccuracy } from "./confidence.mjs";
+import { buildEvidenceGraph } from "./evidence-graph.mjs";
 import { compileMap } from "./raster.mjs";
 import { buildBedrockAddon } from "./bedrock.mjs";
 import { buildBedrockWorld } from "./mcworld.mjs";
@@ -39,6 +40,8 @@ export async function buildPark(options = {}, progress = () => {}) {
   const rideProfiles = await integrateRideProfiles({ map, sources, options, progress });
   map.rideProfiles = rideProfiles;
   refreshMapDerivedData(map);
+  progress("Resolving per-attribute evidence and temporal state");
+  const evidenceGraph = buildEvidenceGraph(map, sources, options);
   const accuracy = assessAccuracy(map, sources, options);
 
   progress("Compiling 1 m raster and chunked Bedrock operations");
@@ -65,10 +68,12 @@ export async function buildPark(options = {}, progress = () => {}) {
     pathTopology: pathTopologyEvidence.summary,
     terrainDetails,
     rideProfiles: compactRideEvidence(rideProfiles),
+    evidenceGraph,
     accuracy,
     compilation: { meta: compilation.meta, stats: compilation.stats }
   });
   const fidelityPath = await writeJson(path.join(outputDir, "fidelity.json"), fidelity);
+  const evidenceGraphPath = await writeJson(path.join(outputDir, "evidence-graph.json"), evidenceGraph);
   const orthophotoEvidencePath = await writeJson(
     path.join(outputDir, "orthophoto-evidence.json"), orthophotoEvidence.summary
   );
@@ -162,6 +167,7 @@ export async function buildPark(options = {}, progress = () => {}) {
       geojson: geojsonPath,
       evidence: evidencePath,
       fidelity: fidelityPath,
+      evidenceGraph: evidenceGraphPath,
       orthophotoEvidence: orthophotoEvidencePath,
       orthophotoQa: orthophotoQaPath,
       pathGeometryEvidence: pathGeometryEvidencePath,
