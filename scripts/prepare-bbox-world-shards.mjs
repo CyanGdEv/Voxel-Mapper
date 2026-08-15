@@ -54,7 +54,10 @@ export async function prepareBboxWorldShards(args, progress = (message) => conso
     out: outputDir,
     noWorld: true,
     noAddon: true,
-    noPreview: true,
+    // Preparation is also the canonical final-data QA handoff, so keep the
+    // top-down SVG/HTML preview. It is tiny compared with shard artifacts and
+    // lets acceptance verify that every fused feature is visibly represented.
+    noPreview: false,
     compilationOut: compilationPath
   };
   const cacheIdentity = await buildPreparationCacheIdentity(args, handoff, buildOptions);
