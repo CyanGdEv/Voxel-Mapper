@@ -15,6 +15,17 @@ test("material evidence spans adjacent PDF text items on one drawing line", () =
   assert.equal(red.georegistrationRequired, true);
 });
 
+test("CAD-exported joined material words remain recognizable", () => {
+  const observations = extractMaterialObservationsAcrossRuns([
+    { text: "Redtarmac", xPt: 10, yPt: 100, fontSizePt: 10 },
+    { text: "ResinBoundBeige", xPt: 10, yPt: 80, fontSizePt: 10 },
+    { text: "NaturalStone", xPt: 10, yPt: 60, fontSizePt: 10 }
+  ], 1, "abc");
+  assert.ok(observations.some((entry) => entry.material === "red_tarmac"));
+  assert.ok(observations.some((entry) => entry.material === "resin_bound_beige"));
+  assert.ok(observations.some((entry) => entry.material === "stone"));
+});
+
 test("material windows do not join text from different drawing lines", () => {
   const observations = extractMaterialObservationsAcrossRuns([
     { text: "Red", xPt: 10, yPt: 100, fontSizePt: 10 },
