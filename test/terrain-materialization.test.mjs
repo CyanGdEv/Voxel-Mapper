@@ -84,18 +84,19 @@ test("automatic LiDAR relief is visible in the finished mcworld instead of being
 
     const archiveBytes = new Uint8Array(await readFile(result.paths.world));
     const world = openMcworld(archiveBytes);
-    const decoded = world.readBlocks({
+    const decodedSurface = world.readBlocks({
       minX: sampleX,
       maxX: sampleX,
-      minY: Number(compilation.meta.baseY),
-      maxY: expectedSurfaceY + 24,
+      minY: expectedSurfaceY,
+      maxY: expectedSurfaceY,
       minZ: sampleZ,
       maxZ: sampleZ
     });
-    assert.ok(decoded.blocks.length > 0, "the finished world must contain the sampled terrain column");
-    const topY = Math.max(...decoded.blocks.map((block) => block.y));
-    assert.ok(topY >= expectedSurfaceY,
-      `the finished world buried LiDAR terrain: top=${topY}, expected terrain>=${expectedSurfaceY}`);
+    assert.equal(decodedSurface.blocks.length, 1,
+      `the finished world must contain the LiDAR surface block at y=${expectedSurfaceY}`);
+    const surfaceBlock = decodedSurface.palette[decodedSurface.blocks[0].state]?.Name;
+    assert.ok(surfaceBlock && surfaceBlock !== "minecraft:air",
+      `the decoded LiDAR surface must be non-air; got ${surfaceBlock || "missing"}`);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
