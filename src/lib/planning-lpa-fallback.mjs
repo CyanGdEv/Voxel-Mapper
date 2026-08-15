@@ -5,7 +5,11 @@ const PORTAL_ADAPTERS = Object.freeze([
   Object.freeze({
     id: "staffordshire-moorlands-publicaccess",
     jurisdiction: /staffordshire\s+moorlands/i,
-    listingUrl: "https://publicaccess.staffsmoorlands.gov.uk/portal/servlets/MajorContentiousDevelopmentservlet",
+    // The council currently publishes this legacy PublicAccess register over
+    // HTTP. Its HTTPS endpoint intermittently fails TLS/edge negotiation from
+    // GitHub-hosted runners, while the council's own accessibility statement
+    // still identifies the HTTP URL as the supported application register.
+    listingUrl: "http://publicaccess.staffsmoorlands.gov.uk/portal/servlets/MajorContentiousDevelopmentservlet",
     parse: parsePublicAccessMajorApplications
   })
 ]);
