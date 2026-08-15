@@ -41,11 +41,13 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .tpmap-cache
-          key: bbox-world-v2-${{ inputs.bbox }}-${{ github.run_id }}
+          # Raw bbox values contain commas, which current GitHub cache key
+          # validation rejects. Internal source/preparation caches are keyed by
+          # request URL/content hash/bbox identity, so a shared valid prefix is safe.
+          key: bbox-world-v3-${{ github.run_id }}
           restore-keys: |
-            bbox-world-v2-${{ inputs.bbox }}-
-            bbox-world-v1-${{ inputs.bbox }}-
-            planning-index-v1-${{ inputs.bbox }}-
+            bbox-world-v3-
+            planning-index-v2-
 
       - name: Download verified-current planning authority when available
         continue-on-error: true
