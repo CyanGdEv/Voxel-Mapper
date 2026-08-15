@@ -24,7 +24,7 @@ function pageEvidence(contentHash, revision, status, geometryId) {
       coordinateSpace: "local-world-metres",
       spatialAuthorityEligible: true,
       worldGeometryAuthority: false,
-      localGeometry: { type: "Polygon", coordinates: [[[0, 0], [5, 0], [5, 5], [0, 5], [0, 0]]] }
+      localGeometry: { type: "Polygon", coordinates: [[[0, 0], [5, 0], [5, 5], [0, 5], [0, 5], [0, 0]]] }
     }]
   };
 }
@@ -129,12 +129,12 @@ test("for-construction status is delivery intent, not proof that geometry exists
   assert.ok(state.confidence >= 0.8);
 });
 
-test("title block enrichment recognizes as-built state and a UK issue date", () => {
+test("title block enrichment recognizes mixed-case as-built state and a UK issue date", () => {
   const metadata = enrichDrawingLifecycleMetadata(
     { pageNumber: 1, drawingNumber: "TP-100", revision: "C", status: null, scaleDenominator: 100, source: "pdf-text-title-block" },
     [
-      { text: "STATUS: AS BUILT" },
-      { text: "DATE: 14/07/2026" }
+      { text: "Status: As Built" },
+      { text: "Date: 14/07/2026" }
     ],
     1
   );
