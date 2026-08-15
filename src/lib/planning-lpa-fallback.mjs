@@ -94,14 +94,31 @@ export function parsePublicAccessMajorApplications(html, listingUrl, hints = [])
     if (!anchor) continue;
     const reference = stripHtml(anchor[2]).trim();
     if (!reference) continue;
-    const rowText = stripHtml(rowHtml).replace(/\s+/g, " ").trim();
+    const cells = [...rowHtml.matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/gi)]
+      .map((match) => stripHtml(match[1]).replace(/\s+/g, " ").trim());
+    const rowText = cells.filter(Boolean).join(" | ") || stripHtml(rowHtml).replace(/\s+/g, " ").trim();
     const normalizedRow = normalizeText(rowText);
     if (normalizedHints.length && !normalizedHints.some((hint) => normalizedRow.includes(hint))) continue;
     const documentationUrl = new URL(htmlDecode(anchor[1]), listingUrl).toString();
+    const receivedDate = cells[1] || null;
+    const validDate = cells[2] || null;
+    const address = cells[3] || null;
+    const description = cells[4] || rowText;
+    const decision = cells[5] || null;
+    const decisionDate = cells[6] || null;
     applications.push({
       reference,
-      name: rowText,
-      description: rowText,
+      name: address || description || rowText,
+      description,
+      address,
+      decision,
+      status: decision,
+      "received-date": receivedDate,
+      receivedDate,
+      "valid-date": validDate,
+      validDate,
+      "decision-date": decisionDate,
+      decisionDate,
       dataset: "local-planning-register",
       "documentation-url": documentationUrl,
       documentationUrl,
