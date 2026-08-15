@@ -10,6 +10,7 @@ import {
   planningDocumentPriority,
   selectPlanningDocumentShard
 } from "./planning-documents.mjs";
+import { extractPortalPlanningDocumentLinks } from "./planning-portal-documents.mjs";
 
 const DEFAULT_CONCURRENCY = 6;
 const DEFAULT_MAX_DOCUMENT_MB = 120;
@@ -62,7 +63,7 @@ export async function processPlanningDocumentShard(queue, options = {}) {
           discovered: candidates.map((link) => ({
             ...link,
             application: item.application,
-            source: "portal-discovery",
+            source: link.source || "portal-discovery",
             action: link.direct ? "download" : "discover",
             priority: planningDocumentPriority(link.classification, link.direct ? "download" : "discover"),
             shard: item.shard
@@ -133,7 +134,14 @@ export async function discoverPlanningPage(item, options = {}) {
   const html = await response.text();
   if (Buffer.byteLength(html) > maxBytes) throw new Error(`Planning application page exceeds ${options.maxDiscoveryHtmlMb ?? DEFAULT_MAX_DISCOVERY_HTML_MB} MiB`);
   const finalUrl = response.url || item.url;
-  const links = extractDocumentLinks(html, finalUrl);
+  const links = mergeDiscoveredLinks(
+    extractDocumentLinks(html, finalUrl),
+    extractPortalPlanningDocumentLinks(html, finalUrl).map((link) => ({
+      ...link,
+      classification: classifyPlanningDocument(link.label || "", link.url),
+      direct: true
+    }))
+  );
   const result = {
     url: item.url,
     finalUrl,
@@ -286,6 +294,22 @@ async function isFreshCache(filename, maxAgeHours) {
   if (!Number.isFinite(maxAgeHours) || maxAgeHours <= 0) return false;
   const details = await stat(filename);
   return Date.now() - details.mtimeMs <= maxAgeHours * 60 * 60 * 1000;
+}
+
+function mergeDiscoveredLinks(...groups) {
+  const seen = new Set();
+  const links = [];
+  for (const entry of groups.flat()) {
+    if (!entry?.url || !isSafePublicHttpUrl(entry.url)) continue;
+    const key = String(entry.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    links.push(entry);
+  }
+  return links.sort((a, b) =>
+    planningDocumentPriority(b.classification, b.direct ? "download" : "discover") -
+    planningDocumentPriority(a.classification, a.direct ? "download" : "discover")
+  );
 }
 
 function dedupeDiscovered(entries) {
