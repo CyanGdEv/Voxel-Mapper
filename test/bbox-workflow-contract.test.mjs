@@ -15,16 +15,39 @@ test("player-facing generation workflow exposes bbox as its only dispatch input"
   assert.doesNotMatch(dispatch, /park[-_]name:/i);
 });
 
-test("bbox generation reuses the parallel planning workflow and automatically downloads current authority", async () => {
+test("bbox generation reuses planning authority and compiles reconstruction only once before world fan-out", async () => {
   const yaml = await readFile(generateWorldPath, "utf8");
   assert.match(yaml, /uses: \.\/\.github\/workflows\/planning-documents\.yml/);
   assert.match(yaml, /shards: "20"/);
   assert.match(yaml, /name: planning-current-state-evidence/);
   assert.match(yaml, /planning-current-authority-evidence\.json/);
-  assert.match(yaml, /scripts\/generate-bbox-world\.mjs/);
+  assert.match(yaml, /scripts\/prepare-bbox-world-shards\.mjs/);
+  assert.equal((yaml.match(/scripts\/prepare-bbox-world-shards\.mjs/g) || []).length, 1);
+  assert.doesNotMatch(yaml, /scripts\/generate-bbox-world\.mjs/);
 });
 
-test("world download and QA evidence are separate artifacts", async () => {
+test("Bedrock world generation fans out to a dynamic matrix capped at twenty concurrent shard jobs", async () => {
+  const yaml = await readFile(generateWorldPath, "utf8");
+  const shardJob = yaml.split("  build-world-shards:")[1].split("  assemble-world:")[0];
+  assert.match(shardJob, /max-parallel: 20/);
+  assert.match(shardJob, /fromJSON\(needs\.prepare-world\.outputs\.active_shards\)/);
+  assert.match(shardJob, /voxel-world-shard-input-\$\{\{ matrix\.shard \}\}/);
+  assert.match(shardJob, /scripts\/build-world-shard\.mjs/);
+  assert.match(shardJob, /voxel-built-world-shard-\$\{\{ matrix\.shard \}\}/);
+  assert.match(shardJob, /compression-level: 0/);
+});
+
+test("parallel Bedrock shards are assembled only after every matrix worker succeeds", async () => {
+  const yaml = await readFile(generateWorldPath, "utf8");
+  const assembly = yaml.split("  assemble-world:")[1];
+  assert.match(assembly, /needs: \[prepare-world, build-world-shards\]/);
+  assert.match(assembly, /pattern: voxel-built-world-shard-\*/);
+  assert.match(assembly, /merge-multiple: false/);
+  assert.match(assembly, /scripts\/assemble-world-shards\.mjs/);
+  assert.match(assembly, /world-shard-plan\.json/);
+});
+
+test("world download and QA evidence remain separate artifacts after parallel assembly", async () => {
   const yaml = await readFile(generateWorldPath, "utf8");
   const worldUpload = yaml.split("name: Upload Minecraft world only")[1].split("name: Upload generation evidence separately")[0];
   assert.match(worldUpload, /name: voxel-mapper-mcworld/);
@@ -34,6 +57,7 @@ test("world download and QA evidence are separate artifacts", async () => {
   const evidenceUpload = yaml.split("name: Upload generation evidence separately")[1];
   assert.match(evidenceUpload, /name: voxel-mapper-generation-evidence/);
   assert.match(evidenceUpload, /planning-authority-fusion\.json/);
+  assert.match(evidenceUpload, /world-shard-plan\.json/);
 });
 
 test("planning workflow supports reusable workflow_call without removing developer dispatch", async () => {
