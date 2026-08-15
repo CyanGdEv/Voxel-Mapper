@@ -4,6 +4,7 @@ import path from "node:path";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import {
+  BBOX_RASTER_SAFETY_LIMIT,
   parseGenerateArgs,
   buildBboxWorldOptions,
   writeBboxBoundaryOverride,
@@ -19,6 +20,8 @@ test("bbox-only orchestration does not require a park name or manual planning fl
   assert.equal(handoff.options.planningAuthorityEvidence, undefined);
   assert.equal(handoff.options.noAddon, true);
   assert.equal(handoff.options.buildings, "shells");
+  assert.equal(handoff.options.maxCells, 8_000_000);
+  assert.equal(handoff.generationEnvelope.rasterSafetyLimitCells, BBOX_RASTER_SAFETY_LIMIT);
   assert.equal(handoff.authority.mode, "lower-authority-fallback");
   assert.equal(handoff.generationEnvelope.mode, "bbox");
   assert.deepEqual(handoff.options.override, [handoff.generationEnvelope.path]);

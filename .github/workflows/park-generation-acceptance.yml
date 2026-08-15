@@ -63,10 +63,11 @@ jobs:
           echo "Previous production generation run: $before_id"
           gh workflow run generate-world.yml --ref main -f bbox="$BBOX"
 
-          # Do not bind to the previous run while GitHub is still indexing the
-          # newly dispatched workflow. Run IDs are monotonic within a repo.
+          # gh's --jq accepts a jq expression, but not jq CLI flags such as
+          # --argjson. before_id is sourced from GitHub as an integer, so it is
+          # safe to interpolate directly into the numeric comparison.
           for attempt in {1..24}; do
-            run_id="$(gh run list --workflow generate-world.yml --branch main --event workflow_dispatch --limit 10 --json databaseId --jq --argjson before "$before_id" '([.[] | select(.databaseId > $before)] | max_by(.databaseId) | .databaseId) // empty')"
+            run_id="$(gh run list --workflow generate-world.yml --branch main --event workflow_dispatch --limit 10 --json databaseId --jq "([.[] | select(.databaseId > ${before_id})] | max_by(.databaseId) | .databaseId) // empty")"
             if [[ -n "$run_id" ]]; then
               echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
               echo "Production generation run: $run_id"

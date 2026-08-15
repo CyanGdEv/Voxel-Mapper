@@ -60,7 +60,8 @@ test("real acceptance covers the complete Alton park and binds the newly dispatc
   const workflow = await readFile(".github/workflows/park-generation-acceptance.yml", "utf8");
   assert.match(workflow, /52\.9820,-1\.9000,52\.9945,-1\.8665/);
   assert.match(workflow, /before_id=/);
-  assert.match(workflow, /select\(\.databaseId > \$before\)/);
+  assert.match(workflow, /select\(\.databaseId > \$\{before_id\}\)/);
+  assert.doesNotMatch(workflow, /--jq\s+--argjson/);
   assert.doesNotMatch(workflow, /--limit 1 --json databaseId --jq '\.\[0\]\.databaseId \/\/ empty'/);
 });
 
