@@ -113,13 +113,18 @@ jobs:
           test -f test/lidar-roof-authority.test.mjs
           grep -q 'buildings: "markers"' test/core.test.mjs
 
-      - name: Commit certified v0.12 source
+      - name: Commit certified source without workflow mutations
         shell: bash
         run: |
           set -euo pipefail
           rm -f test-output.log
+          # GITHUB_TOKEN cannot safely install/remove workflow definitions here.
+          # Restore the bootstrap workflow and omit permanent workflows from this bot commit;
+          # they are installed through the GitHub connector immediately afterward.
+          git checkout HEAD -- .github/workflows/apply-planning-authority.yml
+          rm -f .github/workflows/ci.yml .github/workflows/build-park.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Materialize Voxel Mapper v0.12 planning-authority architecture"
+          git commit -m "Materialize certified Voxel Mapper v0.12 source"
           git push origin HEAD:agent/planning-authority-architecture
