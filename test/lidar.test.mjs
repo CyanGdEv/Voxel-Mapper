@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { writeArrayBuffer } from "geotiff";
-import { createProjectedRasterSampler, readGeoTiffRaster } from "../src/lib/lidar.mjs";
+import { acquireLidarSourceSet, createProjectedRasterSampler, readGeoTiffRaster } from "../src/lib/lidar.mjs";
 import { applyLidarBuildingHeights } from "../src/lib/osm.mjs";
 import { extractRideProfileFromPoints } from "../src/lib/ride-profile.mjs";
 
@@ -41,6 +41,54 @@ test("reads and bilinearly samples an EPSG:27700 metre-grid GeoTIFF", async () =
   assert.equal(sample(101.5, 201.5), 5);
   assert.equal(sample(101, 202), 3);
   assert.equal(sample(99, 202), null);
+});
+
+test("live LiDAR DTM, DSM and survey inputs start concurrently", async () => {
+  const started = [];
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const acquisition = acquireLidarSourceSet({
+    isLive: true,
+    wantsDsm: true,
+    options: {},
+    projectedBounds: { minE: 1, minN: 2, maxE: 3, maxN: 4 },
+    cacheDir: "/tmp/lidar-concurrency-test",
+    acquireCoverageImpl: async ({ role }) => {
+      started.push(role);
+      await gate;
+      return { filename: `${role}.tif`, cacheHit: false, endpoint: role, queryHash: role };
+    },
+    acquireSurveyMetadataImpl: async () => {
+      started.push("survey");
+      await gate;
+      return { provider: "mock survey", tileCount: 0, tiles: [] };
+    }
+  });
+
+  for (let attempt = 0; attempt < 20 && started.length < 3; attempt += 1) {
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.deepEqual(new Set(started), new Set(["dtm", "dsm", "survey"]));
+  release();
+  const result = await acquisition;
+  assert.equal(result.dtmSource.filename, "dtm.tif");
+  assert.equal(result.dsmSource.filename, "dsm.tif");
+  assert.equal(result.survey.provider, "mock survey");
+});
+
+test("local GeoTIFF source selection remains deterministic and network-free", async () => {
+  const result = await acquireLidarSourceSet({
+    isLive: false,
+    wantsDsm: true,
+    options: { dtm: "./fixtures/dtm.tif", dsm: "./fixtures/dsm.tif" },
+    projectedBounds: {},
+    cacheDir: "/tmp/unused",
+    acquireCoverageImpl: async () => { throw new Error("network must not be used"); },
+    acquireSurveyMetadataImpl: async () => { throw new Error("network must not be used"); }
+  });
+  assert.equal(result.dtmSource.filename, path.resolve("./fixtures/dtm.tif"));
+  assert.equal(result.dsmSource.filename, path.resolve("./fixtures/dsm.tif"));
+  assert.equal(result.survey, null);
 });
 
 test("fills missing building heights from LiDAR while retaining tagged conflicts", () => {
