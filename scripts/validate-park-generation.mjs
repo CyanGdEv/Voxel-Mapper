@@ -91,8 +91,21 @@ export async function validateParkGeneration(options) {
   warn(vegetationCount > 0, "No explicit vegetation features were present in the final GeoJSON");
   warn((kindCounts.water || 0) > 0, "No explicit water features were present in the final GeoJSON");
 
-  const outOfBbox = countCoordinatesOutsideBbox(features, bbox, 0.0015);
-  pass(outOfBbox.ratio <= 0.05, `${(outOfBbox.ratio * 100).toFixed(2)}% of final map coordinates are materially outside the requested bbox`);
+  const generationBoundary = features.find((feature) =>
+    feature.properties?.kind === "park_boundary" && feature.properties?.subtype === "generation_bbox");
+  pass(Boolean(generationBoundary), "Final fused map does not contain the verified bbox generation envelope");
+
+  // Overpass deliberately returns the complete geometry of a way that
+  // intersects the bbox. A road, river or boundary may therefore have many
+  // vertices outside the generation envelope even though the relevant segment
+  // is valid. The raster/world compiler clips through the bbox mask. Reject
+  // unrelated features whose complete bounds never intersect the bbox, while
+  // keeping outside-vertex ratio as a diagnostic rather than a false failure.
+  const spatial = summarizeBboxIntersection(features, bbox);
+  pass(spatial.entirelyOutsideFeatures === 0,
+    `${spatial.entirelyOutsideFeatures} final map features do not intersect the requested bbox at all`);
+  warn(spatial.coordinateOutsideRatio <= 0.5,
+    `${(spatial.coordinateOutsideRatio * 100).toFixed(2)}% of source-geometry vertices lie outside the bbox because intersecting ways are retained whole`);
 
   let previewBytes = 0;
   let previewElements = 0;
@@ -153,9 +166,11 @@ export async function validateParkGeneration(options) {
       rideLengthM: Math.round(rideLengthM),
       buildingCount,
       vegetationCount,
-      coordinatesOutsideBbox: outOfBbox.outside,
-      coordinateCount: outOfBbox.total,
-      coordinateOutsideRatio: round(outOfBbox.ratio)
+      bboxGenerationEnvelopePresent: Boolean(generationBoundary),
+      featuresEntirelyOutsideBbox: spatial.entirelyOutsideFeatures,
+      coordinatesOutsideBbox: spatial.outsideCoordinates,
+      coordinateCount: spatial.totalCoordinates,
+      coordinateOutsideRatio: round(spatial.coordinateOutsideRatio)
     },
     topDownPreview: {
       file: previewPath ? path.relative(root, previewPath) : null,
@@ -193,6 +208,7 @@ function buildMarkdown(report) {
     `- Paths/roads: **${report.dataMap.accessFeatureCount}** (${report.dataMap.routeLengthM.toLocaleString()} m)`,
     `- Ride track features: **${report.dataMap.rideFeatureCount}** (${report.dataMap.rideLengthM.toLocaleString()} m)`,
     `- Buildings/structures: **${report.dataMap.buildingCount}**`,
+    `- Features entirely outside bbox: **${report.dataMap.featuresEntirelyOutsideBbox}**`,
     `- Preview feature coverage: **${(report.topDownPreview.finalFeatureCoverage * 100).toFixed(1)}%**`,
     `- Elevation source: **${report.sources.elevationProvider || "missing"}**`,
     `- Accuracy: **${report.sources.grade || "?"} (${report.sources.confidence ?? "?"})**`,
@@ -282,21 +298,41 @@ function haversineM([lon1, lat1], [lon2, lat2]) {
   return 6_371_008.8 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function countCoordinatesOutsideBbox(features, bbox, toleranceDegrees) {
-  let total = 0, outside = 0;
-  const visit = (coordinates) => {
-    if (!Array.isArray(coordinates)) return;
-    if (coordinates.length >= 2 && Number.isFinite(coordinates[0]) && Number.isFinite(coordinates[1])) {
-      total += 1;
-      const [lon, lat] = coordinates;
-      if (lon < bbox.west - toleranceDegrees || lon > bbox.east + toleranceDegrees ||
-          lat < bbox.south - toleranceDegrees || lat > bbox.north + toleranceDegrees) outside += 1;
-      return;
-    }
-    for (const child of coordinates) visit(child);
+export function summarizeBboxIntersection(features, bbox) {
+  let totalCoordinates = 0;
+  let outsideCoordinates = 0;
+  let entirelyOutsideFeatures = 0;
+
+  for (const feature of features) {
+    const coordinates = flattenCoordinates(feature.geometry?.coordinates);
+    if (!coordinates.length) continue;
+    totalCoordinates += coordinates.length;
+    outsideCoordinates += coordinates.filter(([lon, lat]) =>
+      lon < bbox.west || lon > bbox.east || lat < bbox.south || lat > bbox.north).length;
+    const west = Math.min(...coordinates.map(([lon]) => lon));
+    const east = Math.max(...coordinates.map(([lon]) => lon));
+    const south = Math.min(...coordinates.map(([, lat]) => lat));
+    const north = Math.max(...coordinates.map(([, lat]) => lat));
+    const intersects = !(east < bbox.west || west > bbox.east || north < bbox.south || south > bbox.north);
+    if (!intersects) entirelyOutsideFeatures += 1;
+  }
+
+  return {
+    totalCoordinates,
+    outsideCoordinates,
+    coordinateOutsideRatio: totalCoordinates ? outsideCoordinates / totalCoordinates : 0,
+    entirelyOutsideFeatures
   };
-  for (const feature of features) visit(feature.geometry?.coordinates);
-  return { total, outside, ratio: total ? outside / total : 0 };
+}
+
+function flattenCoordinates(value, result = []) {
+  if (!Array.isArray(value)) return result;
+  if (value.length >= 2 && Number.isFinite(value[0]) && Number.isFinite(value[1])) {
+    result.push([value[0], value[1]]);
+    return result;
+  }
+  for (const child of value) flattenCoordinates(child, result);
+  return result;
 }
 
 function isRenderableGeometry(geometry) {
