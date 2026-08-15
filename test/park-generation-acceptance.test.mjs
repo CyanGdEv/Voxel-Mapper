@@ -25,6 +25,7 @@ test("park acceptance certifies a complete data map and world roster", async () 
     assert.equal(report.dataMap.bboxGenerationEnvelopePresent, true);
     assert.equal(report.topDownPreview.finalFeatureCoverage, 1);
     assert.equal(report.world.validation, "passed");
+    assert.deepEqual(report.warnings, []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -41,6 +42,49 @@ test("park acceptance rejects the historical small-world failure mode", async ()
     });
     assert.equal(report.status, "failed");
     assert.match(report.failures.join("\n"), /Chunk roster is too small/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("acceptance surfaces inactive public evidence as fidelity limitations without failing the world", async () => {
+  const root = await createFixture({ chunks: 5_000 });
+  const preparationDir = path.join(root, "preparation", "out", "bbox-world");
+  try {
+    await json(path.join(preparationDir, "path-topology-qa.geojson"), {
+      type: "FeatureCollection", status: "not-supplied", mode: "off", features: []
+    });
+    await json(path.join(preparationDir, "orthophoto-qa.geojson"), {
+      type: "FeatureCollection", status: "not-supplied", features: []
+    });
+    await json(path.join(preparationDir, "build-result.json"), {
+      confidence: 0.785,
+      grade: "C",
+      stats: { worldChunks: 5_000, planningApplications: 0 }
+    });
+    await json(path.join(preparationDir, "evidence.json"), {
+      source: {
+        osm: { provider: "OpenStreetMap" },
+        elevation: { provider: "Environment Agency LiDAR" },
+        planning: { provider: "Planning Data / MHCLG (England)", status: "acquired", applicationCount: 0 }
+      }
+    });
+
+    const report = await validateParkGeneration({
+      root,
+      bbox: BBOX,
+      report: path.join(root, "acceptance.json"),
+      markdown: path.join(root, "acceptance.md")
+    });
+
+    assert.equal(report.status, "passed");
+    assert.equal(report.qaLayers.pathTopology.status, "not-supplied");
+    assert.equal(report.qaLayers.pathTopology.mode, "off");
+    assert.equal(report.qaLayers.orthophoto.status, "not-supplied");
+    assert.equal(report.sources.planning.applications, 0);
+    assert.match(report.warnings.join("\n"), /Path topology QA is not-supplied/);
+    assert.match(report.warnings.join("\n"), /Orthophoto QA is not-supplied/);
+    assert.match(report.warnings.join("\n"), /Planning discovery returned zero applications/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -112,9 +156,15 @@ async function createFixture({ chunks }) {
   });
   await writeFile(path.join(preparationDir, "preview.svg"),
     `<svg>${features.map((_, index) => `<path id="f${index}" d="M0 0 L1 1"/>`).join("")}</svg>`);
-  await json(path.join(preparationDir, "path-geometry-qa.geojson"), { type: "FeatureCollection", features: [] });
-  await json(path.join(preparationDir, "path-topology-qa.geojson"), { type: "FeatureCollection", features: [] });
-  await json(path.join(preparationDir, "orthophoto-qa.geojson"), { type: "FeatureCollection", features: [] });
+  await json(path.join(preparationDir, "path-geometry-qa.geojson"), {
+    type: "FeatureCollection", status: "supplied", features: []
+  });
+  await json(path.join(preparationDir, "path-topology-qa.geojson"), {
+    type: "FeatureCollection", status: "supplied", features: []
+  });
+  await json(path.join(preparationDir, "orthophoto-qa.geojson"), {
+    type: "FeatureCollection", status: "supplied", features: []
+  });
   await json(path.join(evidenceDir, "bbox-generation-result.json"), {
     worldChunks: chunks,
     worldValidation: "passed",
@@ -128,7 +178,11 @@ async function createFixture({ chunks }) {
     stats: { worldChunks: chunks, planningApplications: 3 }
   });
   await json(path.join(preparationDir, "evidence.json"), {
-    source: { osm: { provider: "OpenStreetMap" }, elevation: { provider: "Test LiDAR" }, planning: { provider: "planning" } }
+    source: {
+      osm: { provider: "OpenStreetMap" },
+      elevation: { provider: "Test LiDAR" },
+      planning: { provider: "planning", applicationCount: 3 }
+    }
   });
   await json(path.join(preparationDir, "world-manifest.json"), {
     chunks,
