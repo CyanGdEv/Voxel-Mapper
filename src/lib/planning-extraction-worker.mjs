@@ -3,6 +3,16 @@ import { loadPlanningPdfJsRuntime } from "./planning-pdfjs-runtime.mjs";
 import { enrichPlanningTextEvidence } from "./planning-text-evidence.mjs";
 
 const DEFAULT_CONCURRENCY = 2;
+const EXTRACTOR_CLASS_ALIASES = new Map([
+  ["site-plan", "site_plan"],
+  ["location-plan", "location_plan"],
+  ["floor-plan", "floor_plan"],
+  ["roof-plan", "roof_plan"],
+  ["ride-layout", "ride_layout"],
+  ["landscape", "landscape_plan"],
+  ["demolition", "demolition_plan"],
+  ["design-access", "design_access"]
+]);
 
 export async function processPlanningExtractionShard(catalog, options = {}) {
   const shardIndex = Number(options.shardIndex ?? 0);
@@ -100,8 +110,9 @@ export function mergePlanningExtractionManifests(manifests) {
   };
 }
 
-function normalizeExtractorClass(value) {
-  return String(value || "unknown").replaceAll("-", "_");
+export function normalizeExtractorClass(value) {
+  const raw = String(value || "unknown").trim().toLowerCase();
+  return EXTRACTOR_CLASS_ALIASES.get(raw) || raw.replaceAll("-", "_");
 }
 
 function dedupeFallback(values) {
