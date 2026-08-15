@@ -28,6 +28,12 @@ try {
   }, { cacheDir: root, pdfEngine });
   enrichPlanningTextEvidence(extraction);
 
+  console.log(JSON.stringify({
+    pdfJsVersion: pdfEngine.version,
+    positionedText: extraction.pages[0]?.text?.items || [],
+    materialEvidence: extraction.normalizedEvidence?.materialObservations || []
+  }, null, 2));
+
   assert.equal(extraction.status, "extracted");
   assert.equal(extraction.pageCount, 1);
   assert.ok(extraction.pages[0].vector.pathCount >= 1, "expected vector rectangle from real PDF.js operator list");
@@ -38,7 +44,6 @@ try {
   assert.ok(extraction.normalizedEvidence.materialObservations.some((entry) => entry.material === "red_tarmac"));
   assert.ok(extraction.normalizedEvidence.materialObservations.some((entry) => entry.source === "pdf-text-adjacent-run-material-label"));
   console.log(JSON.stringify({
-    pdfJsVersion: pdfEngine.version,
     status: extraction.status,
     textItems: extraction.pages[0].text.itemCount,
     vectorPaths: extraction.pages[0].vector.pathCount,
