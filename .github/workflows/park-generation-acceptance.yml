@@ -7,7 +7,7 @@ on:
       bbox:
         description: "WGS84 bbox: south,west,north,east"
         required: false
-        default: "52.9813,-1.8942,52.9953,-1.8722"
+        default: "52.9820,-1.9000,52.9945,-1.8665"
         type: string
   push:
     branches: [main]
@@ -15,6 +15,7 @@ on:
       - ".github/workflows/park-generation-acceptance.yml"
       - "scripts/validate-park-generation.mjs"
       - "scripts/generate-bbox-world.mjs"
+      - "scripts/prepare-bbox-world-shards.mjs"
 
 permissions:
   contents: read
@@ -31,7 +32,9 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      DEFAULT_BBOX: "52.9813,-1.8942,52.9953,-1.8722"
+      # Covers the full OSM Alton Towers park polygon plus a safety margin,
+      # including X-Sector/The Smiler/Oblivion on the west and the east edge.
+      DEFAULT_BBOX: "52.9820,-1.9000,52.9945,-1.8665"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -56,9 +59,14 @@ jobs:
         env:
           BBOX: ${{ steps.target.outputs.bbox }}
         run: |
+          before_id="$(gh run list --workflow generate-world.yml --branch main --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+          echo "Previous production generation run: $before_id"
           gh workflow run generate-world.yml --ref main -f bbox="$BBOX"
-          for attempt in {1..12}; do
-            run_id="$(gh run list --workflow generate-world.yml --branch main --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+
+          # Do not bind to the previous run while GitHub is still indexing the
+          # newly dispatched workflow. Run IDs are monotonic within a repo.
+          for attempt in {1..24}; do
+            run_id="$(gh run list --workflow generate-world.yml --branch main --event workflow_dispatch --limit 10 --json databaseId --jq --argjson before "$before_id" '([.[] | select(.databaseId > $before)] | max_by(.databaseId) | .databaseId) // empty')"
             if [[ -n "$run_id" ]]; then
               echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
               echo "Production generation run: $run_id"
@@ -66,7 +74,7 @@ jobs:
             fi
             sleep 5
           done
-          echo "Could not resolve the dispatched generation run id" >&2
+          echo "Could not resolve the newly dispatched generation run id" >&2
           exit 1
 
       - id: watch
