@@ -17,11 +17,16 @@ function portalHtml() {
     <table>
       <tr>
         <td><a href="ApplicationSearchServlet?PKID=101">SMD/2026/0101</a></td>
-        <td>Fixture Park - replacement ride, guest paths and landscaping</td>
+        <td>17/05/2026</td><td>19/05/2026</td>
+        <td>Fixture Park, Example Road, ST10 1AA</td>
+        <td>Replacement ride, guest paths and landscaping</td>
+        <td>Planning Permission - Approved</td><td>31/08/2026</td>
       </tr>
       <tr>
         <td><a href="ApplicationSearchServlet?PKID=102">SMD/2026/0102</a></td>
-        <td>Unrelated Industrial Estate - warehouse extension</td>
+        <td>01/06/2026</td><td>03/06/2026</td>
+        <td>Unrelated Industrial Estate</td><td>Warehouse extension</td>
+        <td>Planning Permission - Approved</td><td>01/09/2026</td>
       </tr>
     </table>`;
 }
@@ -32,6 +37,11 @@ test("local planning register parser uses a generic OSM park hint instead of har
   assert.equal(applications[0].reference, "SMD/2026/0101");
   assert.match(applications[0].documentationUrl, /ApplicationSearchServlet\?PKID=101$/);
   assert.equal(applications[0].source, "local-planning-authority-public-register");
+  assert.equal(applications[0].description, "Replacement ride, guest paths and landscaping");
+  assert.equal(applications[0].decision, "Planning Permission - Approved");
+  assert.equal(applications[0]["received-date"], "17/05/2026");
+  assert.equal(applications[0]["valid-date"], "19/05/2026");
+  assert.equal(applications[0]["decision-date"], "31/08/2026");
 });
 
 test("OSM planning hints are restricted to theme-park identity and postcode", () => {
@@ -95,6 +105,7 @@ test("bbox acquisition supplements a zero-result national planning feed from the
     assert.equal(sources.planning.coverageStatus, "national-plus-local-portal");
     assert.equal(sources.planning.localPortalFallback.addedApplications, 1);
     assert.equal(sources.planning.applications[0].organisationEntity, 999);
+    assert.equal(sources.planning.applications[0].decision, "Planning Permission - Approved");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
