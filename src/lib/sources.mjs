@@ -4,6 +4,9 @@ import { UserError, invariant } from "./errors.mjs";
 import { cachedJson, ensureDir, fetchJson, readJson, sha256 } from "./io.mjs";
 import { acquireLidarElevation } from "./lidar.mjs";
 import { acquireOrthophotos } from "./orthophoto.mjs";
+import { resolveSourcePlan } from "./source-registry.mjs";
+import { RUNTIME_SOURCE_PROVIDERS } from "./runtime-source-providers.mjs";
+import { acquirePlanningForBbox } from "./planning-acquisition.mjs";
 
 const DEFAULT_NOMINATIM = "https://nominatim.openstreetmap.org/search";
 const DEFAULT_OVERPASS = "https://overpass-api.de/api/interpreter";
@@ -13,14 +16,14 @@ export async function acquireSources(options) {
   const cacheDir = path.resolve(options.cache || ".tpmap-cache");
   await ensureDir(cacheDir);
   const contact = options.contact || process.env.TPMAP_CONTACT;
-  const userAgent = contact ? `ThemeParkMap/0.11.3 (${contact})` : "ThemeParkMap/0.11.3";
+  const userAgent = contact ? `VoxelMapper/0.12 (${contact})` : "VoxelMapper/0.12";
 
   let bbox = options.bbox ? parseBbox(options.bbox) : undefined;
   let geocoder = null;
   let suppliedBoundary = null;
 
   if (!bbox && !options.osm) {
-    invariant(options.parkName, "Use --park-name, or provide both --osm and --bbox");
+    invariant(options.parkName, "Use --bbox for universal generation, or --park-name for legacy place lookup");
     invariant(options.acceptNominatimPolicy,
       "Live place lookup requires --accept-nominatim-policy. Read https://operations.osmfoundation.org/policies/nominatim/");
     invariant(contact,
@@ -31,7 +34,7 @@ export async function acquireSources(options) {
   }
 
   if (!bbox && options.osm) bbox = deriveBboxFromOverpass(await readJson(path.resolve(options.osm)));
-  invariant(bbox, "Could not determine a park bounding box");
+  invariant(bbox, "Could not determine a bounding box");
 
   const areaKm2 = bboxAreaKm2(bbox);
   const maxAreaKm2 = options.maxAreaKm2 ?? 12;
@@ -42,33 +45,165 @@ export async function acquireSources(options) {
     );
   }
 
-  let osm;
-  if (options.osm) {
-    const filename = path.resolve(options.osm);
-    const data = await readJson(filename);
-    osm = { data, dataHash: sha256(data), filename, source: "local", cacheHit: true };
-  } else {
-    osm = await fetchOverpass({ ...options, bbox, cacheDir, userAgent });
+  const sourcePlan = resolveSourcePlan(bbox, {
+    providers: RUNTIME_SOURCE_PROVIDERS,
+    preferredProviderIds: options.preferredProviderIds || options.preferProvider || [],
+    excludedProviderIds: options.excludedProviderIds || options.excludeProvider || [],
+    maxPerKind: options.maxProvidersPerKind || 5
+  });
+  const acquisitionOptions = { ...options, bbox, cacheDir, userAgent };
+  const selectedOsm = sourcePlan.selected.osm;
+  if (!options.osm) {
+    invariant(selectedOsm?.acquisition?.adapter === "overpass", "No executable OSM provider is available for this bbox");
   }
 
+  // OSM, terrain and planning are independent once the bbox/source plan is
+  // resolved. Starting them together removes avoidable network/IO wall time
+  // without changing source priority or downstream reconstruction order.
+  const osmPromise = options.osm
+    ? (async () => {
+        const filename = path.resolve(options.osm);
+        const data = await readJson(filename);
+        return { data, dataHash: sha256(data), filename, source: "local", cacheHit: true };
+      })()
+    : fetchOverpass(acquisitionOptions);
+  const terrainPromise = options.elevation != null
+    ? (async () => ({
+        result: await (options.acquireElevationImpl || acquireElevation)({ ...acquisitionOptions, elevation: options.elevation }),
+        providerId: `explicit:${options.elevation}`,
+        attempts: [{ providerId: `explicit:${options.elevation}`, status: "success" }]
+      }))()
+    : acquireAutomaticTerrain(acquisitionOptions, sourcePlan);
+  const planningPromise = acquirePlanningSafely(acquisitionOptions, sourcePlan.selected.planning);
+
+  const [osm, terrainAcquisition, planning] = await Promise.all([
+    osmPromise,
+    terrainPromise,
+    planningPromise
+  ]);
   const center = bboxCenter(bbox);
-  const elevation = await acquireElevation({ ...options, bbox, cacheDir, userAgent });
+  const elevation = terrainAcquisition.result;
+  // Orthophoto interpretation can depend on the chosen terrain/elevation
+  // frame, so it intentionally remains after terrain acquisition.
   const orthophoto = await acquireOrthophotos(
-    { ...options, bbox, cacheDir, userAgent },
+    acquisitionOptions,
     { center, projector: createProjector(center), elevation }
   );
   return {
-    parkName: options.parkName || geocoder?.displayName?.split(",")[0] || "Theme Park",
+    parkName: options.parkName || geocoder?.displayName?.split(",")[0] || "Bounding Box Build",
     bbox,
     areaKm2,
     center,
     suppliedBoundary,
     geocoder,
+    sourcePlan,
+    acquisitionAttempts: {
+      terrain: terrainAcquisition.attempts,
+      planning: planning.acquisitionAttempts || []
+    },
+    autoSelection: {
+      osm: options.osm ? "local" : sourcePlan.selected.osm?.providerId || null,
+      terrain: terrainAcquisition.providerId,
+      planning: planning.providerId || sourcePlan.selected.planning?.providerId || null,
+      imagery: sourcePlan.selected.imagery?.providerId || null,
+      trees: sourcePlan.selected.trees?.providerId || null,
+      hydrology: sourcePlan.selected.hydrology?.providerId || null,
+      landcover: sourcePlan.selected.landcover?.providerId || null
+    },
     osm,
     elevation,
+    planning,
     orthophoto,
     acquiredAt: new Date().toISOString()
   };
+}
+
+async function acquireAutomaticTerrain(options, sourcePlan) {
+  const candidates = (sourcePlan.candidatesByKind.terrain || []).filter((entry) => entry.implemented);
+  const attempts = [];
+  const acquirer = options.acquireElevationImpl || acquireElevation;
+  for (const candidate of candidates) {
+    const elevation = elevationOptionFromCandidate(candidate);
+    if (!elevation || elevation === "none") continue;
+    if (elevation === "open-meteo" && !options.acceptOpenMeteoTerms) {
+      attempts.push({ providerId: candidate.providerId, adapter: elevation, status: "blocked-policy" });
+      continue;
+    }
+    try {
+      const result = await acquirer({ ...options, elevation });
+      attempts.push({ providerId: candidate.providerId, adapter: elevation, status: "success" });
+      return { result: { ...result, acquisitionAttempts: attempts }, providerId: candidate.providerId, attempts };
+    } catch (error) {
+      attempts.push({
+        providerId: candidate.providerId,
+        adapter: elevation,
+        status: "failed",
+        message: error?.message || String(error)
+      });
+      if (options.strictSourceAcquisition) throw error;
+    }
+  }
+  return {
+    result: {
+      provider: "none",
+      resolutionM: null,
+      points: [],
+      acquisitionAttempts: attempts,
+      warning: attempts.length
+        ? "Automatic terrain providers were unavailable or blocked; a flat verified datum will be used."
+        : "No executable terrain source was selected; a flat verified datum will be used."
+    },
+    providerId: null,
+    attempts
+  };
+}
+
+async function acquirePlanningSafely(options, selectedPlanning) {
+  const acquirer = options.planningAcquirerImpl || acquirePlanningForBbox;
+  if (!selectedPlanning) {
+    return {
+      provider: "none",
+      providerId: null,
+      status: "no-executable-provider",
+      applicationCount: 0,
+      jurisdictionCount: 0,
+      applications: [],
+      jurisdictions: [],
+      acquisitionAttempts: []
+    };
+  }
+  try {
+    const result = await acquirer(options, selectedPlanning);
+    return {
+      ...result,
+      providerId: result.providerId || selectedPlanning.providerId,
+      acquisitionAttempts: [{ providerId: selectedPlanning.providerId, status: "success" }]
+    };
+  } catch (error) {
+    if (options.strictSourceAcquisition) throw error;
+    return {
+      provider: selectedPlanning.providerName,
+      providerId: selectedPlanning.providerId,
+      status: "failed",
+      applicationCount: 0,
+      jurisdictionCount: 0,
+      applications: [],
+      jurisdictions: [],
+      warning: `Planning acquisition failed; continuing with lower-authority evidence: ${error?.message || String(error)}`,
+      acquisitionAttempts: [{
+        providerId: selectedPlanning.providerId,
+        status: "failed",
+        message: error?.message || String(error)
+      }]
+    };
+  }
+}
+
+function elevationOptionFromCandidate(candidate) {
+  const adapter = candidate?.acquisition?.adapter;
+  if (adapter === "ea-lidar") return "ea-lidar";
+  if (adapter === "open-meteo") return "open-meteo";
+  return null;
 }
 
 async function resolveWithNominatim({ parkName, nominatimUrl, cacheDir, userAgent, noCache }) {
@@ -172,6 +307,7 @@ export function buildOverpassQuery({ south, west, north, east }) {
   nwr["playground"];
   nwr["public_transport"];
   nwr["landcover"];
+  nwr["boundary"="administrative"];
 );
 out meta geom;`;
 }
@@ -183,7 +319,7 @@ async function acquireElevation(options) {
       provider: "none",
       resolutionM: null,
       points: [],
-      warning: "No terrain source was selected; a flat verified datum will be used."
+      warning: "No executable terrain source was selected; a flat verified datum will be used."
     };
   }
   if (provider === "ea-lidar" || provider === "geotiff") {

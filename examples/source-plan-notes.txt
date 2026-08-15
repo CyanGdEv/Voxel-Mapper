@@ -1,0 +1,10 @@
+Examples:
+
+England / Alton Towers area:
+node scripts/source-plan.mjs --bbox 52.97,-1.92,53.01,-1.86
+
+Florida / Orlando area:
+node scripts/source-plan.mjs --bbox 28.35,-81.62,28.45,-81.50
+
+Tokyo area, JSON output:
+node scripts/source-plan.mjs --bbox 35.61,139.86,35.67,139.92 --json
