@@ -1,0 +1,28 @@
+name: Voxel Mapper CI
+
+on:
+  push:
+    branches: [main, "agent/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run doctor
+      - name: Install PDF.js planning extraction runtime
+        run: npm install --no-save --package-lock=false --ignore-scripts pdfjs-dist@4.10.38
+      - name: Smoke-test real vector PDF extraction
+        run: node scripts/planning-pdfjs-smoke.mjs

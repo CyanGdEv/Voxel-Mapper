@@ -1,0 +1,45 @@
+{
+  "name": "voxel-mapper",
+  "version": "0.12.0",
+  "description": "Planning-authoritative evidence-fusion compiler for high-fidelity 1:1 Minecraft Bedrock theme-park worlds",
+  "type": "module",
+  "bin": {
+    "themepark-map": "./src/cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test",
+    "build:fixture": "node src/cli.mjs build --park-name \"Fixture Park\" --osm test/fixtures/mini-park.overpass.json --bbox 51.0000,-0.0020,51.0020,0.0020 --elevation none --out out/fixture",
+    "build:orthophoto-demo": "node scripts/build-orthophoto-demo.mjs",
+    "build:terrain-demo": "node scripts/build-terrain-detail-demo.mjs",
+    "check:ea-aerial": "node scripts/check-ea-vertical-aerial-coverage.mjs",
+    "doctor": "node src/cli.mjs doctor",
+    "validate:world": "node scripts/validate-world.mjs",
+    "build:alton:benchmark": "node src/cli.mjs build --park-name \"Alton Towers Resort\" --contact \"$TPMAP_CONTACT\" --accept-nominatim-policy --elevation ea-lidar --buildings markers --terrain-detail-mode plausible --tree-density-per-100m2 2.8 --shrub-density-per-100m2 16 --tree-line-spacing-m 3 --vegetation-min-spacing-m 3 --max-vegetation-models 30000 --accuracy-mode plausible --out out/alton-towers-benchmark",
+    "test:planning": "node --test test/planning-fusion.test.mjs"
+  },
+  "keywords": [
+    "minecraft-bedrock",
+    "openstreetmap",
+    "theme-park",
+    "gis",
+    "overpass"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@8crafter/leveldb-zlib": "^1.6.0",
+    "copc": "^0.0.8",
+    "fflate": "^0.8.2",
+    "geotiff": "^3.0.5",
+    "mcbe-leveldb": "^1.21.0",
+    "proj4": "^2.21.0"
+  },
+  "overrides": {
+    "tar": "7.5.22"
+  },
+  "devDependencies": {
+    "@taku128/mcworld-browser": "^0.1.5"
+  }
+}
