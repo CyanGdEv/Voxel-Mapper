@@ -44,6 +44,28 @@ test("local planning register parser uses a generic OSM park hint instead of har
   assert.equal(applications[0]["decision-date"], "31/08/2026");
 });
 
+test("local planning register matching does not treat ride names as substrings of unrelated words", () => {
+  const html = `
+    <table>
+      <tr>
+        <td><a href="ApplicationSearchServlet?PKID=201">SMD/2026/0201</a></td>
+        <td>01/01/2026</td><td>02/01/2026</td>
+        <td>Unrelated Site</td>
+        <td>Residential development with associated heritage railway works</td>
+        <td>Approved</td><td>03/01/2026</td>
+      </tr>
+      <tr>
+        <td><a href="ApplicationSearchServlet?PKID=202">SMD/2026/0202</a></td>
+        <td>01/01/2026</td><td>02/01/2026</td>
+        <td>Rita, Fixture Park</td>
+        <td>Maintenance works to Rita station</td>
+        <td>Approved</td><td>03/01/2026</td>
+      </tr>
+    </table>`;
+  const applications = parsePublicAccessMajorApplications(html, listingUrl, ["Rita"]);
+  assert.deepEqual(applications.map((entry) => entry.reference), ["SMD/2026/0202"]);
+});
+
 test("OSM planning hints include park identity, named rides and named park areas", () => {
   const hints = extractOsmPlanningHints({
     elements: [
