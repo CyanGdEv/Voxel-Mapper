@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { corroboratePlanningGeometryCandidate, latestPlanningDecisionDate } from "../src/lib/planning-current-corroboration.mjs";
+import { corroboratePlanningGeometryCandidate, latestPlanningDecisionDate, parsePlanningDate } from "../src/lib/planning-current-corroboration.mjs";
 
 function candidate(overrides = {}) {
   return {
@@ -92,4 +92,13 @@ test("latestPlanningDecisionDate considers only explicit decision-date evidence"
     ]
   }]);
   assert.equal(result.toISOString(), "2020-04-01T00:00:00.000Z");
+});
+
+test("UK DD/MM/YYYY decision dates are parsed deterministically", () => {
+  assert.equal(parsePlanningDate("09/08/2016").toISOString(), "2016-08-09T00:00:00.000Z");
+  assert.equal(parsePlanningDate("31/02/2016"), null);
+  const result = latestPlanningDecisionDate([{
+    dateEvidence: [{ kind: "decision-date", value: "09/08/2016" }]
+  }]);
+  assert.equal(result.toISOString(), "2016-08-09T00:00:00.000Z");
 });
