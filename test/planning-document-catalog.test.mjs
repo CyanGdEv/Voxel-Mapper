@@ -48,6 +48,11 @@ test("catalog collapses identical document bytes while retaining all application
   assert.equal(catalog.extractionShardStrategy, "acquisition-affinity-with-hash-fallback");
 });
 
+test("catalog extraction fanout defaults to and clamps at 256 shards", () => {
+  assert.equal(buildPlanningDocumentCatalog([]).extractionShards, 256);
+  assert.equal(buildPlanningDocumentCatalog([], { planningExtractionShards: 999 }).extractionShards, 256);
+});
+
 test("catalog excludes low-value decision/supporting PDFs from extraction by default", () => {
   const catalog = buildPlanningDocumentCatalog([{
     selectedShard: 4,

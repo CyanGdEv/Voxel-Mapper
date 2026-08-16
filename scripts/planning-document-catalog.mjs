@@ -11,7 +11,7 @@ const value = (name) => {
 };
 
 if (args.includes("--help") || !value("--manifests")) {
-  console.log(`Voxel Mapper planning document catalog\n\nUsage:\n  node scripts/planning-document-catalog.mjs --manifests DIR [options]\n\nOptions:\n  --out FILE               Catalog output (default planning-document-catalog.json)\n  --extraction-shards N    Extraction shard count (default 20)\n  --include-low-value      Include decisions/supporting files in extraction queue\n`);
+  console.log(`Voxel Mapper planning document catalog\n\nUsage:\n  node scripts/planning-document-catalog.mjs --manifests DIR [options]\n\nOptions:\n  --out FILE               Catalog output (default planning-document-catalog.json)\n  --extraction-shards N    Extraction shard count (default 256, max 256)\n  --include-low-value      Include decisions/supporting files in extraction queue\n`);
   process.exit(args.includes("--help") ? 0 : 2);
 }
 
@@ -20,7 +20,7 @@ const files = (await readdir(directory)).filter((file) => /^planning-documents-s
 const manifests = [];
 for (const file of files) manifests.push(await readJson(path.join(directory, file)));
 const catalog = buildPlanningDocumentCatalog(manifests, {
-  planningExtractionShards: Number(value("--extraction-shards") || 20),
+  planningExtractionShards: Number(value("--extraction-shards") || 256),
   includeLowValuePlanningDocuments: args.includes("--include-low-value")
 });
 const out = path.resolve(value("--out") || "planning-document-catalog.json");

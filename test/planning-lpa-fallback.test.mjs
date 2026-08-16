@@ -5,6 +5,7 @@ import path from "node:path";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { acquireSources } from "../src/lib/sources.mjs";
 import {
+  augmentPlanningFromLocalPortals,
   extractOsmPlanningHints,
   parsePublicAccessMajorApplications
 } from "../src/lib/planning-lpa-fallback.mjs";
@@ -44,6 +45,28 @@ test("local planning register parser uses a generic OSM park hint instead of har
   assert.equal(applications[0]["decision-date"], "31/08/2026");
 });
 
+test("local planning register matching does not treat ride names as substrings of unrelated words", () => {
+  const html = `
+    <table>
+      <tr>
+        <td><a href="ApplicationSearchServlet?PKID=201">SMD/2026/0201</a></td>
+        <td>01/01/2026</td><td>02/01/2026</td>
+        <td>Unrelated Site</td>
+        <td>Residential development with associated heritage railway works</td>
+        <td>Approved</td><td>03/01/2026</td>
+      </tr>
+      <tr>
+        <td><a href="ApplicationSearchServlet?PKID=202">SMD/2026/0202</a></td>
+        <td>01/01/2026</td><td>02/01/2026</td>
+        <td>Rita, Fixture Park</td>
+        <td>Maintenance works to Rita station</td>
+        <td>Approved</td><td>03/01/2026</td>
+      </tr>
+    </table>`;
+  const applications = parsePublicAccessMajorApplications(html, listingUrl, ["Rita"]);
+  assert.deepEqual(applications.map((entry) => entry.reference), ["SMD/2026/0202"]);
+});
+
 test("OSM planning hints include park identity, named rides and named park areas", () => {
   const hints = extractOsmPlanningHints({
     elements: [
@@ -54,6 +77,34 @@ test("OSM planning hints include park identity, named rides and named park areas
     ]
   });
   assert.deepEqual(hints, ["Fixture Park", "ST10 1AA", "Fixture Fury", "Adventure Valley"]);
+});
+
+test("local portal supplementation respects the configured application cap", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "voxel-planning-lpa-cap-"));
+  try {
+    const planning = {
+      providerId: "planning-data-england",
+      status: "acquired",
+      applications: [
+        { entity: 1, reference: "26/0001/FUL", description: "Fixture Park entrance works" },
+        { entity: 2, reference: "26/0002/FUL", description: "Fixture Park path works" }
+      ],
+      applicationCount: 2,
+      jurisdictions: [{ entity: 999, reference: "E07000198", name: "Staffordshire Moorlands District Council" }]
+    };
+    const osmData = { elements: [{ type: "way", id: 1, tags: { tourism: "theme_park", name: "Fixture Park" } }] };
+    const result = await augmentPlanningFromLocalPortals({
+      maxPlanningApplications: 2,
+      cacheDir: path.join(root, "cache"),
+      noCache: true,
+      fetchPlanningPortalImpl: async () => ({ ok: true, status: 200, text: async () => portalHtml() })
+    }, planning, osmData);
+    assert.equal(result.applicationCount, 2);
+    assert.equal(result.applications.length, 2);
+    assert.equal(result.localPortalFallback.addedApplications, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("bbox acquisition supplements a zero-result national planning feed from the discovered LPA portal", async () => {

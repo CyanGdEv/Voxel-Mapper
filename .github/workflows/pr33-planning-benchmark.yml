@@ -1,0 +1,53 @@
+name: PR33 planning critical-path benchmark
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr33-planning-critical-path-benchmark
+  cancel-in-progress: true
+
+jobs:
+  planning-benchmark:
+    if: github.head_ref == 'agent/sub15-generation-critical-path'
+    uses: ./.github/workflows/planning-documents.yml
+    with:
+      bbox: "52.9820,-1.9000,52.9945,-1.8665"
+      max_applications: "2500"
+      shards: "256"
+      refresh: false
+
+  benchmark-complete:
+    needs: planning-benchmark
+    if: always() && github.head_ref == 'agent/sub15-generation-critical-path'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful real planning benchmark
+        shell: bash
+        run: |
+          echo "Planning benchmark result: ${{ needs.planning-benchmark.result }}"
+          [[ "${{ needs.planning-benchmark.result }}" == "success" ]]
+      - name: Download planning authority benchmark output
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-current-state-evidence
+          path: planning-benchmark-output
+      - name: Require non-empty verified planning authority
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const filename = path.join('planning-benchmark-output', 'planning-current-authority-evidence.json');
+          const authority = JSON.parse(fs.readFileSync(filename, 'utf8'));
+          const geometry = Number(authority?.counts?.geometryCandidates || authority?.geometryCandidates?.length || 0);
+          const materials = Number(authority?.counts?.materialObservations || authority?.materialObservations?.length || 0);
+          const templates = Number(authority?.counts?.rideStructureTemplates || authority?.rideStructureTemplates?.length || 0);
+          console.log(JSON.stringify({ worldGeometryAuthority: authority.worldGeometryAuthority, geometry, materials, templates }, null, 2));
+          if (authority.worldGeometryAuthority !== true) throw new Error('Benchmark produced no verified planning world authority');
+          if (geometry < 100) throw new Error(`Benchmark planning authority unexpectedly sparse: ${geometry} geometry candidates`);
+          NODE

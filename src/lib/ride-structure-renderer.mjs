@@ -332,7 +332,7 @@ function supportBlock(material) {
 }
 function enclosureBlock(material) {
   if (material === "timber") return "minecraft:dark_oak_planks";
-  if (material === "brick") return "minecraft:bricks";
+  if (material === "brick") return "minecraft:brick_block";
   if (material === "stone") return "minecraft:stone_bricks";
   if (material === "concrete") return "minecraft:light_gray_concrete";
   if (material === "steel") return "minecraft:iron_block";

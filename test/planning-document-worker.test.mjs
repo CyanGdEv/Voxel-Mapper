@@ -118,3 +118,44 @@ test("worker records per-document failure instead of aborting a shard by default
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("permanent 4xx planning document errors fail fast while transient 5xx errors still retry", async () => {
+  const permanentRoot = await mkdtemp(path.join(os.tmpdir(), "voxel-planning-permanent-http-"));
+  const transientRoot = await mkdtemp(path.join(os.tmpdir(), "voxel-planning-transient-http-"));
+  try {
+    const permanentQueue = buildPlanningDocumentQueue({ applications: [{
+      entity: 401,
+      "document-urls": "https://planning.example.gov/docs/gone.pdf"
+    }] }, { planningDocumentShards: 20 });
+    let permanentCalls = 0;
+    await processPlanningDocumentShard(permanentQueue, {
+      shardIndex: permanentQueue.items[0].shard,
+      cacheDir: permanentRoot,
+      fetchRetries: 2,
+      fetchImpl: async () => {
+        permanentCalls += 1;
+        return new Response("gone", { status: 404 });
+      }
+    });
+    assert.equal(permanentCalls, 1, "404 is definitive and must not burn the retry budget");
+
+    const transientQueue = buildPlanningDocumentQueue({ applications: [{
+      entity: 402,
+      "document-urls": "https://planning.example.gov/docs/temporary.pdf"
+    }] }, { planningDocumentShards: 20 });
+    let transientCalls = 0;
+    await processPlanningDocumentShard(transientQueue, {
+      shardIndex: transientQueue.items[0].shard,
+      cacheDir: transientRoot,
+      fetchRetries: 2,
+      fetchImpl: async () => {
+        transientCalls += 1;
+        return new Response("temporary", { status: 503 });
+      }
+    });
+    assert.equal(transientCalls, 3, "transient server failures retain the full retry budget");
+  } finally {
+    await rm(permanentRoot, { recursive: true, force: true });
+    await rm(transientRoot, { recursive: true, force: true });
+  }
+});

@@ -2,7 +2,7 @@ import path from "node:path";
 import { cachedJson, fetchJson, sha256 } from "./io.mjs";
 
 const DEFAULT_PLANNING_DATA_ENDPOINT = "https://www.planning.data.gov.uk/entity.json";
-const DEFAULT_MAX_APPLICATIONS = 680;
+const DEFAULT_MAX_APPLICATIONS = 2_500;
 const PAGE_SIZE = 100;
 
 export const PLANNING_DATA_ENGLAND_PROVIDER = Object.freeze({

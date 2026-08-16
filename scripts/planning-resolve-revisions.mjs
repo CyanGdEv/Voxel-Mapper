@@ -9,9 +9,9 @@ import {
   RESOLVED_BUNDLE_FORMAT,
   loadBundleManifest,
   readBundlePage,
-  writeBundleManifest,
-  writeEvidencePageStreams
+  writeBundleManifest
 } from "../src/lib/planning-evidence-bundle.mjs";
+import { writeEvidencePageStreamsFast } from "../src/lib/planning-evidence-fast-write.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 if (!args.registered || !args.catalog || !args.out) {
@@ -117,7 +117,7 @@ async function resolveBundle(bundle) {
     const drawingMetadata = (evidence.drawingMetadata || []).map((entry) => annotate(entry, baseDecision));
     const rideStructureTemplates = (evidence.rideStructureTemplates || []).map((entry) => annotateTemplate(entry, baseDecision));
     const resolvedEvidence = { geometryCandidates, verticalObservations, materialObservations, rideStructureTemplates, drawingMetadata };
-    const resolvedPage = await writeEvidencePageStreams(resolvedRoot, {
+    const resolvedPage = await writeEvidencePageStreamsFast(resolvedRoot, {
       ...pageEntry,
       geometryFile: null,
       verticalFile: null,
@@ -138,7 +138,7 @@ async function resolveBundle(bundle) {
     const authorityCount = authorityEvidence.geometryCandidates.length + authorityEvidence.verticalObservations.length +
       authorityEvidence.materialObservations.length + authorityEvidence.rideStructureTemplates.length;
     if (authorityCount > 0) {
-      const authorityPage = await writeEvidencePageStreams(authorityRoot, {
+      const authorityPage = await writeEvidencePageStreamsFast(authorityRoot, {
         ...pageEntry,
         geometryFile: null,
         verticalFile: null,

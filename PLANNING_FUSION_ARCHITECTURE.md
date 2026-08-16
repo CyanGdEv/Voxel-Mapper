@@ -26,7 +26,7 @@ Planning features are marked `authority.geometryLocked=true`. Lower-authority pa
 1. Acquire OSM, terrain DTM, DSM/LiDAR and existing optional sources.
 2. Normalize OSM into metre-space around the park centre.
 3. Apply existing conservative public/Overture gap fusion.
-4. Load planning manifests, up to **680 applications by default**.
+4. Load planning manifests, up to **2,500 applications per build**.
 5. Normalize architect-drawing observations into the same WGS84 + local metre-space representation.
 6. Apply planning edit operations:
    - `add`
@@ -38,6 +38,8 @@ Planning features are marked `authority.geometryLocked=true`. Lower-authority pa
 8. Sample LiDAR DSM/DTM against the **resulting final building footprints**.
 9. Run the unchanged terrain/path/tree/ride compilation pipeline.
 10. Emit planning-fusion and material-palette evidence manifests alongside the normal build evidence.
+
+The GitHub Actions planning pipeline can split application acquisition, vector extraction, and page georegistration into **up to 256 deterministic shards**. This is the maximum GitHub Actions matrix size; actual simultaneous runner execution still depends on the repository's available runner concurrency.
 
 ## Planning manifest
 
@@ -96,7 +98,7 @@ If `operation=auto` (the default), Voxel Mapper compares only compatible lower-a
 
 Useful controls:
 
-- `--max-planning-applications 680`
+- `--max-planning-applications 2500`
 - `--planning-match-tolerance-m 8`
 - `--planning-min-match-score 0.64`
 

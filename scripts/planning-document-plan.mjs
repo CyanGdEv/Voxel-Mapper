@@ -11,8 +11,11 @@ const value = (name) => {
   return index >= 0 ? args[index + 1] : undefined;
 };
 
+const MAX_APPLICATIONS = 2_500;
+const DEFAULT_SHARDS = 256;
+
 if (args.includes("--help") || !value("--bbox")) {
-  console.log(`Voxel Mapper planning document plan\n\nUsage:\n  node scripts/planning-document-plan.mjs --bbox south,west,north,east [options]\n\nOptions:\n  --out FILE               Queue output (default planning-document-queue.json)\n  --cache DIR              Discovery cache (default .tpmap-cache)\n  --max-applications N     Maximum intersecting planning applications (max 680)\n  --shards N               Queue shard count (default 20)\n  --refresh                Refresh Planning Data/API and local-register discovery\n`);
+  console.log(`Voxel Mapper planning document plan\n\nUsage:\n  node scripts/planning-document-plan.mjs --bbox south,west,north,east [options]\n\nOptions:\n  --out FILE               Queue output (default planning-document-queue.json)\n  --cache DIR              Discovery cache (default .tpmap-cache)\n  --max-applications N     Maximum intersecting planning applications (max 2500)\n  --shards N               Queue shard count (default 256, max 256)\n  --refresh                Refresh Planning Data/API and local-register discovery\n`);
   process.exit(args.includes("--help") ? 0 : 2);
 }
 
@@ -30,12 +33,12 @@ const sources = await acquireSources({
   elevation: "none",
   cache: cacheDir,
   noCache: args.includes("--refresh"),
-  maxPlanningApplications: Number(value("--max-applications") || 680),
+  maxPlanningApplications: Number(value("--max-applications") || MAX_APPLICATIONS),
   contact: process.env.TPMAP_CONTACT || undefined
 });
 const planning = sources.planning;
 const queue = buildPlanningDocumentQueue(planning, {
-  planningDocumentShards: Number(value("--shards") || 20)
+  planningDocumentShards: Number(value("--shards") || DEFAULT_SHARDS)
 });
 
 // Keep a compact, immutable lifecycle snapshot next to the queue. Downstream

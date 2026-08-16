@@ -5,7 +5,7 @@ import { readJson, sha256, sha256File } from "./io.mjs";
 import { createMaterialRegistry, paletteSummary, resolveFeatureMaterialPalettes } from "./material-palettes.mjs";
 import { snapshotFeatureEvidence } from "./evidence-graph.mjs";
 
-const DEFAULT_MAX_APPLICATIONS = 680;
+const DEFAULT_MAX_APPLICATIONS = 2_500;
 const DEFAULT_MATCH_TOLERANCE_M = 8;
 const DEFAULT_MIN_MATCH_SCORE = 0.64;
 const PLANNING_AUTHORITY = 300;
@@ -17,6 +17,11 @@ const PLANNING_AUTHORITY = 300;
  */
 export async function fusePlanningApplications(features, projector, options = {}) {
   const files = options.planning || [];
+  const requestedMaxApplications = Math.floor(Number(options.maxPlanningApplications ?? DEFAULT_MAX_APPLICATIONS));
+  if (!Number.isInteger(requestedMaxApplications) || requestedMaxApplications < 1) {
+    throw new UserError("--max-planning-applications must be a positive integer");
+  }
+  const maxApplications = Math.min(DEFAULT_MAX_APPLICATIONS, requestedMaxApplications);
   const summary = {
     schemaVersion: 1,
     status: files.length ? "active" : "disabled",
@@ -24,7 +29,7 @@ export async function fusePlanningApplications(features, projector, options = {}
       baseGeometry: "OpenStreetMap",
       authority: "planning drawings override lower-authority map geometry where matched",
       terrain: "unchanged: planning fusion does not modify the terrain/DTM slope pipeline",
-      maxApplications: options.maxPlanningApplications ?? DEFAULT_MAX_APPLICATIONS,
+      maxApplications,
       automaticMatchToleranceM: options.planningMatchToleranceM ?? DEFAULT_MATCH_TOLERANCE_M,
       minimumAutomaticMatchScore: options.planningMinMatchScore ?? DEFAULT_MIN_MATCH_SCORE
     },
@@ -38,11 +43,9 @@ export async function fusePlanningApplications(features, projector, options = {}
   const bundles = [];
   for (const filename of files) bundles.push(await loadPlanningBundle(path.resolve(filename)));
   const applications = bundles.flatMap((bundle) => bundle.applications);
-  const maxApplications = Math.floor(Number(options.maxPlanningApplications ?? DEFAULT_MAX_APPLICATIONS));
-  if (!Number.isInteger(maxApplications) || maxApplications < 1) throw new UserError("--max-planning-applications must be a positive integer");
   if (applications.length > maxApplications) {
     throw new UserError(`Planning bundle contains ${applications.length} applications; limit is ${maxApplications}`,
-      "Split the park into bounded planning batches or deliberately raise --max-planning-applications.");
+      `Use a tighter planning subset; the hard application cap is ${DEFAULT_MAX_APPLICATIONS}.`);
   }
 
   const materialRecords = bundles.flatMap((bundle) => bundle.materials)

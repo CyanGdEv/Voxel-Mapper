@@ -5,6 +5,8 @@ import {
   rankPlanningApplicationsByOsm
 } from "./osm-planning-reconciliation.mjs";
 
+const MAX_PLANNING_APPLICATIONS = 2_500;
+
 const PORTAL_ADAPTERS = Object.freeze([
   Object.freeze({
     id: "staffordshire-moorlands-publicaccess",
@@ -22,6 +24,10 @@ export async function augmentPlanningFromLocalPortals(options, planning, osmData
   const jurisdictions = Array.isArray(planning?.jurisdictions) ? planning.jurisdictions : [];
   const osmDiscovery = buildOsmPlanningSearchIndex(osmData, options);
   const hints = osmDiscovery.searchTerms;
+  const maxApplications = Math.max(0, Math.min(
+    MAX_PLANNING_APPLICATIONS,
+    Number(options.maxPlanningApplications ?? options.maxPlanningApplicationsPerBuild ?? MAX_PLANNING_APPLICATIONS)
+  ));
   const applications = rankPlanningApplicationsByOsm(
     Array.isArray(planning?.applications) ? [...planning.applications] : [],
     osmDiscovery,
@@ -30,10 +36,11 @@ export async function augmentPlanningFromLocalPortals(options, planning, osmData
   const attempts = [];
 
   if (!jurisdictions.length || !hints.length) {
+    const bounded = applications.slice(0, maxApplications);
     return {
       ...planning,
-      applications,
-      applicationCount: applications.length,
+      applications: bounded,
+      applicationCount: bounded.length,
       coverageStatus: planning?.coverageStatus || "partial-or-unknown",
       osmPlanningDiscovery: compactDiscovery(osmDiscovery),
       localPortalFallback: { attempted: false, hints, attempts, addedApplications: 0 }
@@ -71,7 +78,7 @@ export async function augmentPlanningFromLocalPortals(options, planning, osmData
 
   const merged = dedupeApplications(applications);
   const addedApplications = Math.max(0, merged.length - (planning?.applications?.length || 0));
-  const ranked = rankPlanningApplicationsByOsm(merged, osmDiscovery, options);
+  const ranked = rankPlanningApplicationsByOsm(merged, osmDiscovery, options).slice(0, maxApplications);
   return {
     ...planning,
     applications: ranked,
@@ -112,7 +119,11 @@ export function parsePublicAccessMajorApplications(html, listingUrl, hints = [])
       .map((match) => stripHtml(match[1]).replace(/\s+/g, " ").trim());
     const rowText = cells.filter(Boolean).join(" | ") || stripHtml(rowHtml).replace(/\s+/g, " ").trim();
     const normalizedRow = normalizeText(rowText);
-    if (normalizedHints.length && !normalizedHints.some((hint) => normalizedRow.includes(hint))) continue;
+    // Match normalized token sequences, not arbitrary substrings. The previous
+    // includes() check treated ride names such as "Rita" as a match inside
+    // unrelated words such as "heritage", which could enqueue hundreds of
+    // irrelevant portal attachments and dominate generation wall-clock time.
+    if (normalizedHints.length && !normalizedHints.some((hint) => containsNormalizedPhrase(normalizedRow, hint))) continue;
     const documentationUrl = new URL(htmlDecode(anchor[1]), listingUrl).toString();
     const receivedDate = cells[1] || null;
     const validDate = cells[2] || null;
@@ -143,7 +154,10 @@ export function parsePublicAccessMajorApplications(html, listingUrl, hints = [])
 }
 
 async function discoverPortalApplications(adapter, options, hints) {
-  const cacheDir = path.join(options.cacheDir || ".tpmap-cache", "planning-lpa-fallback");
+  // Keep local-register HTML beside the national planning index cache so the
+  // existing Actions cache restores both on normal repeat generations. A
+  // refresh/no-cache run still bypasses it through cachedJson exactly as before.
+  const cacheDir = path.join(options.cacheDir || ".tpmap-cache", "planning-data-england", "lpa-fallback");
   const cacheKey = `${adapter.id}\n${adapter.listingUrl}`;
   const { data, cacheHit } = await cachedJson({
     cacheDir,
@@ -195,6 +209,19 @@ function compactDiscovery(index) {
     byRole: index.byRole,
     searchTerms: index.searchTerms
   };
+}
+
+function containsNormalizedPhrase(text, phrase) {
+  const haystack = String(text || "").split(" ").filter(Boolean);
+  const needle = String(phrase || "").split(" ").filter(Boolean);
+  if (!needle.length || needle.length > haystack.length) return false;
+  outer: for (let index = 0; index <= haystack.length - needle.length; index += 1) {
+    for (let offset = 0; offset < needle.length; offset += 1) {
+      if (haystack[index + offset] !== needle[offset]) continue outer;
+    }
+    return true;
+  }
+  return false;
 }
 
 function normalizeText(value) {

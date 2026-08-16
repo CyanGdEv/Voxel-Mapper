@@ -46,7 +46,7 @@ const DOCUMENT_EXTENSIONS = new Set([
 export function buildPlanningDocumentQueue(planning, options = {}) {
   const applications = Array.isArray(planning?.applications) ? planning.applications : [];
   const maxItems = Math.max(0, Number(options.maxPlanningDocumentQueueItems ?? 25_000));
-  const shardCount = Math.max(1, Math.min(100, Number(options.planningDocumentShards ?? 20)));
+  const shardCount = Math.max(1, Math.min(256, Number(options.planningDocumentShards ?? 256)));
   const items = [];
   const seen = new Set();
 
@@ -134,7 +134,7 @@ export function planningDocumentPriority(classification, action = "download") {
   return base + (action === "download" ? 4 : 0);
 }
 
-export function shardForApplication(applicationKey, shardCount = 20) {
+export function shardForApplication(applicationKey, shardCount = 256) {
   const count = Math.max(1, Math.floor(Number(shardCount) || 1));
   const hex = sha256(String(applicationKey)).slice(0, 8);
   return Number.parseInt(hex, 16) % count;
