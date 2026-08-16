@@ -1,4 +1,5 @@
 import { fetchViaPublicDns, httpsUpgradeCandidate } from "./public-dns-http.mjs";
+import { fetchCommonCrawlPublicUrl } from "./public-common-crawl.mjs";
 import { isSafePublicHttpUrl } from "./planning-documents.mjs";
 
 const CDX_ENDPOINT = "https://web.archive.org/cdx/search/cdx";
@@ -7,15 +8,44 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_CAPTURE_LIMIT = 5;
 
 /**
- * Fetch an immutable public copy of a URL from the Internet Archive Wayback
- * Machine. This is transport recovery only: callers must retain the original
- * authority URL and must not infer current/as-built status from archive age.
+ * Fetch an immutable public copy of a URL. Wayback is attempted first; if it is
+ * unavailable, production may fall through to Common Crawl's raw WARC corpus.
+ * Both are transport recovery only: callers retain the original authority URL
+ * and must never infer current/as-built status from archive age.
  */
 export async function fetchArchivedPublicUrl(urlValue, init = {}, options = {}) {
   const originalUrl = assertSafeOriginalUrl(urlValue);
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== "function") throw new Error("No fetch implementation is available for web-archive recovery");
 
+  let waybackError = null;
+  try {
+    return await fetchWaybackPublicUrl(originalUrl, init, { ...options, fetchImpl });
+  } catch (error) {
+    waybackError = error;
+  }
+
+  const commonCrawlFetchImpl = options.commonCrawlFetchImpl || (fetchImpl === globalThis.fetch ? globalThis.fetch : null);
+  if (commonCrawlFetchImpl && options.disableCommonCrawlFallback !== true) {
+    try {
+      return await fetchCommonCrawlPublicUrl(originalUrl, init, {
+        ...options,
+        fetchImpl: commonCrawlFetchImpl,
+        collectionLimit: options.commonCrawlCollectionLimit,
+        captureLimit: options.commonCrawlCaptureLimit,
+        maxWarcRecordMb: options.commonCrawlMaxWarcRecordMb
+      });
+    } catch (commonCrawlError) {
+      throw new Error(
+        `Wayback fallback failed: ${waybackError?.message || waybackError}; Common Crawl fallback failed: ${commonCrawlError?.message || commonCrawlError}`
+      );
+    }
+  }
+  throw waybackError;
+}
+
+async function fetchWaybackPublicUrl(originalUrl, init, options) {
+  const fetchImpl = options.fetchImpl;
   const captures = [];
   const lookupFailures = [];
   for (const sourceUrl of archiveSourceCandidates(originalUrl)) {
@@ -70,6 +100,7 @@ export async function fetchArchivedPublicUrl(urlValue, init = {}, options = {}) 
         response,
         retrieval: {
           mode: "web-archive",
+          archived: true,
           originalUrl,
           capturedOriginalUrl: capture.original,
           captureTimestamp: capture.timestamp,
