@@ -159,3 +159,80 @@ test("permanent 4xx planning document errors fail fast while transient 5xx error
     await rm(transientRoot, { recursive: true, force: true });
   }
 });
+
+test("worker recovers archived authority application HTML and archived PDF without replacing canonical source URLs", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "voxel-planning-archive-"));
+  try {
+    const applicationUrl = "https://planning.example.gov/application/archive-1";
+    const documentUrl = "https://planning.example.gov/docs/proposed-layout.pdf";
+    const queue = buildPlanningDocumentQueue({ applications: [{
+      entity: 501,
+      reference: "26/501/FUL",
+      "documentation-url": applicationUrl
+    }] }, { planningDocumentShards: 20 });
+    const shard = queue.items[0].shard;
+    const archiveFetchImpl = async (urlValue) => {
+      const url = new URL(String(urlValue));
+      if (url.pathname === "/cdx/search/cdx") {
+        const source = url.searchParams.get("url");
+        if (source === applicationUrl) return new Response(JSON.stringify([
+          ["timestamp", "original", "statuscode", "mimetype", "digest"],
+          ["20240102030405", applicationUrl, "200", "text/html", "APPDIGEST"]
+        ]), { status: 200, headers: { "content-type": "application/json" } });
+        if (source === documentUrl) return new Response(JSON.stringify([
+          ["timestamp", "original", "statuscode", "mimetype", "digest"],
+          ["20240103040506", documentUrl, "200", "application/pdf", "PDFDIGEST"]
+        ]), { status: 200, headers: { "content-type": "application/json" } });
+        return new Response(JSON.stringify([["timestamp", "original", "statuscode", "mimetype", "digest"]]), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }
+      if (url.pathname.startsWith("/web/20240102030405id_/")) {
+        return new Response('<html><body><a href="/docs/proposed-layout.pdf">Proposed Site Plan</a></body></html>', {
+          status: 200,
+          headers: { "content-type": "text/html" }
+        });
+      }
+      if (url.pathname.startsWith("/web/20240103040506id_/")) {
+        return new Response(Buffer.from("%PDF-archived-proposed-layout"), {
+          status: 200,
+          headers: {
+            "content-type": "application/pdf",
+            "content-disposition": "attachment; filename=Proposed-Layout.pdf"
+          }
+        });
+      }
+      throw new Error(`unexpected archive URL ${url}`);
+    };
+
+    const result = await processPlanningDocumentShard(queue, {
+      shardIndex: shard,
+      cacheDir: root,
+      fetchRetries: 0,
+      fetchImpl: async () => { throw new Error("live authority portal unavailable"); },
+      webArchiveFetchImpl: archiveFetchImpl,
+      disablePublicDnsFallback: true
+    });
+
+    assert.equal(result.failures.length, 0);
+    assert.equal(result.downloadedDocuments, 1);
+    assert.equal(result.discoveredLinks, 1);
+    const discovery = result.results[0].discovery;
+    assert.equal(discovery.retrievalMode, "web-archive");
+    assert.equal(discovery.finalUrl, applicationUrl);
+    assert.equal(discovery.archiveCaptureAt, "2024-01-02T03:04:05.000Z");
+    assert.match(discovery.retrievalUrl, /^https:\/\/web\.archive\.org\/web\//);
+
+    const document = result.results[0].documents[0];
+    assert.equal(document.retrievalMode, "web-archive");
+    assert.equal(document.url, documentUrl);
+    assert.equal(document.finalUrl, documentUrl);
+    assert.equal(document.archiveCaptureAt, "2024-01-03T04:05:06.000Z");
+    assert.equal(document.classification, "site-plan");
+    assert.match(document.retrievalUrl, /^https:\/\/web\.archive\.org\/web\//);
+    assert.match(document.contentHash, /^[a-f0-9]{64}$/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
