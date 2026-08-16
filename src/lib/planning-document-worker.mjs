@@ -38,21 +38,22 @@ export async function processPlanningDocumentShard(queue, options = {}) {
         const candidates = discovery.links.slice(0, clampInt(
           options.maxDiscoveredLinksPerApplication ?? DEFAULT_MAX_DISCOVERED_LINKS_PER_APPLICATION, 1, 500
         ));
-        const documents = [];
+        let documents = [];
         if (options.downloadDiscovered !== false) {
-          for (const link of candidates.filter((entry) => entry.direct)) {
+          const direct = candidates.filter((entry) => entry.direct);
+          documents = await mapLimit(direct, concurrency, async (link) => {
             try {
-              documents.push(await memoizedDownload(item, link.url, link.label, options, cacheDir, downloadMemo, link.classification));
+              return await memoizedDownload(item, link.url, link.label, options, cacheDir, downloadMemo, link.classification);
             } catch (error) {
-              documents.push({
+              if (options.strictPlanningDocuments) throw error;
+              return {
                 status: "failed",
                 url: link.url,
                 classification: link.classification,
                 error: error?.message || String(error)
-              });
-              if (options.strictPlanningDocuments) throw error;
+              };
             }
-          }
+          });
         }
         return {
           itemId: item.id,
