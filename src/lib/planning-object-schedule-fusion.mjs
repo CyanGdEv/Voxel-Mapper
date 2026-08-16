@@ -298,6 +298,7 @@ function compactRecord(record) {
     objectType: record.objectType || null,
     subtype: record.subtype || null,
     attributes: reconstructionAttributes(record.attributes || {}),
+    raw: compactRaw(record.raw),
     contentHash: record.contentHash || null,
     pageNumber: Number(record.pageNumber || 1),
     drawingNumber: record.drawingNumber || null,
@@ -309,6 +310,11 @@ function compactRecord(record) {
     spatialAuthorityEligible: false,
     worldGeometryAuthority: false
   };
+}
+
+function compactRaw(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text ? text.slice(0, 500) : null;
 }
 
 function fusionResult(status, code, reason) {
