@@ -65,8 +65,6 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .tpmap-cache/planning-data-england
-          # GitHub cache keys reject commas. The directory is URL-keyed
-          # internally, so a shared generation prefix is safe across bboxes.
           key: planning-index-v2-${{ github.run_id }}
           restore-keys: |
             planning-index-v2-
@@ -210,13 +208,13 @@ jobs:
           key: planning-documents-v2-shard-${{ matrix.shard }}-${{ github.run_id }}
           restore-keys: |
             planning-documents-v2-shard-${{ matrix.shard }}-
-      - name: Extract vector and text evidence
-        run: node scripts/planning-vector-extract.mjs --catalog planning-document-catalog.json --shard "${{ matrix.shard }}" --cache .tpmap-cache --out "planning-extraction-shard-${{ matrix.shard }}.json" --concurrency 2
-      - name: Upload extraction shard
+      - name: Extract vector and text evidence into bounded page streams
+        run: node scripts/planning-vector-extract.mjs --catalog planning-document-catalog.json --shard "${{ matrix.shard }}" --cache .tpmap-cache --out "planning-extraction-shard-${{ matrix.shard }}" --concurrency 2
+      - name: Upload extraction shard bundle
         uses: actions/upload-artifact@v4
         with:
           name: planning-extraction-shard-${{ matrix.shard }}
-          path: planning-extraction-shard-${{ matrix.shard }}.json
+          path: planning-extraction-shard-${{ matrix.shard }}
           retention-days: 7
 
   merge-extraction:
@@ -228,20 +226,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Download vector extraction manifests
+      - name: Download vector extraction bundles
         uses: actions/download-artifact@v4
         with:
           pattern: planning-extraction-shard-*
           path: extraction-manifests
-          merge-multiple: true
-      - name: Merge normalized planning evidence
-        run: node scripts/planning-vector-merge.mjs --manifests extraction-manifests --out planning-vector-evidence.json --raster-fallback-out planning-raster-fallback-queue.json
+          merge-multiple: false
+      - name: Merge normalized planning evidence without global geometry materialization
+        run: node scripts/planning-vector-merge.mjs --manifests extraction-manifests --out planning-vector-evidence --raster-fallback-out planning-raster-fallback-queue.json
       - name: Upload normalized planning extraction evidence
         uses: actions/upload-artifact@v4
         with:
           name: planning-vector-extraction-evidence
           path: |
-            planning-vector-evidence.json
+            planning-vector-evidence
             planning-raster-fallback-queue.json
           retention-days: 7
 
@@ -256,16 +254,18 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - name: Download normalized planning evidence
+      - name: Download normalized planning evidence bundle
         uses: actions/download-artifact@v4
         with:
           name: planning-vector-extraction-evidence
+          path: planning-extraction-download
       - name: Restore bbox OSM georegistration cache
         uses: actions/cache@v4
         with:
           path: .tpmap-cache/planning-georeg-osm
-          key: planning-georeg-osm-v2-${{ github.run_id }}
+          key: planning-georeg-osm-v3-${{ github.run_id }}
           restore-keys: |
+            planning-georeg-osm-v3-
             planning-georeg-osm-v2-
       - id: reference
         name: Build current OSM spatial reference
@@ -277,15 +277,16 @@ jobs:
           node scripts/planning-osm-reference.mjs "${args[@]}"
       - name: Register planning pages against current spatial evidence
         if: steps.reference.outcome == 'success'
-        run: node scripts/planning-georegister.mjs --evidence planning-vector-evidence.json --reference planning-georeg-reference.json --out planning-georegistration.json --registered-out planning-registered-evidence.json
+        run: node scripts/planning-georegister.mjs --evidence planning-extraction-download/planning-vector-evidence --reference planning-georeg-reference.json --out planning-georegistration.json --registered-out planning-registered-evidence
       - name: Record degraded registration when the reference is unavailable
         if: steps.reference.outcome != 'success'
         shell: bash
         run: |
+          mkdir -p planning-registered-evidence
           node - <<'NODE'
           const fs = require('fs');
           const report = {
-            schemaVersion: 1,
+            schemaVersion: 2,
             status: 'unregistered',
             reason: 'bbox-osm-reference-unavailable',
             worldGeometryReady: false,
@@ -293,15 +294,26 @@ jobs:
             temporalResolutionRequired: true,
             note: 'Planning extraction remains valid document-space evidence; generation should fall back to lower-authority spatial evidence rather than fail.'
           };
-          fs.writeFileSync('planning-georegistration.json', JSON.stringify(report, null, 2) + '\n');
-          fs.writeFileSync('planning-registered-evidence.json', JSON.stringify({
+          const manifest = {
             schemaVersion: 1,
+            format: 'voxel-planning-registered-bundle-v1',
+            stage: 'registered',
             coordinateSpace: 'local-world-metres',
             georegistrationStatus: 'unregistered',
             worldGeometryReady: false,
             worldGeometryAuthority: false,
-            geometryCandidates: [], verticalObservations: [], materialObservations: [], drawingMetadata: []
-          }, null, 2) + '\n');
+            temporalResolutionRequired: true,
+            pageCount: 0,
+            registeredPageCount: 0,
+            unregisteredPageCount: 0,
+            geometryCandidateCount: 0,
+            verticalObservationCount: 0,
+            materialObservationCount: 0,
+            pages: [],
+            unregisteredPages: []
+          };
+          fs.writeFileSync('planning-georegistration.json', JSON.stringify(report, null, 2) + '\n');
+          fs.writeFileSync('planning-registered-evidence/manifest.json', JSON.stringify(manifest, null, 2) + '\n');
           NODE
       - name: Upload planning spatial registration evidence
         uses: actions/upload-artifact@v4
@@ -309,7 +321,7 @@ jobs:
           name: planning-georegistration-evidence
           path: |
             planning-georegistration.json
-            planning-registered-evidence.json
+            planning-registered-evidence
             planning-georeg-reference.json
           if-no-files-found: ignore
           retention-days: 7
@@ -329,6 +341,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: planning-georegistration-evidence
+          path: planning-georegistration-download
       - name: Download planning document catalog
         uses: actions/download-artifact@v4
         with:
@@ -337,8 +350,18 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: planning-document-queue
-      - name: Resolve document revisions and physical current state
-        run: node scripts/planning-resolve-revisions.mjs --registered planning-registered-evidence.json --catalog planning-document-catalog.json --queue planning-document-queue.json --out planning-revision-resolution.json --resolved-out planning-current-state-evidence.json --authority-out planning-current-authority-evidence.json
+      - name: Resolve revisions, current state and post-decision implementation evidence
+        run: >-
+          node scripts/planning-resolve-revisions.mjs
+          --registered planning-georegistration-download/planning-registered-evidence
+          --reference planning-georegistration-download/planning-georeg-reference.json
+          --catalog planning-document-catalog.json
+          --queue planning-document-queue.json
+          --out planning-revision-resolution.json
+          --resolved-out planning-current-state-evidence.json
+          --authority-out planning-current-authority-pointer.json
+      - name: Materialize only the strict authority subset for world fusion
+        run: node scripts/planning-authority-compat.mjs --manifest planning-current-authority-pointer.json --out planning-current-authority-evidence.json
       - name: Upload planning current-state authority evidence
         uses: actions/upload-artifact@v4
         with:
@@ -346,5 +369,8 @@ jobs:
           path: |
             planning-revision-resolution.json
             planning-current-state-evidence.json
+            planning-current-state-evidence-bundle
+            planning-current-authority-pointer.json
+            planning-current-authority-pointer-bundle
             planning-current-authority-evidence.json
           retention-days: 7
