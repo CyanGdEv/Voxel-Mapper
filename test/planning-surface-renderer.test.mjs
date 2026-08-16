@@ -125,6 +125,8 @@ test("planning surface renderer overwrites only the already-compiled top block a
     const [, , y1, z1, , y2, z2] = operation;
     assert.equal(y1, y2);
     assert.equal(z1, z2);
+    // The fixture deliberately defines base terrain Y === row Z. An overlay at
+    // any different height proves the renderer invented/deformed terrain.
     assert.equal(y1, z1, "paint must reuse the exact Y from the compiled terrain row");
   }
   assert.ok(compilation.palette.includes("minecraft:red_concrete"));
