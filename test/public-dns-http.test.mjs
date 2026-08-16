@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isPublicIpv4, publicIpv4Answers, resolvePublicIpv4 } from "../src/lib/public-dns-http.mjs";
+import {
+  createPinnedIpv4Lookup,
+  isPublicIpv4,
+  publicIpv4Answers,
+  resolvePublicIpv4
+} from "../src/lib/public-dns-http.mjs";
 
 test("DNS fallback accepts only public IPv4 answers", () => {
   const answers = publicIpv4Answers({
@@ -33,4 +38,21 @@ test("injected DNS resolver cannot smuggle a private address into the fallback",
     await resolvePublicIpv4("example.com", { resolvePublicIpv4Impl: async () => ["127.0.0.1", "93.184.216.34"] }),
     ["93.184.216.34"]
   );
+});
+
+test("pinned IPv4 lookup supports both single-address and all-address Node callback contracts", () => {
+  const lookup = createPinnedIpv4Lookup("93.184.216.34");
+
+  lookup("example.com", { all: false }, (error, address, family) => {
+    assert.equal(error, null);
+    assert.equal(address, "93.184.216.34");
+    assert.equal(family, 4);
+  });
+
+  lookup("example.com", { all: true }, (error, addresses) => {
+    assert.equal(error, null);
+    assert.deepEqual(addresses, [{ address: "93.184.216.34", family: 4 }]);
+  });
+
+  assert.throws(() => createPinnedIpv4Lookup("127.0.0.1"), /non-public IPv4/);
 });
