@@ -145,7 +145,7 @@ export async function discoverPlanningPage(item, options = {}) {
   // Archive replay is a transport source, not the authority URL. Parse raw
   // archived HTML against the captured first-party URL so relative document
   // links remain council URLs and downstream authority provenance is unchanged.
-  const finalUrl = retrieval.mode === "web-archive"
+  const finalUrl = retrieval.archived === true
     ? (retrieval.capturedOriginalUrl || item.url)
     : (response.url || item.url);
   const links = mergeDiscoveredLinks(
@@ -165,6 +165,7 @@ export async function discoverPlanningPage(item, options = {}) {
     archiveCaptureAt: retrieval.captureAt || null,
     archiveCaptureTimestamp: retrieval.captureTimestamp || null,
     archiveDigest: retrieval.digest || null,
+    archiveCollection: retrieval.collection || null,
     contentType,
     fetchedAt: new Date().toISOString(),
     htmlHash: sha256(html),
@@ -209,9 +210,10 @@ export async function downloadImmutablePlanningDocument(item, url, label, option
   if (bytes.length > maxBytes) throw new Error(`Planning document exceeds ${options.maxPlanningDocumentMb ?? DEFAULT_MAX_DOCUMENT_MB} MiB: ${url}`);
   if (!bytes.length) throw new Error(`Planning document is empty: ${url}`);
 
-  // For archived content the first-party URL remains canonical. The replay URL
-  // is recorded separately and never enters geometry classification/authority.
-  const finalUrl = retrieval.mode === "web-archive"
+  // For archived content the first-party URL remains canonical. The archive
+  // record locator is stored separately and never enters classification or
+  // world-authority evaluation.
+  const finalUrl = retrieval.archived === true
     ? (retrieval.capturedOriginalUrl || url)
     : (response.url || url);
   const contentHash = sha256(bytes);
@@ -236,6 +238,7 @@ export async function downloadImmutablePlanningDocument(item, url, label, option
     archiveCaptureAt: retrieval.captureAt || null,
     archiveCaptureTimestamp: retrieval.captureTimestamp || null,
     archiveDigest: retrieval.digest || null,
+    archiveCollection: retrieval.collection || null,
     label: label || null,
     filename: dispositionName || path.basename(new URL(finalUrl).pathname) || null,
     classification,
@@ -311,12 +314,14 @@ async function fetchResponse(url, init, options) {
         response,
         retrieval: {
           mode: "live",
+          archived: false,
           originalUrl: url,
           capturedOriginalUrl: null,
           replayUrl: null,
           captureAt: null,
           captureTimestamp: null,
-          digest: null
+          digest: null,
+          collection: null
         }
       };
     } catch (error) {
@@ -330,20 +335,27 @@ async function fetchResponse(url, init, options) {
   }
 
   const archiveEnabled = options.disableWebArchiveFallback !== true && (
-    implementation === globalThis.fetch || typeof options.webArchiveFetchImpl === "function"
+    implementation === globalThis.fetch ||
+    typeof options.webArchiveFetchImpl === "function" ||
+    typeof options.commonCrawlFetchImpl === "function"
   );
   if (archiveEnabled) {
     try {
       return await fetchArchivedPublicUrl(url, init, {
         fetchImpl: options.webArchiveFetchImpl || globalThis.fetch,
+        commonCrawlFetchImpl: options.commonCrawlFetchImpl,
         timeoutMs: options.webArchiveTimeoutMs ?? Math.min(timeoutMs, 30_000),
         captureLimit: options.webArchiveCaptureLimit ?? 5,
+        commonCrawlCollectionLimit: options.commonCrawlCollectionLimit ?? 8,
+        commonCrawlCaptureLimit: options.commonCrawlCaptureLimit ?? 5,
+        commonCrawlMaxWarcRecordMb: options.commonCrawlMaxWarcRecordMb ?? 16,
         userAgent: options.userAgent || "VoxelMapper/0.12",
-        disablePublicDnsFallback: options.disablePublicDnsFallback
+        disablePublicDnsFallback: options.disablePublicDnsFallback,
+        disableCommonCrawlFallback: options.disableCommonCrawlFallback
       });
     } catch (archiveError) {
       const combined = new Error(
-        `${lastError?.message || "Live planning fetch failed"}; web-archive fallback failed: ${archiveError?.message || archiveError}`
+        `${lastError?.message || "Live planning fetch failed"}; public-archive fallback failed: ${archiveError?.message || archiveError}`
       );
       combined.cause = archiveError;
       throw combined;
@@ -390,7 +402,7 @@ async function isFreshCache(filename, maxAgeHours) {
 }
 
 function restoreArchivedOriginalLinks(entries, retrieval) {
-  if (retrieval?.mode !== "web-archive") return entries;
+  if (retrieval?.archived !== true) return entries;
   return entries.map((entry) => {
     const original = originalUrlFromWaybackReplay(entry?.url);
     return original ? { ...entry, url: original } : entry;
