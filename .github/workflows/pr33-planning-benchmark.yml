@@ -7,6 +7,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: pr33-planning-critical-path-benchmark
+  cancel-in-progress: true
+
 jobs:
   planning-benchmark:
     if: github.head_ref == 'agent/sub15-generation-critical-path'
