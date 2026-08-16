@@ -1,6 +1,6 @@
 import path from "node:path";
 import { acquireSources } from "./sources.mjs";
-import { normalizeMap, refreshMapDerivedData } from "./osm.mjs";
+import { applyLidarBuildingHeights, normalizeMap, refreshMapDerivedData } from "./osm.mjs";
 import { enrichUniversalFidelity } from "./fidelity.mjs";
 import { enrichOrthophotoEvidence } from "./orthophoto.mjs";
 import { enhancePathGeometry } from "./path-geometry.mjs";
@@ -39,6 +39,29 @@ export async function buildPark(options = {}, progress = () => {}) {
   progress("Reconciling verified-current planning topology against OSM");
   const planningTopologyReconciliation = await reconcilePlanningTopology(map, options);
   if (planningTopologyReconciliation.added || planningTopologyReconciliation.replaced || planningTopologyReconciliation.deleted) {
+    const changedBuildingIds = new Set(
+      planningTopologyReconciliation.changes
+        .filter((change) => ["add", "replace"].includes(change.operation) && change.featureKind === "building")
+        .map((change) => change.featureId)
+        .filter(Boolean)
+    );
+    if (changedBuildingIds.size && typeof sources.elevation?.samplePairLocal === "function") {
+      for (const feature of map.features) {
+        if (!changedBuildingIds.has(feature.id)) continue;
+        feature.roof = null;
+        if (/lidar/i.test(String(feature.vertical?.heightSource || ""))) {
+          feature.vertical.heightM = null;
+          feature.vertical.heightSource = null;
+          feature.vertical.heightConfidence = null;
+          feature.vertical.heightSamples = null;
+          feature.vertical.heightCoverage = null;
+          feature.vertical.heightSpreadM = null;
+          feature.vertical.heightSurveyedAt = null;
+        }
+      }
+      const structureHeightStats = applyLidarBuildingHeights(map.features, sources.elevation);
+      if (structureHeightStats) sources.elevation.structureHeightStats = structureHeightStats;
+    }
     refreshMapDerivedData(map);
   }
   progress("Repairing source-relative path gaps and area geometry");
