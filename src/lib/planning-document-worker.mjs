@@ -11,6 +11,7 @@ import {
   selectPlanningDocumentShard
 } from "./planning-documents.mjs";
 import { extractPortalPlanningDocumentLinks } from "./planning-portal-documents.mjs";
+import { fetchViaPublicDns } from "./public-dns-http.mjs";
 
 const DEFAULT_CONCURRENCY = 6;
 const DEFAULT_MAX_DOCUMENT_MB = 120;
@@ -253,7 +254,29 @@ async function fetchResponse(url, init, options) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await implementation(url, { ...init, redirect: "follow", signal: controller.signal });
+      let response;
+      try {
+        response = await implementation(url, { ...init, redirect: "follow", signal: controller.signal });
+      } catch (primaryError) {
+        // Only the real network path uses DNS-over-HTTPS fallback. Unit-test
+        // fetch implementations remain fully deterministic and never escape to
+        // the network. The fallback keeps the original hostname/TLS identity,
+        // so this is DNS recovery rather than a content proxy.
+        if (implementation !== globalThis.fetch || options.disablePublicDnsFallback) throw primaryError;
+        try {
+          response = await fetchViaPublicDns(url, init, {
+            ...options,
+            fetchTimeoutMs: timeoutMs,
+            userAgent: options.userAgent || "VoxelMapper/0.12"
+          });
+        } catch (dnsFallbackError) {
+          const error = new Error(
+            `${primaryError?.message || "Primary fetch failed"}; public-DNS fallback failed: ${dnsFallbackError?.message || dnsFallbackError}`
+          );
+          error.cause = dnsFallbackError;
+          throw error;
+        }
+      }
       if (!response?.ok) {
         const status = Number(response?.status || 0);
         const snippet = typeof response?.text === "function" ? (await response.text()).slice(0, 300) : "";
