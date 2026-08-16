@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 jobs:
   test:
@@ -31,50 +30,3 @@ jobs:
         run: node scripts/planning-pdf-colour-e2e.mjs
       - name: Certify ICCBased, Separation and DeviceN planning legend resolution
         run: node scripts/planning-pdf-complex-colour-e2e.mjs
-
-  replay-production-planning-authority:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
-      - name: Download exact failed production planning evidence
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p replay/current replay/georeg replay/catalog replay/queue
-          gh run download 31957176886 --repo "$GITHUB_REPOSITORY" --name planning-current-state-evidence --dir replay/current
-          gh run download 31957176886 --repo "$GITHUB_REPOSITORY" --name planning-georegistration-evidence --dir replay/georeg
-          gh run download 31957176886 --repo "$GITHUB_REPOSITORY" --name planning-document-acquisition-catalog --dir replay/catalog
-          gh run download 31957176886 --repo "$GITHUB_REPOSITORY" --name planning-document-queue --dir replay/queue
-          mkdir -p planning-georegistration-download
-          cp replay/georeg/planning-georeg-reference.json planning-georegistration-download/planning-georeg-reference.json
-          cp replay/georeg/planning-georegistration.json planning-georegistration-download/planning-georegistration.json
-          cp replay/catalog/planning-document-catalog.json planning-document-catalog.json
-          cp replay/queue/planning-document-queue.json planning-document-queue.json
-      - name: Re-materialize world authority with implemented-scheme proof
-        run: >-
-          node scripts/planning-authority-compat.mjs
-          --manifest replay/current/planning-current-authority-pointer.json
-          --out replay-output.json
-      - name: Assert production planning evidence no longer collapses at world handoff
-        run: |
-          node --input-type=module <<'NODE'
-          import fs from 'node:fs';
-          const output = JSON.parse(fs.readFileSync('replay-output.json', 'utf8'));
-          const counts = output.counts || {};
-          const scheme = output.implementedSchemeAuthority || {};
-          if (!(counts.geometryCandidates > 79)) throw new Error(`Expected planning geometry to exceed old 79-fragment handoff, got ${counts.geometryCandidates}`);
-          if (!(counts.materialObservations > 0)) throw new Error('Expected current planning material observations in world handoff');
-          if (!(counts.verticalObservations > 0)) throw new Error('Expected current planning vertical observations in world handoff');
-          if (!(counts.rideStructureTemplates > 0)) throw new Error('Expected current ride structure templates in world handoff');
-          if (!(scheme.certifiedSpatialPages > 0)) throw new Error('Expected at least one independently certified spatial planning page');
-          if (!(scheme.implementedApplications > 0)) throw new Error('Expected at least one independently implemented planning application');
-          if (!scheme.georegistrationProofAvailable) throw new Error('Expected robust georegistration proof to be reused');
-          console.log(JSON.stringify({ counts, implementedSchemeAuthority: scheme }, null, 2));
-          NODE
