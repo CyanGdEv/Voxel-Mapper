@@ -10,7 +10,7 @@ The compiler must remain park-agnostic. It may use OSM names, geometry and topol
 
 ## Semantic feature classes
 
-The initial compiler targets:
+The topology compiler targets:
 
 - building
 - structure
@@ -21,7 +21,29 @@ The initial compiler targets:
 - barrier
 - water
 - vegetation
-- terrain_detail
+
+Ground/terrain areas are represented separately as `surface` paint masks. `terrain`, `terrain_detail`, `landform`, grading and ground elevation are never planning topology targets.
+
+## Terrain invariants
+
+Terrain geometry is immutable after the authoritative terrain source (DTM/LiDAR) has been sampled.
+
+Planning data may:
+
+- paint a verified polygon with a surface/material;
+- change path/road/building/ride/structure geometry above the terrain;
+- provide building/structure heights and ride vertical-profile evidence.
+
+Planning data may not:
+
+- raise or lower terrain;
+- flatten terrain;
+- perform cut/fill or grading;
+- deform slopes;
+- replace DTM/LiDAR ground elevation;
+- convert a landscape polygon into a terrain geometry edit.
+
+A terrain/landform mutation request is emitted as `review` with `terrain-geometry-immutable`, never materialized. Legacy path-terrain conform mode is forced to evidence-only by the main compiler pipeline so the generated terrain elevation raster remains unchanged.
 
 ## Change operations
 
@@ -31,6 +53,7 @@ For every authoritative planning feature, the compiler emits one of:
 - `replace` — one unambiguous lower-authority feature represents the same real object but planning geometry is authoritative.
 - `delete` — explicit, current demolition/removal evidence targets an existing lower-authority feature.
 - `retain` — planning corroborates the existing canonical feature closely enough that no topology mutation is needed.
+- `paint` — verified area/material evidence changes only the top-block surface; terrain elevation/shape is untouched.
 - `review` — semantic identity or spatial match is ambiguous, so generation fails closed and preserves the existing map.
 
 ## Safety gates
@@ -38,6 +61,8 @@ For every authoritative planning feature, the compiler emits one of:
 Topology-changing operations require georegistered evidence whose temporal resolver has marked it as current world authority. Planning approval by itself is never implementation evidence.
 
 Deletion additionally requires explicit demolition/removal semantics and high-confidence current-state evidence. Higher-authority surveyed/manual overrides cannot be mutated by this compiler.
+
+Surface paint requires an authoritative, spatially associated material label. If the exact material is not yet supported by the surface renderer, the paint operation is retained in QA as `deferred-renderer-palette` rather than substituted with an incorrect block.
 
 ## Semantic inference
 
