@@ -76,19 +76,22 @@ export function splitPlanningEvidenceByPage(extraction) {
     return groups.get(key);
   };
 
-  // Merged extraction manifests retain full per-document/page records. Prefer
-  // these for metadata because the old flattened drawingMetadata records did
-  // not always carry contentHash.
+  // Legacy/full extraction manifests may still contain page-scoped evidence.
+  // New compact manifests keep only page summaries here and store semantic
+  // evidence once in normalizedEvidence below.
   for (const document of extraction?.documents || []) {
     for (const page of document?.pages || []) {
       const group = ensure(document.contentHash, page.pageNumber);
       group.geometryCandidates.push(...(page.geometryCandidates || []));
       group.verticalObservations.push(...(page.verticalObservations || []));
       group.materialObservations.push(...(page.materialObservations || []));
-      if (page.metadata) group.drawingMetadata.push({ ...page.metadata, contentHash: document.contentHash });
+      if (page.metadata) group.drawingMetadata.push({ ...page.metadata, contentHash: page.metadata.contentHash || document.contentHash });
     }
   }
 
+  // Canonical merged extraction evidence is retained once at the top level.
+  // Rebuild per-page groups from that canonical set without requiring duplicate
+  // page geometry in each document summary.
   const flat = extraction?.normalizedEvidence || {};
   for (const candidate of flat.geometryCandidates || []) {
     const group = ensure(candidate.contentHash, candidate.pageNumber);
@@ -102,13 +105,11 @@ export function splitPlanningEvidenceByPage(extraction) {
     const group = ensure(observation.contentHash, observation.pageNumber);
     if (!hasEquivalent(group.materialObservations, observation, "material")) group.materialObservations.push(observation);
   }
-
-  // Single-document extraction metadata can safely inherit its document hash.
-  if (!(extraction?.documents || []).length) {
-    for (const metadata of flat.drawingMetadata || []) {
-      const group = ensure(metadata.contentHash || extraction?.contentHash, metadata.pageNumber);
-      group.drawingMetadata.push({ ...metadata, contentHash: metadata.contentHash || extraction?.contentHash || null });
-    }
+  for (const metadata of flat.drawingMetadata || []) {
+    const contentHash = metadata.contentHash || extraction?.contentHash || null;
+    const group = ensure(contentHash, metadata.pageNumber);
+    const normalized = { ...metadata, contentHash: metadata.contentHash || group.contentHash };
+    if (!hasMetadataEquivalent(group.drawingMetadata, normalized)) group.drawingMetadata.push(normalized);
   }
 
   return [...groups.values()]
@@ -185,4 +186,15 @@ function hasEquivalent(values, candidate, type) {
     if (type === "vertical") return entry.label === candidate.label && entry.valueM === candidate.valueM && entry.xPt === candidate.xPt && entry.yPt === candidate.yPt;
     return entry.material === candidate.material && entry.xPt === candidate.xPt && entry.yPt === candidate.yPt;
   });
+}
+
+function hasMetadataEquivalent(values, candidate) {
+  return values.some((entry) =>
+    (entry.contentHash || null) === (candidate.contentHash || null) &&
+    Number(entry.pageNumber || 1) === Number(candidate.pageNumber || 1) &&
+    (entry.drawingNumber || null) === (candidate.drawingNumber || null) &&
+    (entry.revision || null) === (candidate.revision || null) &&
+    (entry.status || null) === (candidate.status || null) &&
+    (entry.issueDate || null) === (candidate.issueDate || null)
+  );
 }

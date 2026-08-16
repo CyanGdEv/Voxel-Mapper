@@ -10,6 +10,7 @@ import {
   planningDocumentPriority,
   selectPlanningDocumentShard
 } from "./planning-documents.mjs";
+import { extractPortalPlanningDocumentLinks } from "./planning-portal-documents.mjs";
 
 const DEFAULT_CONCURRENCY = 6;
 const DEFAULT_MAX_DOCUMENT_MB = 120;
@@ -17,6 +18,7 @@ const DEFAULT_MAX_DISCOVERY_HTML_MB = 8;
 const DEFAULT_CACHE_MAX_AGE_HOURS = 168;
 const DEFAULT_DISCOVERY_CACHE_MAX_AGE_HOURS = 24;
 const DEFAULT_MAX_DISCOVERED_LINKS_PER_APPLICATION = 120;
+const DISCOVERY_PARSER_VERSION = 2;
 
 export async function processPlanningDocumentShard(queue, options = {}) {
   const selected = options.shardIndex == null ? queue : selectPlanningDocumentShard(queue, Number(options.shardIndex));
@@ -36,21 +38,22 @@ export async function processPlanningDocumentShard(queue, options = {}) {
         const candidates = discovery.links.slice(0, clampInt(
           options.maxDiscoveredLinksPerApplication ?? DEFAULT_MAX_DISCOVERED_LINKS_PER_APPLICATION, 1, 500
         ));
-        const documents = [];
+        let documents = [];
         if (options.downloadDiscovered !== false) {
-          for (const link of candidates.filter((entry) => entry.direct)) {
+          const direct = candidates.filter((entry) => entry.direct);
+          documents = await mapLimit(direct, concurrency, async (link) => {
             try {
-              documents.push(await memoizedDownload(item, link.url, link.label, options, cacheDir, downloadMemo, link.classification));
+              return await memoizedDownload(item, link.url, link.label, options, cacheDir, downloadMemo, link.classification);
             } catch (error) {
-              documents.push({
+              if (options.strictPlanningDocuments) throw error;
+              return {
                 status: "failed",
                 url: link.url,
                 classification: link.classification,
                 error: error?.message || String(error)
-              });
-              if (options.strictPlanningDocuments) throw error;
+              };
             }
-          }
+          });
         }
         return {
           itemId: item.id,
@@ -62,7 +65,7 @@ export async function processPlanningDocumentShard(queue, options = {}) {
           discovered: candidates.map((link) => ({
             ...link,
             application: item.application,
-            source: "portal-discovery",
+            source: link.source || "portal-discovery",
             action: link.direct ? "download" : "discover",
             priority: planningDocumentPriority(link.classification, link.direct ? "download" : "discover"),
             shard: item.shard
@@ -114,7 +117,10 @@ export async function discoverPlanningPage(item, options = {}) {
   if (!isSafePublicHttpUrl(item.url)) throw new Error(`Unsafe planning documentation URL: ${item.url}`);
   const cacheDir = path.join(options.cacheDir || ".tpmap-cache", "planning-documents", "discovery");
   await ensureDir(cacheDir);
-  const cacheFile = path.join(cacheDir, `${sha256(item.url)}.json`);
+  // Parser upgrades must not reuse discovery results produced by an older
+  // HTML/portal adapter. The underlying page can still be cached for the normal
+  // TTL once it has been parsed by this schema version.
+  const cacheFile = path.join(cacheDir, `${sha256(`${DISCOVERY_PARSER_VERSION}\n${item.url}`)}.json`);
   const maxAgeHours = Number(options.discoveryCacheMaxAgeHours ?? DEFAULT_DISCOVERY_CACHE_MAX_AGE_HOURS);
   if (!options.refreshPlanningDocuments && await isFreshCache(cacheFile, maxAgeHours)) {
     return { ...(await readJson(cacheFile)), cacheHit: true };
@@ -133,8 +139,16 @@ export async function discoverPlanningPage(item, options = {}) {
   const html = await response.text();
   if (Buffer.byteLength(html) > maxBytes) throw new Error(`Planning application page exceeds ${options.maxDiscoveryHtmlMb ?? DEFAULT_MAX_DISCOVERY_HTML_MB} MiB`);
   const finalUrl = response.url || item.url;
-  const links = extractDocumentLinks(html, finalUrl);
+  const links = mergeDiscoveredLinks(
+    extractDocumentLinks(html, finalUrl),
+    extractPortalPlanningDocumentLinks(html, finalUrl).map((link) => ({
+      ...link,
+      classification: classifyPlanningDocument(link.label || "", link.url),
+      direct: true
+    }))
+  );
   const result = {
+    parserVersion: DISCOVERY_PARSER_VERSION,
     url: item.url,
     finalUrl,
     contentType,
@@ -286,6 +300,22 @@ async function isFreshCache(filename, maxAgeHours) {
   if (!Number.isFinite(maxAgeHours) || maxAgeHours <= 0) return false;
   const details = await stat(filename);
   return Date.now() - details.mtimeMs <= maxAgeHours * 60 * 60 * 1000;
+}
+
+function mergeDiscoveredLinks(...groups) {
+  const seen = new Set();
+  const links = [];
+  for (const entry of groups.flat()) {
+    if (!entry?.url || !isSafePublicHttpUrl(entry.url)) continue;
+    const key = String(entry.url);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    links.push(entry);
+  }
+  return links.sort((a, b) =>
+    planningDocumentPriority(b.classification, b.direct ? "download" : "discover") -
+    planningDocumentPriority(a.classification, a.direct ? "download" : "discover")
+  );
 }
 
 function dedupeDiscovered(entries) {

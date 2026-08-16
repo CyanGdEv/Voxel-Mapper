@@ -1,15 +1,24 @@
 #!/usr/bin/env node
 import path from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { resolvePlanningRevisionAuthority } from "../src/lib/planning-revision-resolver.mjs";
+import { corroboratePlanningGeometryCandidate } from "../src/lib/planning-current-corroboration.mjs";
+import {
+  AUTHORITY_BUNDLE_FORMAT,
+  REGISTERED_BUNDLE_FORMAT,
+  RESOLVED_BUNDLE_FORMAT,
+  loadBundleManifest,
+  readBundlePage,
+  writeBundleManifest,
+  writeEvidencePageStreams
+} from "../src/lib/planning-evidence-bundle.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 if (!args.registered || !args.catalog || !args.out) {
-  console.error("Usage: planning-resolve-revisions.mjs --registered planning-registered-evidence.json --catalog planning-document-catalog.json --out FILE [--queue planning-document-queue.json] [--resolved-out FILE] [--authority-out FILE] [--reference-date ISO] [--strict]");
+  console.error("Usage: planning-resolve-revisions.mjs --registered planning-registered-evidence --catalog planning-document-catalog.json --out FILE [--queue planning-document-queue.json] [--reference planning-georeg-reference.json] [--resolved-out FILE] [--authority-out FILE] [--reference-date ISO] [--strict]");
   process.exit(2);
 }
 
-const registered = await readJson(args.registered);
 const catalog = await readJson(args.catalog);
 if (args.queue) {
   const queue = await readJson(args.queue);
@@ -17,41 +26,261 @@ if (args.queue) {
   catalog.planningApplicationSnapshotAt = queue.planningApplicationSnapshotAt || null;
   catalog.planningApplicationSnapshotProvider = queue.planningApplicationSnapshotProvider || null;
 }
+const reference = args.reference ? await readJson(args.reference) : null;
+const bundleInput = await tryLoadRegisteredBundle(args.registered);
 
-const result = resolvePlanningRevisionAuthority(registered, catalog, {
-  referenceDate: args.referenceDate,
-  currentAuthorityConfidenceGate: number(args.currentAuthorityConfidenceGate, 0.85)
-});
+if (!bundleInput) {
+  await resolveLegacyJson();
+} else {
+  await resolveBundle(bundleInput);
+}
 
-await writeJson(args.out, {
-  ...result,
-  applicationSnapshotAt: catalog.planningApplicationSnapshotAt || null,
-  applicationSnapshotProvider: catalog.planningApplicationSnapshotProvider || null
-});
-if (args.resolvedOut) await writeJson(args.resolvedOut, result.resolvedEvidence);
-const authorityEvidence = filterAuthorityEvidence(result.resolvedEvidence);
-if (args.authorityOut) await writeJson(args.authorityOut, authorityEvidence);
+async function resolveBundle(bundle) {
+  const compactRegistered = compactRegisteredEvidence(bundle.manifest);
+  const result = resolvePlanningRevisionAuthority(compactRegistered, catalog, {
+    referenceDate: args.referenceDate,
+    currentAuthorityConfidenceGate: number(args.currentAuthorityConfidenceGate, 0.85)
+  });
+  const decisionByPage = new Map(result.pages.map((page) => [pageKey(page.contentHash, page.pageNumber), page.decision]));
+  const documentIndex = new Map((catalog.documents || []).map((document) => [document.contentHash, document]));
+  const resolvedManifestPath = path.resolve(args.resolvedOut || "planning-current-state-evidence.json");
+  const authorityManifestPath = path.resolve(args.authorityOut || "planning-current-authority-evidence.json");
+  const resolvedRoot = siblingBundleRoot(resolvedManifestPath, "planning-current-state-bundle");
+  const authorityRoot = siblingBundleRoot(authorityManifestPath, "planning-current-authority-bundle");
+  await Promise.all([mkdir(resolvedRoot, { recursive: true }), mkdir(authorityRoot, { recursive: true })]);
 
-console.log(JSON.stringify({
-  status: result.status,
-  pages: result.summary.pageCount,
-  lineages: result.summary.lineageCount,
-  authoritativeCurrentPages: result.summary.authoritativeCurrentPages,
-  unresolvedPages: result.summary.unresolvedPages,
-  conflicts: result.summary.conflicts,
-  authoritativeGeometryCandidates: result.summary.authoritativeGeometryCandidates,
-  out: path.resolve(args.out),
-  resolvedOut: args.resolvedOut ? path.resolve(args.resolvedOut) : null,
-  authorityOut: args.authorityOut ? path.resolve(args.authorityOut) : null
-}, null, 2));
+  const resolvedPages = [];
+  const authorityPages = [];
+  const corroboration = {
+    attemptedGeometryCandidates: 0,
+    promotedGeometryCandidates: 0,
+    rejected: {},
+    matches: []
+  };
 
-if (args.strict && result.summary.unresolvedPages > 0) process.exitCode = 1;
+  for (const pageEntry of bundle.manifest.pages || []) {
+    const key = pageKey(pageEntry.contentHash, pageEntry.pageNumber);
+    const baseDecision = decisionByPage.get(key) || unknownDecision();
+    const evidence = await readBundlePage(bundle.root, pageEntry);
+    const document = documentIndex.get(pageEntry.contentHash) || null;
+    const applicationTemporal = (document?.applicationKeys || pageEntry.applicationKeys || [])
+      .map((applicationKey) => catalog.applications?.[applicationKey]?.temporal)
+      .filter(Boolean);
+    const drawingIssueDate = evidence.drawingMetadata.find((entry) => entry.issueDate)?.issueDate || null;
 
+    const geometryCandidates = [];
+    for (const candidate of evidence.geometryCandidates || []) {
+      let temporal = baseDecision;
+      let authority = Boolean(baseDecision.worldGeometryAuthority);
+      let implementationCorroboration = null;
+      if (!authority && baseDecision.state === "proposed" && reference?.features?.length) {
+        corroboration.attemptedGeometryCandidates += 1;
+        const proof = corroboratePlanningGeometryCandidate(candidate, reference.features, {
+          applicationTemporal,
+          drawingIssueDate,
+          minMatchScore: number(args.corroborationMinMatchScore, 0.78),
+          ambiguityGap: number(args.corroborationAmbiguityGap, 0.12)
+        });
+        if (proof.accepted) {
+          temporal = {
+            ...baseDecision,
+            ...proof.temporal,
+            lineageMemberships: baseDecision.lineageMemberships || []
+          };
+          authority = true;
+          implementationCorroboration = proof.temporal.implementationCorroboration;
+          corroboration.promotedGeometryCandidates += 1;
+          if (corroboration.matches.length < 1000) corroboration.matches.push({
+            contentHash: pageEntry.contentHash,
+            pageNumber: pageEntry.pageNumber,
+            candidateId: candidate.id || null,
+            semantic: candidate.semantic || null,
+            classification: candidate.classification || pageEntry.classification || null,
+            featureId: proof.match.feature?.id || null,
+            featureKind: proof.match.feature?.kind || null,
+            matchScore: proof.match.score ?? null,
+            secondScore: proof.match.secondScore ?? null,
+            planningDecisionAt: proof.decisionAt,
+            observedAt: proof.observedAt
+          });
+        } else {
+          corroboration.rejected[proof.reason] = (corroboration.rejected[proof.reason] || 0) + 1;
+        }
+      }
+      geometryCandidates.push({
+        ...candidate,
+        planningTemporal: temporal,
+        temporalResolutionRequired: temporal.state === "unknown",
+        worldGeometryAuthority: authority,
+        ...(implementationCorroboration ? { implementationCorroboration } : {})
+      });
+    }
+    const verticalObservations = (evidence.verticalObservations || []).map((entry) => annotate(entry, baseDecision));
+    const materialObservations = (evidence.materialObservations || []).map((entry) => annotate(entry, baseDecision));
+    const drawingMetadata = (evidence.drawingMetadata || []).map((entry) => annotate(entry, baseDecision));
+    const resolvedEvidence = { geometryCandidates, verticalObservations, materialObservations, drawingMetadata };
+    const resolvedPage = await writeEvidencePageStreams(resolvedRoot, {
+      ...pageEntry,
+      geometryFile: null,
+      verticalFile: null,
+      materialFile: null,
+      planningTemporal: baseDecision
+    }, resolvedEvidence);
+    resolvedPage.planningTemporal = baseDecision;
+    resolvedPages.push(resolvedPage);
+
+    const authorityEvidence = {
+      geometryCandidates: geometryCandidates.filter(isAuthorityEntry),
+      verticalObservations: verticalObservations.filter(isAuthorityEntry),
+      materialObservations: materialObservations.filter(isAuthorityEntry),
+      drawingMetadata: drawingMetadata.filter(isAuthorityEntry)
+    };
+    const authorityCount = authorityEvidence.geometryCandidates.length + authorityEvidence.verticalObservations.length + authorityEvidence.materialObservations.length;
+    if (authorityCount > 0) {
+      const authorityPage = await writeEvidencePageStreams(authorityRoot, {
+        ...pageEntry,
+        geometryFile: null,
+        verticalFile: null,
+        materialFile: null,
+        planningTemporal: authorityEvidence.geometryCandidates[0]?.planningTemporal || baseDecision
+      }, authorityEvidence);
+      authorityPages.push(authorityPage);
+    }
+  }
+
+  const resolvedBundleManifest = makeResolvedManifest(RESOLVED_BUNDLE_FORMAT, "resolved-current-state", resolvedPages, result, corroboration);
+  const authorityBundleManifest = makeResolvedManifest(AUTHORITY_BUNDLE_FORMAT, "strict-current-authority", authorityPages, result, corroboration);
+  authorityBundleManifest.authorityScope = "planning-current-state-only";
+  authorityBundleManifest.worldGeometryAuthority = authorityPages.length > 0;
+  authorityBundleManifest.worldGeometryReady = authorityPages.some((page) => Number(page.geometryCount || 0) > 0);
+  await writeBundleManifest(resolvedRoot, resolvedBundleManifest);
+  await writeBundleManifest(authorityRoot, authorityBundleManifest);
+  await writeJson(resolvedManifestPath, {
+    ...resolvedBundleManifest,
+    bundlePath: path.relative(path.dirname(resolvedManifestPath), resolvedRoot) || "."
+  });
+  await writeJson(authorityManifestPath, {
+    ...authorityBundleManifest,
+    bundlePath: path.relative(path.dirname(authorityManifestPath), authorityRoot) || "."
+  });
+  await writeJson(args.out, {
+    ...withoutResolvedEvidence(result),
+    applicationSnapshotAt: catalog.planningApplicationSnapshotAt || null,
+    applicationSnapshotProvider: catalog.planningApplicationSnapshotProvider || null,
+    evidenceStorage: "chunked-page-ndjson",
+    currentStateBundle: path.relative(path.dirname(path.resolve(args.out)), resolvedRoot),
+    authorityBundle: path.relative(path.dirname(path.resolve(args.out)), authorityRoot),
+    corroboration
+  });
+
+  console.log(JSON.stringify({
+    status: result.status,
+    pages: result.summary.pageCount,
+    lineages: result.summary.lineageCount,
+    authoritativeCurrentPages: result.summary.authoritativeCurrentPages,
+    unresolvedPages: result.summary.unresolvedPages,
+    conflicts: result.summary.conflicts,
+    authoritativeGeometryCandidates: countPages(authorityPages, "geometryCount"),
+    corroboratedGeometryCandidates: corroboration.promotedGeometryCandidates,
+    resolvedEvidencePages: resolvedPages.length,
+    authorityEvidencePages: authorityPages.length,
+    out: path.resolve(args.out),
+    resolvedOut: resolvedManifestPath,
+    authorityOut: authorityManifestPath
+  }, null, 2));
+  if (args.strict && result.summary.unresolvedPages > 0) process.exitCode = 1;
+}
+
+async function resolveLegacyJson() {
+  const registered = await readJson(args.registered);
+  const result = resolvePlanningRevisionAuthority(registered, catalog, {
+    referenceDate: args.referenceDate,
+    currentAuthorityConfidenceGate: number(args.currentAuthorityConfidenceGate, 0.85)
+  });
+  await writeJson(args.out, {
+    ...result,
+    applicationSnapshotAt: catalog.planningApplicationSnapshotAt || null,
+    applicationSnapshotProvider: catalog.planningApplicationSnapshotProvider || null
+  });
+  if (args.resolvedOut) await writeJson(args.resolvedOut, result.resolvedEvidence);
+  const authorityEvidence = filterAuthorityEvidence(result.resolvedEvidence);
+  if (args.authorityOut) await writeJson(args.authorityOut, authorityEvidence);
+  console.log(JSON.stringify({
+    status: result.status,
+    pages: result.summary.pageCount,
+    lineages: result.summary.lineageCount,
+    authoritativeCurrentPages: result.summary.authoritativeCurrentPages,
+    unresolvedPages: result.summary.unresolvedPages,
+    conflicts: result.summary.conflicts,
+    authoritativeGeometryCandidates: result.summary.authoritativeGeometryCandidates,
+    out: path.resolve(args.out),
+    resolvedOut: args.resolvedOut ? path.resolve(args.resolvedOut) : null,
+    authorityOut: args.authorityOut ? path.resolve(args.authorityOut) : null
+  }, null, 2));
+  if (args.strict && result.summary.unresolvedPages > 0) process.exitCode = 1;
+}
+
+function compactRegisteredEvidence(manifest) {
+  const drawingMetadata = [];
+  const pageRefs = [];
+  for (const page of manifest.pages || []) {
+    drawingMetadata.push(...(page.drawingMetadata || []).map((entry) => ({
+      ...entry,
+      contentHash: entry.contentHash || page.contentHash,
+      pageNumber: Number(entry.pageNumber || page.pageNumber || 1)
+    })));
+    if ((page.geometryCount || 0) + (page.verticalCount || 0) + (page.materialCount || 0) > 0) {
+      pageRefs.push({ contentHash: page.contentHash, pageNumber: page.pageNumber });
+    }
+  }
+  return {
+    schemaVersion: 2,
+    coordinateSpace: "local-world-metres",
+    worldGeometryReady: pageRefs.length > 0,
+    worldGeometryAuthority: false,
+    temporalResolutionRequired: true,
+    drawingMetadata,
+    geometryCandidates: pageRefs,
+    verticalObservations: [],
+    materialObservations: []
+  };
+}
+
+function makeResolvedManifest(format, stage, pages, result, corroboration) {
+  return {
+    schemaVersion: 1,
+    format,
+    stage,
+    coordinateSpace: "local-world-metres",
+    temporalResolutionRequired: result.summary.unresolvedPages > 0,
+    temporalResolutionStatus: result.summary.unresolvedPages > 0 ? "partial" : "resolved",
+    pageCount: pages.length,
+    geometryCandidateCount: countPages(pages, "geometryCount"),
+    verticalObservationCount: countPages(pages, "verticalCount"),
+    materialObservationCount: countPages(pages, "materialCount"),
+    pages: pages.sort(pageSort),
+    corroboration: {
+      attemptedGeometryCandidates: corroboration.attemptedGeometryCandidates,
+      promotedGeometryCandidates: corroboration.promotedGeometryCandidates,
+      rejected: corroboration.rejected
+    }
+  };
+}
+
+function annotate(entry, decision) {
+  return {
+    ...entry,
+    planningTemporal: decision,
+    temporalResolutionRequired: decision.state === "unknown",
+    worldGeometryAuthority: Boolean(decision.worldGeometryAuthority)
+  };
+}
+function isAuthorityEntry(entry) { return entry?.worldGeometryAuthority === true && entry?.planningTemporal?.state === "current"; }
 function filterAuthorityEvidence(evidence) {
-  const geometryCandidates = (evidence?.geometryCandidates || []).filter((entry) => entry.worldGeometryAuthority === true);
-  const verticalObservations = (evidence?.verticalObservations || []).filter((entry) => entry.worldGeometryAuthority === true);
-  const materialObservations = (evidence?.materialObservations || []).filter((entry) => entry.worldGeometryAuthority === true);
-  const drawingMetadata = (evidence?.drawingMetadata || []).filter((entry) => entry.worldGeometryAuthority === true);
+  const geometryCandidates = (evidence?.geometryCandidates || []).filter(isAuthorityEntry);
+  const verticalObservations = (evidence?.verticalObservations || []).filter(isAuthorityEntry);
+  const materialObservations = (evidence?.materialObservations || []).filter(isAuthorityEntry);
+  const drawingMetadata = (evidence?.drawingMetadata || []).filter(isAuthorityEntry);
   const hasAuthority = geometryCandidates.length > 0 || verticalObservations.length > 0 || materialObservations.length > 0 || drawingMetadata.length > 0;
   return {
     schemaVersion: 1,
@@ -80,6 +309,31 @@ function mergeApplicationSnapshots(existing, snapshot) {
     temporal: snapshot[key]?.temporal || existing[key]?.temporal || null
   }]));
 }
+function unknownDecision() {
+  return {
+    state: "unknown",
+    confidence: 0.45,
+    reason: "missing-page-temporal-resolution",
+    temporalResolved: false,
+    worldGeometryAuthority: false,
+    lineageMemberships: []
+  };
+}
+function withoutResolvedEvidence(result) { const { resolvedEvidence, ...rest } = result; return rest; }
+function siblingBundleRoot(manifestPath, fallbackName) {
+  const basename = path.basename(manifestPath, path.extname(manifestPath));
+  return path.join(path.dirname(manifestPath), basename ? `${basename}-bundle` : fallbackName);
+}
+async function tryLoadRegisteredBundle(filename) {
+  try {
+    const details = await stat(path.resolve(filename));
+    if (!details.isDirectory()) return null;
+    return await loadBundleManifest(filename, REGISTERED_BUNDLE_FORMAT);
+  } catch { return null; }
+}
+function pageKey(contentHash, pageNumber) { return `${contentHash || "unknown-document"}:p${Number(pageNumber || 1)}`; }
+function countPages(pages, key) { return (pages || []).reduce((sum, page) => sum + Number(page?.[key] || 0), 0); }
+function pageSort(a, b) { return String(a.contentHash || "").localeCompare(String(b.contentHash || "")) || Number(a.pageNumber || 0) - Number(b.pageNumber || 0); }
 async function readJson(filename) { return JSON.parse(await readFile(path.resolve(filename), "utf8")); }
 async function writeJson(filename, value) {
   const resolved = path.resolve(filename);

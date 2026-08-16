@@ -1,0 +1,103 @@
+name: Branch full-park fix validation
+
+on:
+  push:
+    branches: [agent/bedrock-terrain-materialization-fix]
+    paths:
+      - ".github/workflows/branch-full-park-validation.yml"
+      - ".github/workflows/planning-documents.yml"
+      - "scripts/planning-vector-extract.mjs"
+      - "scripts/planning-vector-merge.mjs"
+      - "scripts/planning-georegister.mjs"
+      - "scripts/planning-resolve-revisions.mjs"
+      - "scripts/planning-authority-compat.mjs"
+      - "src/lib/planning-evidence-bundle.mjs"
+      - "src/lib/planning-current-corroboration.mjs"
+      - "src/lib/planning-lpa-fallback.mjs"
+      - "src/lib/planning-portal-documents.mjs"
+      - "src/lib/planning-document-worker.mjs"
+      - "src/lib/planning-documents.mjs"
+      - "src/lib/planning-extraction-worker.mjs"
+      - "src/lib/planning-georegistration-batch.mjs"
+      - "src/lib/io.mjs"
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  validate-fixed-world:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BBOX: "52.9820,-1.9000,52.9945,-1.8665"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - id: dispatch
+        name: Dispatch production generator from this branch
+        shell: bash
+        run: |
+          branch="$GITHUB_REF_NAME"
+          before_id="$(gh run list --workflow generate-world.yml --branch "$branch" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+          gh workflow run generate-world.yml --ref "$branch" -f bbox="$BBOX"
+          for attempt in {1..30}; do
+            run_id="$(gh run list --workflow generate-world.yml --branch "$branch" --event workflow_dispatch --limit 10 --json databaseId --jq "([.[] | select(.databaseId > ${before_id})] | max_by(.databaseId) | .databaseId) // empty")"
+            if [[ -n "$run_id" ]]; then
+              echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+              echo "Branch generation run: $run_id"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Could not resolve branch generation run" >&2
+          exit 1
+      - name: Require branch generation to succeed
+        env:
+          RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+        run: gh run watch "$RUN_ID" --exit-status --interval 10
+      - name: Download branch world and evidence
+        env:
+          RUN_ID: ${{ steps.dispatch.outputs.run_id }}
+        run: |
+          mkdir -p acceptance-download/world acceptance-download/evidence acceptance-download/preparation
+          gh run download "$RUN_ID" -n voxel-mapper-mcworld -D acceptance-download/world
+          gh run download "$RUN_ID" -n voxel-mapper-generation-evidence -D acceptance-download/evidence
+          gh run download "$RUN_ID" -n voxel-world-preparation -D acceptance-download/preparation
+      - name: Validate map and structural world integrity
+        run: >-
+          node scripts/validate-park-generation.mjs
+          --root acceptance-download
+          --bbox "$BBOX"
+          --report park-acceptance-report.json
+          --markdown PARK_ACCEPTANCE.md
+      - name: Decode world terrain and mapped surfaces
+        run: >-
+          node scripts/validate-bedrock-content.mjs
+          --root acceptance-download
+          --report bedrock-content-qa.json
+          --markdown BEDROCK_CONTENT_QA.md
+      - name: Publish branch validation summary
+        if: always()
+        run: |
+          [[ -f PARK_ACCEPTANCE.md ]] && cat PARK_ACCEPTANCE.md >> "$GITHUB_STEP_SUMMARY"
+          [[ -f BEDROCK_CONTENT_QA.md ]] && cat BEDROCK_CONTENT_QA.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload branch validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: branch-full-park-fix-evidence
+          path: |
+            PARK_ACCEPTANCE.md
+            park-acceptance-report.json
+            BEDROCK_CONTENT_QA.md
+            bedrock-content-qa.json
+            acceptance-download/preparation/**
+            acceptance-download/evidence/**
+          if-no-files-found: warn
+          retention-days: 7

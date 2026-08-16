@@ -4,6 +4,8 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { UserError } from "./errors.mjs";
 
+let tempWriteSequence = 0;
+
 export async function ensureDir(directory) {
   await mkdir(directory, { recursive: true });
   return directory;
@@ -24,7 +26,7 @@ export async function writeJson(filename, value, spaces = 2) {
 
 export async function writeText(filename, value) {
   await ensureDir(path.dirname(filename));
-  const temp = `${filename}.tmp-${process.pid}`;
+  const temp = nextTempFilename(filename);
   await writeFile(temp, value);
   await rename(temp, filename);
   return filename;
@@ -32,10 +34,15 @@ export async function writeText(filename, value) {
 
 export async function writeBinary(filename, value) {
   await ensureDir(path.dirname(filename));
-  const temp = `${filename}.tmp-${process.pid}`;
+  const temp = nextTempFilename(filename);
   await writeFile(temp, value);
   await rename(temp, filename);
   return filename;
+}
+
+function nextTempFilename(filename) {
+  tempWriteSequence += 1;
+  return `${filename}.tmp-${process.pid}-${tempWriteSequence}`;
 }
 
 export function slugify(value) {
