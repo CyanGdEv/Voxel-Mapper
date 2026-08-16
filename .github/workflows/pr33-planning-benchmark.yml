@@ -1,0 +1,29 @@
+name: PR33 planning critical-path benchmark
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  planning-benchmark:
+    if: github.head_ref == 'agent/sub15-generation-critical-path'
+    uses: ./.github/workflows/planning-documents.yml
+    with:
+      bbox: "52.9820,-1.9000,52.9945,-1.8665"
+      max_applications: "680"
+      shards: "20"
+      refresh: false
+
+  benchmark-complete:
+    needs: planning-benchmark
+    if: always() && github.head_ref == 'agent/sub15-generation-critical-path'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require successful real planning benchmark
+        shell: bash
+        run: |
+          echo "Planning benchmark result: ${{ needs.planning-benchmark.result }}"
+          [[ "${{ needs.planning-benchmark.result }}" == "success" ]]
