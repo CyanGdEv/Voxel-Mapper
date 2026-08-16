@@ -11,11 +11,44 @@ const MAX_REDIRECTS = 5;
  * and TLS SNI/certificate verification. This is a bounded fallback for public
  * authority sites whose DNS cannot be resolved by a hosted runner's system
  * resolver; it never disables TLS validation or permits private/reserved IPs.
+ *
+ * Legacy public-sector indexes frequently retain http:// links after the live
+ * authority endpoint has moved to HTTPS. When the requested URL is HTTP, try
+ * the same-host HTTPS endpoint first and retain HTTP as a bounded fallback.
  */
 export async function fetchViaPublicDns(urlValue, init = {}, options = {}) {
   const url = new URL(urlValue);
   assertPublicHttpUrl(url);
-  return requestWithPublicDns(url, init, options, 0);
+  const candidates = publicTransportCandidates(url, options);
+  let firstHttpResponse = null;
+  let lastError = null;
+
+  for (const candidate of candidates) {
+    try {
+      const response = await requestWithPublicDns(candidate, init, options, 0);
+      if (response.ok) return response;
+      firstHttpResponse ||= response;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (firstHttpResponse) return firstHttpResponse;
+  throw lastError || new Error(`DNS fallback request failed for ${url.hostname}`);
+}
+
+export function httpsUpgradeCandidate(urlValue) {
+  const url = urlValue instanceof URL ? new URL(urlValue) : new URL(urlValue);
+  if (url.protocol !== "http:") return null;
+  const upgraded = new URL(url);
+  upgraded.protocol = "https:";
+  return upgraded;
+}
+
+function publicTransportCandidates(url, options) {
+  if (url.protocol !== "http:" || options.disableHttpsUpgrade) return [url];
+  const upgraded = httpsUpgradeCandidate(url);
+  return upgraded ? [upgraded, url] : [url];
 }
 
 export async function resolvePublicIpv4(hostname, options = {}) {
