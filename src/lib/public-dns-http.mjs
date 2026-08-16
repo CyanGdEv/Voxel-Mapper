@@ -84,6 +84,21 @@ export function isPublicIpv4(value) {
   return true;
 }
 
+/**
+ * Node's TCP family auto-selection asks custom lookup functions for `all: true`
+ * and expects an array of `{ address, family }` records. Older single-address
+ * lookup callbacks instead use `(error, address, family)`. Support both shapes
+ * so the DNS fallback remains correct across Node runtime versions.
+ */
+export function createPinnedIpv4Lookup(address) {
+  if (!isPublicIpv4(address)) throw new Error(`DNS fallback cannot pin non-public IPv4 address: ${address}`);
+  return (_hostname, lookupOptions, callback) => {
+    const all = Boolean(lookupOptions && typeof lookupOptions === "object" && lookupOptions.all);
+    if (all) callback(null, [{ address, family: 4 }]);
+    else callback(null, address, 4);
+  };
+}
+
 async function requestWithPublicDns(url, init, options, redirectDepth) {
   if (redirectDepth > MAX_REDIRECTS) throw new Error(`Too many redirects fetching ${url.hostname}`);
   assertPublicHttpUrl(url);
@@ -120,9 +135,12 @@ function requestResolvedAddress(url, address, init, options) {
         ...(init.headers || {}),
         Host: url.host
       },
-      // Preserve hostname/TLS SNI while bypassing only the broken system DNS
-      // lookup. Node's TLS layer still validates the authority certificate.
-      lookup: (_hostname, _lookupOptions, callback) => callback(null, address, 4),
+      // We already resolved and safety-filtered an IPv4 address. Disable Node's
+      // family racing for this pinned connection and provide a lookup callback
+      // that is still compatible if a runtime asks for all addresses.
+      family: 4,
+      autoSelectFamily: false,
+      lookup: createPinnedIpv4Lookup(address),
       timeout: timeoutMs
     }, (response) => {
       const chunks = [];
