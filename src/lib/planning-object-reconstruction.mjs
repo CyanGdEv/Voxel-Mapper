@@ -155,7 +155,7 @@ function reconstructLightingColumn(candidate, object, schedule) {
       anchor: { x: round(anchor[0]), z: round(anchor[1]) },
       heightM,
       ral: schedule.ral || null,
-      constructionMaterial: schedule.constructionMaterial || null,
+      constructionMaterial: explicitConstructionMaterial(object, schedule),
       shapeModel: "single-column-with-top-luminaire",
       dimensionSources: { height: "current-schedule" }
     })
@@ -168,7 +168,7 @@ function reconstructBarrier(candidate, object, schedule) {
   if (!geometry) return { accepted: false, reason: "barrier-plan-linework-missing" };
   const heightM = finiteInRange(schedule.heightM, 0.4, 15);
   if (heightM == null) return { accepted: false, reason: "barrier-schedule-height-missing-or-invalid" };
-  const constructionMaterial = normalizeConstructionMaterial(schedule.constructionMaterial);
+  const constructionMaterial = explicitConstructionMaterial(object, schedule);
   if (!constructionMaterial) return { accepted: false, reason: "barrier-schedule-construction-material-missing" };
   return {
     accepted: true,
@@ -181,6 +181,21 @@ function reconstructBarrier(candidate, object, schedule) {
       dimensionSources: { height: "current-schedule" }
     })
   };
+}
+
+function explicitConstructionMaterial(object, schedule) {
+  const direct = normalizeConstructionMaterial(schedule?.constructionMaterial);
+  if (direct) return direct;
+  const text = [
+    ...(object?.nearbyText || []),
+    ...(object?.scheduleFusion?.sourceRecords || []).map((record) => record?.raw || "")
+  ].join(" ").toLowerCase();
+  if (/\b(?:timber|wood|wooden)\b/.test(text)) return "timber";
+  if (/\b(?:galvanised|galvanized)?\s*steel\b|\b(?:metal|mesh|palisade|iron)\b/.test(text)) return "steel";
+  if (/\bconcrete\b/.test(text)) return "concrete";
+  if (/\bbrick(?:work)?\b/.test(text)) return "brick";
+  if (/\b(?:stone|granite)\b/.test(text)) return "stone";
+  return null;
 }
 
 function baseRecord(candidate, object, kind, values) {
