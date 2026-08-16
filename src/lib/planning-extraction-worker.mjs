@@ -3,6 +3,7 @@ import { loadPlanningPdfJsRuntime } from "./planning-pdfjs-runtime.mjs";
 import { enrichPlanningRideStructureEvidence } from "./planning-ride-structure-enrichment.mjs";
 import { enrichPlanningLegendEvidence } from "./planning-legend-enrichment.mjs";
 import { enrichPlanningTextEvidence } from "./planning-text-evidence.mjs";
+import { fusePlanningObjectSchedules } from "./planning-object-schedule-fusion.mjs";
 
 const DEFAULT_CONCURRENCY = 2;
 const EXTRACTOR_CLASS_ALIASES = new Map([
@@ -62,6 +63,7 @@ export async function processPlanningExtractionShard(catalog, options = {}) {
     materialObservations: successful.reduce((sum, result) => sum + (result.extraction?.normalizedEvidence?.materialObservations?.length || 0), 0),
     legendEntries: successful.reduce((sum, result) => sum + (result.extraction?.normalizedEvidence?.legendEntries?.length || 0), 0),
     rideStructureTemplates: successful.reduce((sum, result) => sum + (result.extraction?.normalizedEvidence?.rideStructureTemplates?.length || 0), 0),
+    planningObjectTextObservations: successful.reduce((sum, result) => sum + (result.extraction?.normalizedEvidence?.planningObjectTextObservations?.length || 0), 0),
     rasterFallbackPages: rasterFallbackQueue.length,
     failures: failed.map((result) => ({
       contentHash: result.item?.contentHash || null,
@@ -129,7 +131,8 @@ export function compactPlanningExtraction(extraction) {
       rawTextItemsRetained: false,
       rawVectorPathsRetained: false,
       duplicatePageEvidenceRetained: false,
-      rideStructureTemplatesRetained: true
+      rideStructureTemplatesRetained: true,
+      planningObjectScheduleEvidenceRetained: true
     }
   };
 }
@@ -160,6 +163,19 @@ export function mergePlanningExtractionManifests(manifests) {
       contentHash: metadata?.contentHash || document.contentHash
     }))
   );
+  const normalizedEvidence = {
+    schemaVersion: 2,
+    coordinateSpace: "pdf-user-space-points",
+    georegistrationStatus: "required",
+    worldGeometryReady: false,
+    geometryCandidates,
+    verticalObservations,
+    materialObservations,
+    legendEntries,
+    rideStructureTemplates,
+    drawingMetadata
+  };
+  const planningObjectScheduleFusion = fusePlanningObjectSchedules(normalizedEvidence);
   const fallback = dedupeFallback(rasterFallbackQueue);
   return {
     schemaVersion: 2,
@@ -175,21 +191,12 @@ export function mergePlanningExtractionManifests(manifests) {
     materialObservationCount: materialObservations.length,
     legendEntryCount: legendEntries.length,
     rideStructureTemplateCount: rideStructureTemplates.length,
+    planningObjectScheduleObservationCount: drawingMetadata.reduce((sum, metadata) => sum + (metadata?.planningObjectTextObservations?.length || 0), 0),
+    planningObjectScheduleFusion,
     rasterFallbackPages: fallback.length,
     failures,
     documents: extractedDocuments.map(documentSummary),
-    normalizedEvidence: {
-      schemaVersion: 2,
-      coordinateSpace: "pdf-user-space-points",
-      georegistrationStatus: "required",
-      worldGeometryReady: false,
-      geometryCandidates,
-      verticalObservations,
-      materialObservations,
-      legendEntries,
-      rideStructureTemplates,
-      drawingMetadata
-    },
+    normalizedEvidence,
     rasterFallbackQueue: fallback
   };
 }
@@ -216,7 +223,9 @@ function documentSummary(document) {
     rasterFallbackPageCount: document.rasterFallbackPageCount || 0,
     legendEntryCount: document.normalizedEvidence?.legendEntries?.length || 0,
     rideStructureTemplateCount: document.normalizedEvidence?.rideStructureTemplates?.length || 0,
+    planningObjectScheduleObservationCount: (document.normalizedEvidence?.drawingMetadata || []).reduce((sum, metadata) => sum + (metadata?.planningObjectTextObservations?.length || 0), 0),
     rideStructureExtraction: document.rideStructureExtraction || null,
+    planningObjectExtraction: document.planningObjectExtraction || null,
     pages: (document.pages || []).map((page) => ({
       pageNumber: page.pageNumber,
       widthPt: page.widthPt ?? null,
