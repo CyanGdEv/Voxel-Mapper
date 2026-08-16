@@ -125,10 +125,10 @@ export function rankPlanningApplicationsByOsm(applications, indexOrOsm, options 
 
 /**
  * Applies topology-changing planning evidence before downstream path/ride/world
- * reconstruction. Existing matched current planning geometry is left to the
- * Evidence Graph bridge; this stage is intentionally limited to operations the
- * attribute bridge cannot express: additions and tombstones, plus explicitly
- * requested topology replacements.
+ * reconstruction. Verified-current planning geometry is materialized here so
+ * all later enrichment runs against the canonical edited map rather than stale
+ * OSM geometry. Attribute-level provenance is still resolved by the Evidence
+ * Graph later in the pipeline.
  */
 export async function reconcilePlanningTopology(map, options = {}) {
   const evidence = await loadAuthorityEvidence(options);
@@ -190,16 +190,33 @@ export async function reconcilePlanningTopology(map, options = {}) {
         featureId: existing.feature.id,
         featureKind: existing.feature.kind,
         planningSourceRef: candidateSourceRef(candidate),
-        match: compactMatch(existing)
+        match: compactMatch(existing),
+        reason: "explicit-planning-replace"
       });
       continue;
     }
 
     if (existing?.accepted) {
-      summary.deferredMatched += 1;
+      replaceFeatureGeometry(existing.feature, candidate, map);
+      summary.replaced += 1;
+      summary.changes.push({
+        operation: "replace",
+        featureId: existing.feature.id,
+        featureKind: existing.feature.kind,
+        planningSourceRef: candidateSourceRef(candidate),
+        match: compactMatch(existing),
+        reason: "automatic-current-planning-override"
+      });
       continue;
     }
     if (existing?.reason === "ambiguous") { skip(summary, candidate, "add-ambiguous-existing-match"); continue; }
+
+    const protectedMatch = matchGeometryCandidate(
+      candidate,
+      (map.features || []).filter((feature) => !mutableLowerAuthority(feature)),
+      options
+    );
+    if (protectedMatch.accepted) { skip(summary, candidate, "add-blocked-by-higher-authority-match"); continue; }
 
     const kind = inferAddKind(candidate);
     if (!kind) { skip(summary, candidate, "add-kind-not-safe-to-infer"); continue; }
