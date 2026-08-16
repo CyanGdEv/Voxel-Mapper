@@ -1,3 +1,5 @@
+import { enrichPlanningObjectEvidence } from "./planning-object-extractor.mjs";
+
 const MATERIAL_PATTERNS = [
   ["weathered_asphalt", /\bweathered[\s_-]*(?:asphalt|tarmac|bitmac)\b/i],
   ["fresh_black_asphalt", /\b(?:new|fresh|black)(?:[\s_-]*black)?[\s_-]*(?:asphalt|tarmac|bitmac)\b/i],
@@ -51,6 +53,12 @@ export function enrichPlanningTextEvidence(extraction, options = {}) {
   }
   extraction.normalizedEvidence.materialObservations = dedupeMaterials(additions);
   extraction.normalizedEvidence.drawingMetadata = metadata;
+
+  // The universal object pass consumes the final page-local text/material/level
+  // evidence while raw PDF coordinates are still available. It only annotates
+  // candidates/templates and schedule metadata; it never grants authority or
+  // changes topology/terrain semantics.
+  enrichPlanningObjectEvidence(extraction, options);
   return extraction;
 }
 
