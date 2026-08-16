@@ -236,6 +236,22 @@ function dedupeMaterialObservations(values) {
   for (const value of ordered) {
     const key = `${value.pageNumber}:${value.material}:${round(value.xPt, 1)}:${round(value.yPt, 1)}:${value.normalizedText}`;
     if (seen.has(key)) continue;
+
+    // Keep the highest-confidence representation of a material label, but
+    // merge the evidence span from overlapping wider windows. This lets a
+    // specific phrase such as "stone pavers" suppress the weaker standalone
+    // "stone" token even when "pavers" was the highest-confidence match.
+    const sameMaterial = result.find((accepted) =>
+      Number(accepted.pageNumber || 0) === Number(value.pageNumber || 0) &&
+      accepted.material === value.material &&
+      overlappingEvidenceItems(value, accepted)
+    );
+    if (sameMaterial) {
+      mergeEvidenceCoverage(sameMaterial, value);
+      seen.add(key);
+      continue;
+    }
+
     if (result.some((accepted) => shadowsObservation(value, accepted))) continue;
     seen.add(key);
     result.push(value);
@@ -247,6 +263,12 @@ function dedupeMaterialObservations(values) {
     finiteSort(a.xPt, b.xPt) ||
     Number(b.confidence || 0) - Number(a.confidence || 0)
   );
+}
+
+function mergeEvidenceCoverage(target, source) {
+  const indices = [...new Set([...(target.evidenceItemIndices || []), ...(source.evidenceItemIndices || [])])].sort((a, b) => a - b);
+  target.evidenceItemIndices = indices;
+  target.evidenceItems = Math.max(Number(target.evidenceItems || 0), Number(source.evidenceItems || 0), indices.length);
 }
 
 function shadowsObservation(candidate, accepted) {
