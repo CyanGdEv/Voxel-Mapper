@@ -1,6 +1,7 @@
 import path from "node:path";
 import { geometryBounds, geometryMapCoordinates } from "./geo.mjs";
 import { readJson, sha256 } from "./io.mjs";
+import { surfaceMaterialPalette } from "./material-palettes.mjs";
 import { matchPointObservation } from "./planning-authority-fusion.mjs";
 import { compilePlanningChangeSet } from "./planning-changeset-compiler.mjs";
 import { reconcilePlanningTopology } from "./osm-planning-reconciliation.mjs";
@@ -74,18 +75,22 @@ export async function reconcileCompiledPlanningChanges(map, options = {}) {
 
 export function applyPlanningSurfacePaint(map, changeSet, options = {}) {
   const result = emptyPaintSummary("processed");
-  const supported = options.planningSurfacePaintMode === "off" ? new Set() : new Set(["grass", "earth", "stone"]);
+  if (options.planningSurfacePaintMode === "off") {
+    result.status = "disabled";
+    return result;
+  }
   for (const candidate of changeSet?.candidates || []) {
     if (candidate.planningOperation !== "paint" || candidate.kind !== "surface") continue;
     const material = String(candidate.compiledMaterial || candidate.tags?.surface || "").toLowerCase();
-    if (!supported.has(material)) {
+    const palette = surfaceMaterialPalette(material);
+    if (!palette) {
       result.deferred += 1;
       result.changes.push({
         operation: "paint",
         sourceRef: candidateRef(candidate),
         material: material || null,
-        status: "deferred-renderer-palette",
-        reason: "exact-surface-material-not-yet-supported-by-base-surface-raster"
+        status: "deferred-unsupported-ground-material",
+        reason: "material-is-not-a-safe-built-in-ground-surface-palette"
       });
       continue;
     }
@@ -94,20 +99,23 @@ export function applyPlanningSurfacePaint(map, changeSet, options = {}) {
       result.changes.push({ operation: "paint", sourceRef: candidateRef(candidate), material, status: "rejected", reason: "missing-georegistered-area" });
       continue;
     }
-    const feature = planningPaintFeature(candidate, material, map);
+    const feature = planningPaintFeature(candidate, material, map, palette);
     map.features.push(feature);
     result.applied += 1;
     result.changes.push({
       operation: "paint",
       sourceRef: candidateRef(candidate),
       featureId: feature.id,
-      material,
+      material: palette.key,
+      palette: clone(palette),
       status: "applied",
       terrainGeometryChanged: false,
       terrainElevationChanged: false
     });
   }
-  result.status = result.applied ? "applied" : result.deferred ? "deferred-material-palettes" : result.rejected ? "rejected" : "no-surface-paint";
+  result.status = result.applied
+    ? (result.deferred || result.rejected ? "applied-with-deferred-items" : "applied")
+    : result.deferred ? "deferred-material-palettes" : result.rejected ? "rejected" : "no-surface-paint";
   return result;
 }
 
@@ -346,7 +354,7 @@ function mergeTopologySummaries(base, extended) {
   };
 }
 
-function planningPaintFeature(candidate, material, map) {
+function planningPaintFeature(candidate, material, map, palette) {
   const geometry = candidate.geometry || geometryMapCoordinates(candidate.localGeometry, map.projector.inverse);
   const sourceRef = candidateRef(candidate);
   return {
@@ -361,6 +369,7 @@ function planningPaintFeature(candidate, material, map) {
       "planning:paint_only": "yes",
       "terrain:geometry_mutable": "no"
     },
+    materialPalette: { surface: clone(palette) },
     geometry,
     localGeometry: clone(candidate.localGeometry),
     vertical: { heightM: null, minHeightM: 0, elevationM: null, explicit: false },
@@ -425,6 +434,7 @@ function surfaceSubtype(material) {
   if (material === "grass") return "grass";
   if (material === "earth") return "earth";
   if (material === "stone") return "stone";
+  if (material === "sand") return "sand";
   return "planning-surface";
 }
 
