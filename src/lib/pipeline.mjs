@@ -14,7 +14,7 @@ import {
   fusePlanningAuthorityIntoEvidenceGraph,
   applyPlanningAuthorityWinners
 } from "./planning-authority-fusion.mjs";
-import { reconcilePlanningTopology } from "./osm-planning-reconciliation.mjs";
+import { reconcileCompiledPlanningChanges } from "./planning-change-reconciliation.mjs";
 import { buildPlanningDocumentQueue } from "./planning-documents.mjs";
 import { compileMap } from "./raster.mjs";
 import { buildBedrockAddon } from "./bedrock.mjs";
@@ -36,9 +36,9 @@ export async function buildPark(options = {}, progress = () => {}) {
 
   progress("Normalizing map geometry and provenance");
   const map = await normalizeMap(sources, options);
-  progress("Reconciling verified-current planning topology against OSM");
-  const planningTopologyReconciliation = await reconcilePlanningTopology(map, options);
-  if (planningTopologyReconciliation.added || planningTopologyReconciliation.replaced || planningTopologyReconciliation.deleted) {
+  progress("Compiling verified-current planning changes against OSM");
+  const planningTopologyReconciliation = await reconcileCompiledPlanningChanges(map, options);
+  if (planningTopologyReconciliation.added || planningTopologyReconciliation.replaced || planningTopologyReconciliation.deleted || planningTopologyReconciliation.paint?.applied) {
     const changedBuildingIds = new Set(
       planningTopologyReconciliation.changes
         .filter((change) => ["add", "replace"].includes(change.operation) && change.featureKind === "building")
@@ -90,8 +90,15 @@ export async function buildPark(options = {}, progress = () => {}) {
   if (planningAuthorityResolution.appliedAttributes > 0) refreshMapDerivedData(map);
   const accuracy = assessAccuracy(map, sources, options);
 
-  progress("Compiling 1 m raster and chunked Bedrock operations");
-  const compilation = compileMap({ parkName, map, sources, accuracy, options });
+  // Terrain elevation is immutable after source sampling. Legacy conform mode is
+  // deliberately reduced to evidence-only here; planning/path overlays may
+  // repaint the top block but cannot cut/fill/flatten the terrain raster.
+  const compilationOptions = {
+    ...options,
+    pathTerrainMode: options.pathTerrainMode === "off" ? "off" : "evidence"
+  };
+  progress("Compiling immutable-terrain 1 m raster and chunked Bedrock operations");
+  const compilation = compileMap({ parkName, map, sources, accuracy, options: compilationOptions });
   const compilationPath = options.compilationOut
     ? await writeJson(path.resolve(options.compilationOut), {
         schemaVersion: 1,
@@ -111,11 +118,19 @@ export async function buildPark(options = {}, progress = () => {}) {
   const planningDocumentQueuePath = await writeJson(
     path.join(outputDir, "planning-document-queue.json"), planningDocumentQueue
   );
+  const planningChangeSetPath = await writeJson(
+    path.join(outputDir, "planning-change-set.json"), planningTopologyReconciliation.changeSet
+  );
+  const planningSurfacePaintPath = await writeJson(
+    path.join(outputDir, "planning-surface-paint.json"), planningTopologyReconciliation.paint
+  );
   const planningTopologyReconciliationPath = await writeJson(
     path.join(outputDir, "planning-topology-reconciliation.json"), planningTopologyReconciliation
   );
   const planningAuthorityFusionPath = await writeJson(path.join(outputDir, "planning-authority-fusion.json"), {
     schemaVersion: 1,
+    changeSet: planningTopologyReconciliation.changeSet,
+    surfacePaint: planningTopologyReconciliation.paint,
     topology: planningTopologyReconciliation,
     association: planningAuthorityFusion,
     evidenceGraph: planningAuthorityGraph,
@@ -142,7 +157,11 @@ export async function buildPark(options = {}, progress = () => {}) {
         appliedAttributes: planningAuthorityResolution.appliedAttributes,
         topologyAdded: planningTopologyReconciliation.added,
         topologyReplaced: planningTopologyReconciliation.replaced,
-        topologyDeleted: planningTopologyReconciliation.deleted
+        topologyDeleted: planningTopologyReconciliation.deleted,
+        surfacePaintApplied: planningTopologyReconciliation.paint?.applied || 0,
+        surfacePaintDeferred: planningTopologyReconciliation.paint?.deferred || 0,
+        changeSetCounts: planningTopologyReconciliation.changeSet?.counts || null,
+        terrainPolicy: planningTopologyReconciliation.changeSet?.terrainPolicy || null
       },
       orthophoto: withoutLargeData(sources.orthophoto),
       mapFusion: sources.mapFusion,
@@ -156,10 +175,18 @@ export async function buildPark(options = {}, progress = () => {}) {
     rideProfiles: compactRideEvidence(rideProfiles),
     evidenceGraph,
     planningAuthority: {
+      changeSet: planningTopologyReconciliation.changeSet,
+      surfacePaint: planningTopologyReconciliation.paint,
       topology: planningTopologyReconciliation,
       association: planningAuthorityFusion,
       graph: planningAuthorityGraph,
       resolution: planningAuthorityResolution
+    },
+    terrainPolicy: {
+      sourceElevationImmutable: true,
+      planningDeformationAllowed: false,
+      pathCutFillAllowed: false,
+      surfacePaintAllowed: true
     },
     accuracy,
     compilation: { meta: compilation.meta, stats: compilation.stats }
@@ -262,6 +289,8 @@ export async function buildPark(options = {}, progress = () => {}) {
       sourcePlan: sourcePlanPath,
       planningAcquisition: planningAcquisitionPath,
       planningDocumentQueue: planningDocumentQueuePath,
+      planningChangeSet: planningChangeSetPath,
+      planningSurfacePaint: planningSurfacePaintPath,
       planningTopologyReconciliation: planningTopologyReconciliationPath,
       planningAuthorityFusion: planningAuthorityFusionPath,
       compilation: compilationPath,
@@ -294,6 +323,13 @@ export async function buildPark(options = {}, progress = () => {}) {
       planningJurisdictions: sources.planning?.jurisdictionCount || 0,
       planningDocumentQueueItems: planningDocumentQueue.itemCount,
       planningDocumentQueueApplications: planningDocumentQueue.applicationsQueued,
+      planningChangeSetAdds: planningTopologyReconciliation.changeSet?.counts?.add || 0,
+      planningChangeSetReplaces: planningTopologyReconciliation.changeSet?.counts?.replace || 0,
+      planningChangeSetDeletes: planningTopologyReconciliation.changeSet?.counts?.delete || 0,
+      planningChangeSetPaints: planningTopologyReconciliation.changeSet?.counts?.paint || 0,
+      planningChangeSetReviews: planningTopologyReconciliation.changeSet?.counts?.review || 0,
+      planningSurfacePaintApplied: planningTopologyReconciliation.paint?.applied || 0,
+      planningSurfacePaintDeferred: planningTopologyReconciliation.paint?.deferred || 0,
       planningTopologyAdded: planningTopologyReconciliation.added,
       planningTopologyReplaced: planningTopologyReconciliation.replaced,
       planningTopologyDeleted: planningTopologyReconciliation.deleted,
