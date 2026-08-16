@@ -1,5 +1,6 @@
 import path from "node:path";
 import { createRequire } from "node:module";
+import { wrapPlanningPdfJsColourNormalization } from "./planning-pdf-colour-normalizer.mjs";
 
 let runtimePromise = null;
 
@@ -14,7 +15,7 @@ async function createRuntime() {
   const packageRoot = path.dirname(require.resolve("pdfjs-dist/package.json"));
   const standardFontDataUrl = `${path.join(packageRoot, "standard_fonts")}${path.sep}`;
   const cMapUrl = `${path.join(packageRoot, "cmaps")}${path.sep}`;
-  return {
+  const runtime = {
     OPS: module.OPS,
     version: module.version || null,
     packageRoot,
@@ -29,4 +30,5 @@ async function createRuntime() {
       });
     }
   };
+  return wrapPlanningPdfJsColourNormalization(runtime);
 }
