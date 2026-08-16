@@ -255,18 +255,27 @@ async function fetchResponse(url, init, options) {
     try {
       const response = await implementation(url, { ...init, redirect: "follow", signal: controller.signal });
       if (!response?.ok) {
+        const status = Number(response?.status || 0);
         const snippet = typeof response?.text === "function" ? (await response.text()).slice(0, 300) : "";
-        throw new Error(`HTTP ${response?.status ?? "?"} fetching ${new URL(url).host}${snippet ? `: ${snippet}` : ""}`);
+        const error = new Error(`HTTP ${response?.status ?? "?"} fetching ${new URL(url).host}${snippet ? `: ${snippet}` : ""}`);
+        error.retryable = isRetryableHttpStatus(status);
+        throw error;
       }
       return response;
     } catch (error) {
       lastError = error;
-      if (attempt < retries) await new Promise((resolve) => setTimeout(resolve, 500 * (2 ** attempt)));
+      const retryable = error?.retryable !== false;
+      if (attempt >= retries || !retryable) break;
+      await new Promise((resolve) => setTimeout(resolve, 500 * (2 ** attempt)));
     } finally {
       clearTimeout(timer);
     }
   }
   throw lastError;
+}
+
+function isRetryableHttpStatus(status) {
+  return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
 function extensionForDocument(url, contentType) {
