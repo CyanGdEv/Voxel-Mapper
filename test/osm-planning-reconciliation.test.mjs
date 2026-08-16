@@ -123,24 +123,41 @@ test("current planning topology can add missing rides, replace OSM geometry and 
   assert.ok(summary.changes.some((change) => change.reason === "delete-target-higher-authority"));
 });
 
-test("approved/proposed planning geometry cannot auto-add world features", async () => {
+test("approved/proposed planning cannot add or explicitly delete world features", async () => {
+  const existing = osmFeature("osm:way:99", "building", polygon(0, 0, 8, 8));
   const map = {
     projector,
-    features: [],
+    features: [existing],
     geojson: { type: "FeatureCollection", name: "Fixture", features: [] }
   };
+  const proposedTemporal = { state: "proposed", confidence: 0.95, reason: "approval-does-not-prove-construction" };
   const summary = await reconcilePlanningTopology(map, {
     planningAuthorityEvidenceData: {
-      geometryCandidates: [{
-        id: "proposal-only",
-        classification: "ride_layout",
-        semantic: "ride-centerline-or-edge",
-        localGeometry: line([0, 0], [10, 0]),
-        worldGeometryAuthority: false,
-        planningTemporal: { state: "proposed", confidence: 0.95, reason: "approval-does-not-prove-construction" }
-      }]
+      geometryCandidates: [
+        {
+          id: "proposal-only-add",
+          classification: "ride_layout",
+          semantic: "ride-centerline-or-edge",
+          localGeometry: line([20, 20], [30, 20]),
+          worldGeometryAuthority: false,
+          planningTemporal: proposedTemporal
+        },
+        {
+          id: "proposal-only-delete",
+          operation: "delete",
+          targetFeatureId: "osm:way:99",
+          classification: "site_plan",
+          semantic: "site-feature-or-building-footprint",
+          localGeometry: polygon(0, 0, 8, 8),
+          worldGeometryAuthority: false,
+          planningTemporal: proposedTemporal
+        }
+      ]
     }
   });
   assert.equal(summary.added, 0);
-  assert.equal(map.features.length, 0);
+  assert.equal(summary.deleted, 0);
+  assert.equal(map.features.length, 1);
+  assert.equal(map.features[0].id, "osm:way:99");
+  assert.ok(summary.changes.some((change) => change.reason === "delete-not-current-authority"));
 });
