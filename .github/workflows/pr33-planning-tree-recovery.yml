@@ -1,0 +1,47 @@
+name: PR33 planning and schematic-tree recovery
+
+on:
+  push:
+    branches:
+      - agent/sub15-generation-critical-path
+
+permissions:
+  contents: write
+
+jobs:
+  apply-recovery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/sub15-generation-critical-path
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Apply planning recovery patches
+        run: python scripts/pr33-recovery-patch.py
+      - name: Run focused recovery regressions
+        run: |
+          node --test \
+            test/planning-document-catalog.test.mjs \
+            test/planning-documents.test.mjs \
+            test/planning-changeset-compiler.test.mjs \
+            test/planning-object-reconstruction.test.mjs \
+            test/planning-object-renderer.test.mjs \
+            test/natural-tree-geometry.test.mjs \
+            test/raster-natural-tree-integration.test.mjs \
+            test/direct-world-palette-compatibility.test.mjs
+      - name: Run complete unit certification
+        run: npm test
+      - name: Commit recovery and remove one-shot helpers
+        shell: bash
+        run: |
+          git config user.name "Voxel Mapper CI"
+          git config user.email "actions@users.noreply.github.com"
+          git rm .github/workflows/pr33-planning-tree-recovery.yml scripts/pr33-recovery-patch.py
+          git add src/lib test assets/tree-templates/31060.schem.gz
+          git commit -m "Restore planning evidence and use supplied tree schematic"
+          git push origin HEAD:agent/sub15-generation-critical-path
