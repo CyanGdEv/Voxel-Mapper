@@ -38,31 +38,35 @@ export function normalizePlanningPdfOperatorListColours(operatorList = {}, OPS =
     }
 
     if (opEquals(fn, OPS.setStrokeGray)) {
+      strokeSpace = DEVICE_GRAY;
       if (replaceWithRgb(fnArray, argsArray, index, OPS.setStrokeRGBColor, grayToRgb(args))) counts.grayToRgb += 1;
       continue;
     }
     if (opEquals(fn, OPS.setFillGray)) {
+      fillSpace = DEVICE_GRAY;
       if (replaceWithRgb(fnArray, argsArray, index, OPS.setFillRGBColor, grayToRgb(args))) counts.grayToRgb += 1;
       continue;
     }
     if (opEquals(fn, OPS.setStrokeCMYKColor)) {
+      strokeSpace = DEVICE_CMYK;
       if (replaceWithRgb(fnArray, argsArray, index, OPS.setStrokeRGBColor, cmykToRgb(args))) counts.cmykToRgb += 1;
       continue;
     }
     if (opEquals(fn, OPS.setFillCMYKColor)) {
+      fillSpace = DEVICE_CMYK;
       if (replaceWithRgb(fnArray, argsArray, index, OPS.setFillRGBColor, cmykToRgb(args))) counts.cmykToRgb += 1;
       continue;
     }
     if (opEquals(fn, OPS.setStrokeRGBColor)) {
+      strokeSpace = DEVICE_RGB;
       const rgb = rgbToBytes(args);
       if (rgb) { argsArray[index] = rgb; counts.rgbCanonicalized += 1; }
-      strokeSpace = DEVICE_RGB;
       continue;
     }
     if (opEquals(fn, OPS.setFillRGBColor)) {
+      fillSpace = DEVICE_RGB;
       const rgb = rgbToBytes(args);
       if (rgb) { argsArray[index] = rgb; counts.rgbCanonicalized += 1; }
-      fillSpace = DEVICE_RGB;
       continue;
     }
 
