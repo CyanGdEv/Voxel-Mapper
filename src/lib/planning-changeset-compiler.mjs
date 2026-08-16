@@ -67,12 +67,16 @@ export function inferPlanningFeatureKind(candidate, map = null, options = {}) {
   const signals = [];
 
   const hit = (kind, confidence, reason, signal) => ({ kind, confidence, reason, signals: [...signals, signal] });
+
+  // A support/column label is more specific than the generic fact that it came
+  // from a ride-layout drawing. Check it first so support linework is never
+  // silently promoted to a ride centerline.
+  if (/ride[-_ ]?support|support[-_ ]?structure|column|support pier/.test(`${semantic} ${text}`)) {
+    return hit("ride_support", 0.94, "ride-support-label", "support-label");
+  }
   if (/ride[-_ ]?centerline|ride[-_ ]?track|track[-_ ]?layout/.test(`${semantic} ${text}`) ||
       (classification === "ride_layout" && lineGeometry)) {
     return hit("ride_track", 0.98, "ride-layout-centerline", "ride-layout");
-  }
-  if (/ride[-_ ]?support|support[-_ ]?structure|column|support pier/.test(`${semantic} ${text}`)) {
-    return hit("ride_support", 0.94, "ride-support-label", "support-label");
   }
   if (/demolition[-_ ]?footprint/.test(semantic)) {
     return hit("building", 0.94, "demolition-building-footprint", "demolition-footprint");
