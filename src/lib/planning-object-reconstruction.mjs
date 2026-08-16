@@ -138,7 +138,13 @@ function reconstructTree(candidate, object, schedule) {
       crownSpreadM,
       trunkDiameterM: diameterMm == null ? null : round(diameterMm / 1000),
       species: schedule.species || null,
-      shapeModel: "dimension-constrained-ellipsoid-canopy",
+      shapeModel: "measured-envelope-natural-tree-v1",
+      geometryPolicy: {
+        deterministic: true,
+        measuredHeightHardLimit: true,
+        measuredCrownSpreadHardLimit: true,
+        naturalTrunkBranchRootGeometry: true
+      },
       dimensionSources: { height: "current-schedule", crownSpread: "current-schedule", trunkDiameter: diameterMm == null ? null : "current-schedule" }
     })
   };
