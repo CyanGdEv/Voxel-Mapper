@@ -175,20 +175,42 @@ export function parseWarcHttpResponse(buffer) {
   if (firstBoundary < 0) throw new Error("Malformed WARC headers");
   const warcHeaders = parseHeaderBlock(bytes.subarray(0, firstBoundary).toString("latin1"), true);
   const httpStart = firstBoundary + boundaryLength(bytes, firstBoundary);
+
+  // WARC Content-Length describes the encapsulated application/http payload,
+  // not the record separators which follow it. Respect that boundary so binary
+  // planning documents are reproduced byte-for-byte rather than gaining a
+  // trailing CRLF/WARC separator from the container record.
+  const warcContentLength = parseBoundedLength(warcHeaders.get("content-length"));
+  const payloadEnd = warcContentLength == null ? bytes.length : httpStart + warcContentLength;
+  if (payloadEnd > bytes.length) throw new Error("Truncated WARC payload");
+  if (payloadEnd <= httpStart) throw new Error("Empty WARC HTTP payload");
+
   const secondBoundary = findHeaderBoundary(bytes, httpStart);
-  if (secondBoundary < 0) throw new Error("Malformed archived HTTP headers");
+  if (secondBoundary < 0 || secondBoundary >= payloadEnd) throw new Error("Malformed archived HTTP headers");
   const httpBlock = bytes.subarray(httpStart, secondBoundary).toString("latin1");
   const lines = httpBlock.split(/\r?\n/);
   const statusMatch = lines.shift()?.match(/^HTTP\/\d(?:\.\d)?\s+(\d{3})/i);
   if (!statusMatch) throw new Error("Archived WARC payload is not an HTTP response");
   const httpHeaders = parseHeaderLines(lines);
   const bodyStart = secondBoundary + boundaryLength(bytes, secondBoundary);
+  if (bodyStart > payloadEnd) throw new Error("Archived HTTP headers exceed WARC payload boundary");
+
+  let body = bytes.subarray(bodyStart, payloadEnd);
+  const transfer = String(httpHeaders.get("transfer-encoding") || "").toLowerCase();
+  if (!transfer.includes("chunked")) {
+    const httpContentLength = parseBoundedLength(httpHeaders.get("content-length"));
+    if (httpContentLength != null) {
+      if (httpContentLength > body.length) throw new Error("Truncated archived HTTP entity");
+      body = body.subarray(0, httpContentLength);
+    }
+  }
+
   return {
     warcHeaders,
     httpHeaders,
     status: Number(statusMatch[1]),
     targetUrl: warcHeaders.get("warc-target-uri") || null,
-    body: bytes.subarray(bodyStart)
+    body
   };
 }
 
@@ -285,6 +307,14 @@ function findHeaderBoundary(buffer, start) {
 
 function boundaryLength(buffer, index) {
   return buffer.subarray(index, index + 4).equals(Buffer.from("\r\n\r\n")) ? 4 : 2;
+}
+
+function parseBoundedLength(value) {
+  if (value == null || value === "") return null;
+  const text = String(value).trim();
+  if (!/^\d+$/.test(text)) return null;
+  const number = Number(text);
+  return Number.isSafeInteger(number) && number >= 0 ? number : null;
 }
 
 function decodeHttpEntity(bodyValue, headers) {
