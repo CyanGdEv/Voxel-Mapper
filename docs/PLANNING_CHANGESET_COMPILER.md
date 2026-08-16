@@ -45,6 +45,8 @@ Planning data may not:
 
 A terrain/landform mutation request is emitted as `review` with `terrain-geometry-immutable`, never materialized. Legacy path-terrain conform mode is forced to evidence-only by the main compiler pipeline so the generated terrain elevation raster remains unchanged.
 
+The planning surface renderer runs only after the immutable 1 m terrain compilation exists. It indexes the already-compiled phase-1 top-surface blocks and may overwrite a block only at that exact existing Y. It never samples a new height, creates a missing terrain cell, or emits a vertical fill/cut. This makes paint masks follow the existing terrain slope exactly.
+
 ## Change operations
 
 For every authoritative planning feature, the compiler emits one of:
@@ -62,7 +64,32 @@ Topology-changing operations require georegistered evidence whose temporal resol
 
 Deletion additionally requires explicit demolition/removal semantics and high-confidence current-state evidence. Higher-authority surveyed/manual overrides cannot be mutated by this compiler.
 
-Surface paint requires an authoritative, spatially associated material label. If the exact material is not yet supported by the surface renderer, the paint operation is retained in QA as `deferred-renderer-palette` rather than substituted with an incorrect block.
+Surface paint requires an authoritative, spatially associated material label. The ground renderer accepts only explicitly ground-safe material palettes; roof, glazing and cladding materials fail closed rather than being painted onto terrain.
+
+## Planning surface palettes
+
+The current weighted ground palettes include:
+
+- weathered asphalt
+- fresh black asphalt
+- light asphalt
+- red tarmac
+- resin-bound beige
+- resin-bound grey
+- concrete
+- old concrete
+- paving stones / paving slabs / block paving aliases
+- brick
+- stone
+- timber
+- gravel
+- sand
+- grass
+- earth/soil
+
+Weighted palettes retain all configured Minecraft blocks. Five-entry resin and paving palettes are not truncated to three blocks. Deterministic coordinate hashing preserves repeatable speckled/mixed/organic material variation across runs.
+
+If a current planning material is not in the ground-safe palette registry, it remains explicit QA evidence and is deferred instead of being substituted with an inaccurate block.
 
 ## Semantic inference
 
@@ -79,3 +106,5 @@ Weak or conflicting signals emit `review` rather than guessing.
 ## Provenance
 
 Each emitted change records the planning document hash/page, semantic evidence, temporal authority, match score, target feature (if any), operation confidence and decision reason. The resulting change-set is written as a standalone QA artifact before world reconstruction.
+
+`planning-surface-paint.json` also records the final render result, material palette, block weights, painted cell count, operation count and explicit `terrainGeometryChanged: false` / `terrainElevationChanged: false` evidence for every rendered planning area.
