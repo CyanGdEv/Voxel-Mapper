@@ -1,15 +1,28 @@
-import { corroboratePlanningGeometryCandidate } from "./planning-current-corroboration.mjs";
+import {
+  corroboratePlanningGeometryCandidate,
+  latestPlanningDecisionDate,
+  parsePlanningDate
+} from "./planning-current-corroboration.mjs";
 
 const SPATIAL_CERTIFICATION_CLASSES = new Set(["site_plan", "landscape_plan", "ride_layout"]);
 const CONTEXT_ONLY_CLASSES = new Set(["location_plan"]);
+const CORROBORATABLE_CLASSES = new Set(["site_plan", "landscape_plan", "ride_layout", "location_plan"]);
 const EXCLUDED_STATES = new Set(["refused", "withdrawn", "demolished", "superseded"]);
 
 /**
  * Evaluate whether a registered planning page is independently proven to have
- * been implemented. Approval is never enough: every accepted anchor is first
- * checked against a post-decision current observation by the existing
- * candidate-level corroborator. Multiple independent anchors are then required
- * before the whole plan page may become spatial authority.
+ * been implemented. Approval is never enough.
+ *
+ * The strongest/fastest proof is the robust georegistration solution itself:
+ * when the page was aligned by several independent current-world features and
+ * those observations post-date the planning decision, those matches are valid
+ * implementation anchors. This avoids re-matching hundreds of thousands of
+ * PDF vector fragments against OSM after registration has already established
+ * the same correspondence.
+ *
+ * If registration alone is not sufficient, a bounded candidate-level fallback
+ * uses the existing post-decision corroborator. The bound is fail-closed: it
+ * can withhold authority, never grant it without the normal proof thresholds.
  *
  * A location plan can corroborate application context, but it can never make
  * all of its contextual linework world geometry authority.
@@ -20,6 +33,7 @@ export function evaluateImplementedPlanningPage({
   referenceFeatures,
   applicationTemporal,
   drawingIssueDate = null,
+  registration = null,
   options = {}
 }) {
   const classification = normalizeClass(page?.classification || evidence?.geometryCandidates?.[0]?.classification);
@@ -38,43 +52,67 @@ export function evaluateImplementedPlanningPage({
 
   const anchors = [];
   const rejectionCounts = {};
-  for (const candidate of evidence?.geometryCandidates || []) {
-    if (candidate?.georegistrationStatus !== "registered" || candidate?.spatialAuthorityEligible === false) continue;
-    const proof = corroboratePlanningGeometryCandidate(candidate, referenceFeatures || [], {
-      applicationTemporal: applicationTemporal || [],
-      drawingIssueDate,
-      minMatchScore: Number(options.minMatchScore ?? 0.78),
-      ambiguityGap: Number(options.ambiguityGap ?? 0.12)
-    });
-    if (!proof.accepted) {
-      rejectionCounts[proof.reason] = (rejectionCounts[proof.reason] || 0) + 1;
-      continue;
+  const referenceById = new Map((referenceFeatures || []).map((feature) => [feature?.id, feature]));
+  const registrationProof = collectRegistrationAnchors({
+    registration,
+    referenceById,
+    applicationTemporal,
+    drawingIssueDate,
+    options
+  });
+  anchors.push(...registrationProof.anchors);
+  mergeCounts(rejectionCounts, registrationProof.rejected);
+
+  const minAnchors = Math.max(2, Number(options.minAnchors ?? 4));
+  const minUniqueFeatures = Math.max(2, Number(options.minUniqueFeatures ?? 2));
+  const minMedianScore = Number(options.minMedianScore ?? 0.78);
+  const minRegistrationFeatures = Math.max(3, Number(options.minRegistrationFeatures ?? 3));
+  const maxCandidateProofChecks = Math.max(0, Number(options.maxCandidateProofChecks ?? 2500));
+
+  let evidencePass = registrationProof.pass && registrationProof.uniqueFeatureCount >= minRegistrationFeatures;
+  let candidateProofChecks = 0;
+
+  if (!evidencePass && maxCandidateProofChecks > 0) {
+    for (const candidate of proofCandidates(evidence?.geometryCandidates || [])) {
+      if (candidateProofChecks >= maxCandidateProofChecks) break;
+      candidateProofChecks += 1;
+      const proof = corroboratePlanningGeometryCandidate(candidate, referenceFeatures || [], {
+        applicationTemporal: applicationTemporal || [],
+        drawingIssueDate,
+        minMatchScore: Number(options.minMatchScore ?? 0.78),
+        ambiguityGap: Number(options.ambiguityGap ?? 0.12)
+      });
+      if (!proof.accepted) {
+        rejectionCounts[proof.reason] = (rejectionCounts[proof.reason] || 0) + 1;
+        continue;
+      }
+      const anchor = {
+        source: "candidate-corroboration",
+        candidateId: candidate.id || null,
+        featureId: proof.match?.feature?.id || null,
+        featureKind: proof.match?.feature?.kind || null,
+        score: Number(proof.match?.score || 0),
+        secondScore: proof.match?.secondScore ?? null,
+        observedAt: proof.observedAt || null,
+        decisionAt: proof.decisionAt || null,
+        implementationCorroboration: proof.temporal?.implementationCorroboration || null
+      };
+      if (!duplicateAnchor(anchors, anchor)) anchors.push(anchor);
+      if (candidateAnchorThresholdPassed(anchors, { minAnchors, minUniqueFeatures, minMedianScore })) {
+        evidencePass = true;
+        break;
+      }
     }
-    anchors.push({
-      candidateId: candidate.id || null,
-      featureId: proof.match?.feature?.id || null,
-      featureKind: proof.match?.feature?.kind || null,
-      score: Number(proof.match?.score || 0),
-      secondScore: proof.match?.secondScore ?? null,
-      observedAt: proof.observedAt || null,
-      decisionAt: proof.decisionAt || null,
-      implementationCorroboration: proof.temporal?.implementationCorroboration || null
-    });
+  }
+
+  if (!evidencePass) {
+    evidencePass = candidateAnchorThresholdPassed(anchors, { minAnchors, minUniqueFeatures, minMedianScore });
   }
 
   const uniqueFeatures = new Set(anchors.map((entry) => entry.featureId).filter(Boolean));
   const uniqueKinds = new Set(anchors.map((entry) => entry.featureKind).filter(Boolean));
   const scores = anchors.map((entry) => entry.score).filter(Number.isFinite).sort((a, b) => a - b);
   const medianScore = median(scores);
-  const minAnchors = Math.max(2, Number(options.minAnchors ?? 4));
-  const minUniqueFeatures = Math.max(2, Number(options.minUniqueFeatures ?? 2));
-  const minMedianScore = Number(options.minMedianScore ?? 0.78);
-  const enoughIndependentReference = uniqueFeatures.size >= 3 || (uniqueFeatures.size >= 2 && uniqueKinds.size >= 2 && anchors.length >= 8);
-  const evidencePass = anchors.length >= minAnchors &&
-    uniqueFeatures.size >= minUniqueFeatures &&
-    enoughIndependentReference &&
-    medianScore >= minMedianScore;
-
   const contextOnly = CONTEXT_ONLY_CLASSES.has(classification);
   const certifiedSpatialAuthority = evidencePass && SPATIAL_CERTIFICATION_CLASSES.has(classification);
   const certifiedContext = evidencePass && contextOnly;
@@ -91,6 +129,12 @@ export function evaluateImplementedPlanningPage({
     uniqueFeatureCount: uniqueFeatures.size,
     uniqueFeatureKinds: [...uniqueKinds].sort(),
     medianMatchScore: round(medianScore),
+    registrationAnchorCount: registrationProof.anchors.length,
+    registrationUniqueFeatureCount: registrationProof.uniqueFeatureCount,
+    registrationMedianScore: registrationProof.medianScore,
+    registrationRmseM: registrationProof.registrationRmseM,
+    candidateProofChecks,
+    proofBoundReached: candidateProofChecks >= maxCandidateProofChecks && !evidencePass,
     anchors,
     rejected: rejectionCounts,
     temporal: certifiedSpatialAuthority || certifiedContext ? implementedTemporal(baseTemporal, anchors, {
@@ -171,6 +215,7 @@ export function buildImplementedApplicationProof(applicationKey, pageEvaluations
         classification: entry.evaluation.classification,
         anchors: entry.evaluation.anchorCount,
         uniqueCurrentFeatures: entry.evaluation.uniqueFeatureCount,
+        registrationAnchors: entry.evaluation.registrationAnchorCount || 0,
         medianMatchScore: entry.evaluation.medianMatchScore
       })),
       totalAnchors,
@@ -186,6 +231,136 @@ export function mergeApplicationSnapshots(existing = {}, snapshot = {}) {
     ...(snapshot[key] || {}),
     temporal: snapshot[key]?.temporal || existing[key]?.temporal || null
   }]));
+}
+
+function collectRegistrationAnchors({ registration, referenceById, applicationTemporal, drawingIssueDate, options }) {
+  const result = {
+    anchors: [],
+    rejected: {},
+    pass: false,
+    uniqueFeatureCount: 0,
+    medianScore: 0,
+    registrationRmseM: null
+  };
+  if (registration?.status !== "registered" || registration?.solution?.pass !== true) {
+    result.rejected["registration-not-passed"] = 1;
+    return result;
+  }
+  const decisionAt = latestPlanningDecisionDate(applicationTemporal || [], drawingIssueDate || null);
+  if (!decisionAt) {
+    result.rejected["missing-planning-decision-date"] = 1;
+    return result;
+  }
+  const maxMatchRmseM = Math.max(0.1, Number(options.maxRegistrationMatchRmseM ?? 1.0));
+  const maxPageRmseM = Math.max(0.1, Number(options.maxRegistrationPageRmseM ?? 1.0));
+  const pageRmse = Number(registration?.solution?.rmseM);
+  result.registrationRmseM = Number.isFinite(pageRmse) ? round(pageRmse) : null;
+  if (!Number.isFinite(pageRmse) || pageRmse > maxPageRmseM) {
+    result.rejected["registration-page-rmse-above-proof-gate"] = 1;
+    return result;
+  }
+
+  for (const match of registration?.automaticMatches || []) {
+    const feature = referenceById.get(match?.targetFeatureId);
+    if (!feature) {
+      result.rejected["registration-reference-feature-missing"] = (result.rejected["registration-reference-feature-missing"] || 0) + 1;
+      continue;
+    }
+    const observedAt = parsePlanningDate(feature?.source?.timestamp);
+    if (!observedAt) {
+      result.rejected["current-observation-missing-timestamp"] = (result.rejected["current-observation-missing-timestamp"] || 0) + 1;
+      continue;
+    }
+    if (!(observedAt.getTime() > decisionAt.getTime())) {
+      result.rejected["observation-not-post-decision"] = (result.rejected["observation-not-post-decision"] || 0) + 1;
+      continue;
+    }
+    const rmseM = Number(match?.rmseM);
+    if (!Number.isFinite(rmseM) || rmseM > maxMatchRmseM) {
+      result.rejected["registration-match-rmse-above-proof-gate"] = (result.rejected["registration-match-rmse-above-proof-gate"] || 0) + 1;
+      continue;
+    }
+    const score = Math.max(0, Math.min(1, 1 - rmseM / 4));
+    const anchor = {
+      source: "robust-georegistration-current-anchor",
+      candidateId: match?.sourceCandidateId || null,
+      featureId: feature.id || match?.targetFeatureId || null,
+      featureKind: feature.kind || null,
+      score: round(score),
+      registrationRmseM: round(rmseM),
+      controlPoints: Number(match?.controlPoints || 0),
+      observedAt: observedAt.toISOString(),
+      decisionAt: decisionAt.toISOString(),
+      implementationCorroboration: {
+        provider: feature?.source?.provider || "OpenStreetMap",
+        featureId: feature.id || null,
+        elementType: feature?.source?.elementType || null,
+        elementId: feature?.source?.elementId || null,
+        version: feature?.source?.version ?? null,
+        timestamp: feature?.source?.timestamp || null,
+        registrationRmseM: round(rmseM),
+        controlPoints: Number(match?.controlPoints || 0)
+      }
+    };
+    if (!duplicateAnchor(result.anchors, anchor)) result.anchors.push(anchor);
+  }
+
+  const uniqueFeatures = new Set(result.anchors.map((entry) => entry.featureId).filter(Boolean));
+  const scores = result.anchors.map((entry) => entry.score).filter(Number.isFinite);
+  result.uniqueFeatureCount = uniqueFeatures.size;
+  result.medianScore = round(median(scores));
+  result.pass = result.anchors.length >= 3 && uniqueFeatures.size >= 3 && result.medianScore >= Number(options.minMedianScore ?? 0.78);
+  return result;
+}
+
+function candidateAnchorThresholdPassed(anchors, { minAnchors, minUniqueFeatures, minMedianScore }) {
+  const uniqueFeatures = new Set((anchors || []).map((entry) => entry.featureId).filter(Boolean));
+  const uniqueKinds = new Set((anchors || []).map((entry) => entry.featureKind).filter(Boolean));
+  const medianScore = median((anchors || []).map((entry) => Number(entry.score)).filter(Number.isFinite));
+  const enoughIndependentReference = uniqueFeatures.size >= 3 ||
+    (uniqueFeatures.size >= 2 && uniqueKinds.size >= 2 && anchors.length >= 8);
+  return anchors.length >= minAnchors &&
+    uniqueFeatures.size >= minUniqueFeatures &&
+    enoughIndependentReference &&
+    medianScore >= minMedianScore;
+}
+
+function proofCandidates(candidates) {
+  return (candidates || [])
+    .filter((candidate) => {
+      const classification = normalizeClass(candidate?.classification);
+      const semantic = String(candidate?.semantic || "").toLowerCase();
+      if (!CORROBORATABLE_CLASSES.has(classification)) return false;
+      if (!candidate?.localGeometry || candidate?.georegistrationStatus !== "registered" || candidate?.spatialAuthorityEligible === false) return false;
+      if (!semantic || /roof|vertical-profile|demolition|building-linework|unclassified/.test(semantic)) return false;
+      return true;
+    })
+    .sort((a, b) => proofPriority(b) - proofPriority(a) || String(a.id || "").localeCompare(String(b.id || "")));
+}
+
+function proofPriority(candidate) {
+  const geometry = candidate?.localGeometry;
+  if (!geometry) return 0;
+  const points = [];
+  collectPoints(geometry.coordinates, points);
+  if (points.length < 2) return 0;
+  let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+  for (const [x, z] of points) {
+    if (!Number.isFinite(x) || !Number.isFinite(z)) continue;
+    minX = Math.min(minX, x); minZ = Math.min(minZ, z);
+    maxX = Math.max(maxX, x); maxZ = Math.max(maxZ, z);
+  }
+  if (!Number.isFinite(minX)) return 0;
+  return Math.hypot(maxX - minX, maxZ - minZ);
+}
+
+function collectPoints(value, target) {
+  if (!Array.isArray(value)) return;
+  if (value.length >= 2 && Number.isFinite(Number(value[0])) && Number.isFinite(Number(value[1]))) {
+    target.push([Number(value[0]), Number(value[1])]);
+    return;
+  }
+  for (const item of value) collectPoints(item, target);
 }
 
 function eligibleLifecycleForCorroboration(state, reason, applicationTemporal) {
@@ -265,6 +440,12 @@ function promoteTemplate(entry, temporal) {
 function isRegisteredSpatialCandidate(entry) {
   return entry?.georegistrationStatus === "registered" && entry?.localGeometry && entry?.spatialAuthorityEligible !== false;
 }
+function duplicateAnchor(anchors, candidate) {
+  return (anchors || []).some((entry) => entry.featureId && candidate.featureId && entry.featureId === candidate.featureId);
+}
+function mergeCounts(target, source) {
+  for (const [key, value] of Object.entries(source || {})) target[key] = (target[key] || 0) + Number(value || 0);
+}
 function emptyPromotion() {
   return { geometryCandidates: [], verticalObservations: [], materialObservations: [], drawingMetadata: [], rideStructureTemplates: [] };
 }
@@ -279,6 +460,12 @@ function rejected(reason, classification) {
     uniqueFeatureCount: 0,
     uniqueFeatureKinds: [],
     medianMatchScore: 0,
+    registrationAnchorCount: 0,
+    registrationUniqueFeatureCount: 0,
+    registrationMedianScore: 0,
+    registrationRmseM: null,
+    candidateProofChecks: 0,
+    proofBoundReached: false,
     anchors: [],
     rejected: {},
     temporal: null
