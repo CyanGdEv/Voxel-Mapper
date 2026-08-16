@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { surfaceMaterialPalette } from "../src/lib/material-palettes.mjs";
+import { applyPlanningSurfacePaint } from "../src/lib/planning-change-reconciliation.mjs";
 import {
   blockForPlanningSurfacePalette,
   renderPlanningSurfacePaint
@@ -39,6 +40,34 @@ test("planning ground palette resolver accepts surface materials and rejects roo
   assert.equal(surfaceMaterialPalette("slate_roof"), null);
   assert.equal(surfaceMaterialPalette("metal roof"), null);
   assert.equal(surfaceMaterialPalette("glass"), null);
+});
+
+test("planning reconciliation materializes red tarmac as paint evidence instead of stale renderer deferral", () => {
+  const map = {
+    features: [],
+    projector: { inverse: ([x, z]) => [x, z] }
+  };
+  const changeSet = {
+    candidates: [{
+      id: "red-tarmac-area",
+      kind: "surface",
+      planningOperation: "paint",
+      compiledMaterial: "red_tarmac",
+      localGeometry: {
+        type: "Polygon",
+        coordinates: [[[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]]]
+      }
+    }]
+  };
+  const result = applyPlanningSurfacePaint(map, changeSet);
+  assert.equal(result.applied, 1);
+  assert.equal(result.deferred, 0);
+  assert.equal(result.status, "applied");
+  assert.equal(map.features.length, 1);
+  assert.equal(map.features[0].kind, "surface");
+  assert.equal(map.features[0].materialPalette.surface.key, "red_tarmac");
+  assert.equal(map.features[0].vertical.elevationM, null);
+  assert.equal(map.features[0].authority.terrainGeometryAuthority, false);
 });
 
 test("weighted renderer preserves every block in five-entry resin palettes", () => {
