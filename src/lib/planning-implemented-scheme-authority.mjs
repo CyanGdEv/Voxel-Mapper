@@ -9,24 +9,6 @@ const CONTEXT_ONLY_CLASSES = new Set(["location_plan"]);
 const CORROBORATABLE_CLASSES = new Set(["site_plan", "landscape_plan", "ride_layout", "location_plan"]);
 const EXCLUDED_STATES = new Set(["refused", "withdrawn", "demolished", "superseded"]);
 
-/**
- * Evaluate whether a registered planning page is independently proven to have
- * been implemented. Approval is never enough.
- *
- * The strongest/fastest proof is the robust georegistration solution itself:
- * when the page was aligned by several independent current-world features and
- * those observations post-date the planning decision, those matches are valid
- * implementation anchors. This avoids re-matching hundreds of thousands of
- * PDF vector fragments against OSM after registration has already established
- * the same correspondence.
- *
- * If registration alone is not sufficient, a bounded candidate-level fallback
- * uses the existing post-decision corroborator. The bound is fail-closed: it
- * can withhold authority, never grant it without the normal proof thresholds.
- *
- * A location plan can corroborate application context, but it can never make
- * all of its contextual linework world geometry authority.
- */
 export function evaluateImplementedPlanningPage({
   page,
   evidence,
@@ -86,7 +68,7 @@ export function evaluateImplementedPlanningPage({
         rejectionCounts[proof.reason] = (rejectionCounts[proof.reason] || 0) + 1;
         continue;
       }
-      const anchor = {
+      anchors.push({
         source: "candidate-corroboration",
         candidateId: candidate.id || null,
         featureId: proof.match?.feature?.id || null,
@@ -96,8 +78,7 @@ export function evaluateImplementedPlanningPage({
         observedAt: proof.observedAt || null,
         decisionAt: proof.decisionAt || null,
         implementationCorroboration: proof.temporal?.implementationCorroboration || null
-      };
-      if (!duplicateAnchor(anchors, anchor)) anchors.push(anchor);
+      });
       if (candidateAnchorThresholdPassed(anchors, { minAnchors, minUniqueFeatures, minMedianScore })) {
         evidencePass = true;
         break;
@@ -145,9 +126,6 @@ export function evaluateImplementedPlanningPage({
   };
 }
 
-/** Promote a certified plan page. Geometry is promoted only for a page that
- * passed the stronger spatial certification gate. Non-spatial observations and
- * templates can accompany that certified page. */
 export function promoteCertifiedPageEvidence(evidence, evaluation) {
   if (!evaluation?.accepted || !evaluation?.temporal) return emptyPromotion();
   const temporal = evaluation.temporal;
@@ -163,12 +141,6 @@ export function promoteCertifiedPageEvidence(evidence, evaluation) {
   return { geometryCandidates, verticalObservations, materialObservations, drawingMetadata, rideStructureTemplates };
 }
 
-/**
- * Once at least one real spatial plan for an application is independently
- * certified as implemented, related section/elevation/detail pages may provide
- * non-spatial dimensions, materials and structural templates. Their geometry
- * remains non-authoritative and can never be placed directly in the world.
- */
 export function promoteImplementedApplicationSupportEvidence(evidence, page, applicationProof) {
   if (!applicationProof?.accepted) return emptyPromotion();
   const base = page?.planningTemporal || evidence?.geometryCandidates?.[0]?.planningTemporal || evidence?.drawingMetadata?.[0]?.planningTemporal || null;
@@ -235,12 +207,8 @@ export function mergeApplicationSnapshots(existing = {}, snapshot = {}) {
 
 function collectRegistrationAnchors({ registration, referenceById, applicationTemporal, drawingIssueDate, options }) {
   const result = {
-    anchors: [],
-    rejected: {},
-    pass: false,
-    uniqueFeatureCount: 0,
-    medianScore: 0,
-    registrationRmseM: null
+    anchors: [], rejected: {}, pass: false, uniqueFeatureCount: 0,
+    medianScore: 0, registrationRmseM: null
   };
   if (registration?.status !== "registered" || registration?.solution?.pass !== true) {
     result.rejected["registration-not-passed"] = 1;
@@ -302,7 +270,7 @@ function collectRegistrationAnchors({ registration, referenceById, applicationTe
         controlPoints: Number(match?.controlPoints || 0)
       }
     };
-    if (!duplicateAnchor(result.anchors, anchor)) result.anchors.push(anchor);
+    if (!duplicateRegistrationAnchor(result.anchors, anchor)) result.anchors.push(anchor);
   }
 
   const uniqueFeatures = new Set(result.anchors.map((entry) => entry.featureId).filter(Boolean));
@@ -440,7 +408,7 @@ function promoteTemplate(entry, temporal) {
 function isRegisteredSpatialCandidate(entry) {
   return entry?.georegistrationStatus === "registered" && entry?.localGeometry && entry?.spatialAuthorityEligible !== false;
 }
-function duplicateAnchor(anchors, candidate) {
+function duplicateRegistrationAnchor(anchors, candidate) {
   return (anchors || []).some((entry) => entry.featureId && candidate.featureId && entry.featureId === candidate.featureId);
 }
 function mergeCounts(target, source) {
