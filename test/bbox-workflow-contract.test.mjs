@@ -28,10 +28,16 @@ test("bbox generation reuses planning authority and compiles reconstruction only
 
 test("Bedrock world generation fans out to a dynamic matrix capped at twenty concurrent shard jobs", async () => {
   const yaml = await readFile(generateWorldPath, "utf8");
+  const preparation = yaml.split("  prepare-world:")[1].split("  build-world-shards:")[0];
   const shardJob = yaml.split("  build-world-shards:")[1].split("  assemble-world:")[0];
   assert.match(shardJob, /max-parallel: 20/);
   assert.match(shardJob, /fromJSON\(needs\.prepare-world\.outputs\.active_shards\)/);
-  assert.match(shardJob, /voxel-world-shard-input-\$\{\{ matrix\.shard \}\}/);
+  assert.match(preparation, /name: voxel-world-shard-inputs/);
+  assert.match(preparation, /world-shard-inputs\/shard-\*\.json/);
+  assert.equal((preparation.match(/name: voxel-world-shard-inputs/g) || []).length, 1);
+  assert.doesNotMatch(preparation, /voxel-world-shard-input-0|voxel-world-shard-input-19/);
+  assert.match(shardJob, /name: voxel-world-shard-inputs/);
+  assert.match(shardJob, /shard-input\/shard-\$\{\{ matrix\.shard \}\}\.json/);
   assert.match(shardJob, /scripts\/build-world-shard\.mjs/);
   assert.match(shardJob, /voxel-built-world-shard-\$\{\{ matrix\.shard \}\}/);
   assert.match(shardJob, /compression-level: 0/);
@@ -66,4 +72,14 @@ test("planning workflow supports reusable workflow_call without removing develop
   assert.match(yaml, /workflow_dispatch:/);
   assert.match(yaml, /default: "680"/);
   assert.match(yaml, /default: "20"/);
+});
+
+test("planning current-state resolution consumes merged georegistration in the same job without a huge intermediate artifact", async () => {
+  const yaml = await readFile(planningPath, "utf8");
+  const finalizer = yaml.split("  finalize-current-state:")[1].split("  finalize-current-state-degraded:")[0];
+  assert.match(finalizer, /scripts\/planning-georeg-merge\.mjs/);
+  assert.match(finalizer, /scripts\/planning-resolve-revisions\.mjs/);
+  assert.match(finalizer, /scripts\/planning-authority-compat\.mjs/);
+  assert.doesNotMatch(yaml, /name: planning-georegistration-evidence/);
+  assert.doesNotMatch(finalizer, /Download planning spatial registration evidence/);
 });
