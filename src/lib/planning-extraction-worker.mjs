@@ -26,7 +26,8 @@ export async function processPlanningExtractionShard(catalog, options = {}) {
     try {
       const extraction = await extractPlanningDocument(extractionItem, extractionOptions);
       enrichPlanningTextEvidence(extraction, extractionOptions);
-      return { status: extraction.status, item, extraction };
+      const compact = compactPlanningExtraction(extraction);
+      return { status: compact.status, item, extraction: compact };
     } catch (error) {
       if (options.strictPlanningExtraction) throw error;
       return {
@@ -42,7 +43,8 @@ export async function processPlanningExtractionShard(catalog, options = {}) {
   const failed = results.filter((result) => result.status === "failed");
   const rasterFallbackQueue = successful.flatMap((result) => result.extraction?.rasterFallbackQueue || []);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
+    serialization: "normalized-evidence-single-copy",
     selectedShard: shardIndex,
     inputItems: items.length,
     extractedDocuments: results.filter((result) => result.status === "extracted").length,
@@ -62,6 +64,59 @@ export async function processPlanningExtractionShard(catalog, options = {}) {
   };
 }
 
+/**
+ * Drops PDF-renderer working data after semantic extraction has completed.
+ * Geometry candidates, level/material observations, title-block metadata,
+ * provenance and raster-fallback decisions remain in normalizedEvidence.
+ *
+ * The previous manifest serialized the same path commands in raw vector paths,
+ * page-level candidates and normalized candidates. Large CAD-heavy applications
+ * could therefore exceed V8's maximum string length during JSON.stringify even
+ * though extraction itself succeeded.
+ */
+export function compactPlanningExtraction(extraction) {
+  if (!extraction) return extraction;
+  const contentHash = extraction.contentHash || null;
+  const normalized = extraction.normalizedEvidence || {};
+  const drawingMetadata = (normalized.drawingMetadata || []).map((metadata) => ({
+    ...metadata,
+    contentHash: metadata?.contentHash || contentHash
+  }));
+  const pages = (extraction.pages || []).map((page) => ({
+    pageNumber: page.pageNumber,
+    widthPt: page.widthPt ?? null,
+    heightPt: page.heightPt ?? null,
+    rotation: page.rotation ?? 0,
+    text: page.text ? {
+      itemCount: page.text.itemCount ?? page.text.items?.length ?? 0,
+      characterCount: page.text.characterCount ?? 0,
+      truncated: Boolean(page.text.truncated)
+    } : null,
+    vector: page.vector ? {
+      pathCount: page.vector.pathCount ?? page.vector.paths?.length ?? 0,
+      imagePaintOps: page.vector.imagePaintOps ?? 0,
+      truncated: Boolean(page.vector.truncated)
+    } : null,
+    metadata: page.metadata ? { ...page.metadata, contentHash: page.metadata.contentHash || contentHash } : null,
+    rasterFallback: page.rasterFallback || null
+  }));
+  return {
+    ...extraction,
+    pages,
+    normalizedEvidence: {
+      ...normalized,
+      drawingMetadata
+    },
+    serialization: {
+      schemaVersion: 1,
+      mode: "normalized-evidence-single-copy",
+      rawTextItemsRetained: false,
+      rawVectorPathsRetained: false,
+      duplicatePageEvidenceRetained: false
+    }
+  };
+}
+
 export function mergePlanningExtractionManifests(manifests) {
   const values = Array.isArray(manifests) ? manifests : [manifests].filter(Boolean);
   const byHash = new Map();
@@ -73,31 +128,37 @@ export function mergePlanningExtractionManifests(manifests) {
     for (const result of manifest?.results || []) {
       const extraction = result?.extraction;
       if (!extraction?.contentHash) continue;
-      if (!byHash.has(extraction.contentHash)) byHash.set(extraction.contentHash, extraction);
+      if (!byHash.has(extraction.contentHash)) byHash.set(extraction.contentHash, compactPlanningExtraction(extraction));
     }
   }
-  const documents = [...byHash.values()].sort((a, b) => a.contentHash.localeCompare(b.contentHash));
-  const geometryCandidates = documents.flatMap((document) => document.normalizedEvidence?.geometryCandidates || []);
-  const verticalObservations = documents.flatMap((document) => document.normalizedEvidence?.verticalObservations || []);
-  const materialObservations = documents.flatMap((document) => document.normalizedEvidence?.materialObservations || []);
-  const drawingMetadata = documents.flatMap((document) => document.normalizedEvidence?.drawingMetadata || []);
+  const extractedDocuments = [...byHash.values()].sort((a, b) => a.contentHash.localeCompare(b.contentHash));
+  const geometryCandidates = extractedDocuments.flatMap((document) => document.normalizedEvidence?.geometryCandidates || []);
+  const verticalObservations = extractedDocuments.flatMap((document) => document.normalizedEvidence?.verticalObservations || []);
+  const materialObservations = extractedDocuments.flatMap((document) => document.normalizedEvidence?.materialObservations || []);
+  const drawingMetadata = extractedDocuments.flatMap((document) =>
+    (document.normalizedEvidence?.drawingMetadata || []).map((metadata) => ({
+      ...metadata,
+      contentHash: metadata?.contentHash || document.contentHash
+    }))
+  );
   const fallback = dedupeFallback(rasterFallbackQueue);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     method: "vector-first-planning-drawing-extraction",
     coordinateSpace: "pdf-user-space-points",
     georegistrationStatus: "required",
     worldGeometryReady: false,
+    serialization: "normalized-evidence-single-copy",
     inputShardManifests: values.length,
-    documentCount: documents.length,
+    documentCount: extractedDocuments.length,
     geometryCandidateCount: geometryCandidates.length,
     verticalObservationCount: verticalObservations.length,
     materialObservationCount: materialObservations.length,
     rasterFallbackPages: fallback.length,
     failures,
-    documents,
+    documents: extractedDocuments.map(documentSummary),
     normalizedEvidence: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       coordinateSpace: "pdf-user-space-points",
       georegistrationStatus: "required",
       worldGeometryReady: false,
@@ -113,6 +174,35 @@ export function mergePlanningExtractionManifests(manifests) {
 export function normalizeExtractorClass(value) {
   const raw = String(value || "unknown").trim().toLowerCase();
   return EXTRACTOR_CLASS_ALIASES.get(raw) || raw.replaceAll("-", "_");
+}
+
+function documentSummary(document) {
+  return {
+    schemaVersion: document.schemaVersion || 1,
+    contentHash: document.contentHash,
+    objectPath: document.objectPath || null,
+    contentType: document.contentType || null,
+    classification: document.classification || "unknown",
+    applicationKeys: document.applicationKeys || [],
+    acquisitionShard: document.acquisitionShard ?? null,
+    status: document.status || null,
+    method: document.method || null,
+    pageCount: document.pageCount || 0,
+    vectorPageCount: document.vectorPageCount || 0,
+    textPageCount: document.textPageCount || 0,
+    rasterFallbackPageCount: document.rasterFallbackPageCount || 0,
+    pages: (document.pages || []).map((page) => ({
+      pageNumber: page.pageNumber,
+      widthPt: page.widthPt ?? null,
+      heightPt: page.heightPt ?? null,
+      rotation: page.rotation ?? 0,
+      text: page.text || null,
+      vector: page.vector || null,
+      metadata: page.metadata || null,
+      rasterFallback: page.rasterFallback || null
+    })),
+    warnings: document.warnings || []
+  };
 }
 
 function dedupeFallback(values) {
