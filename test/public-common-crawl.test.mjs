@@ -47,7 +47,7 @@ test("Common Crawl NDJSON parser keeps only safe successful WARC records newest 
   assert.equal(parsed[1].timestamp, "20260102030405");
 });
 
-test("WARC parser recovers original HTTP status, headers, target URL and payload", () => {
+test("WARC parser bounds the archived HTTP entity to WARC and HTTP content lengths", () => {
   const body = Buffer.from("%PDF-test-vector-plan");
   const http = Buffer.concat([
     Buffer.from(`HTTP/1.1 200 OK\r\nContent-Type: application/pdf\r\nContent-Length: ${body.length}\r\n\r\n`, "latin1"),
@@ -55,13 +55,23 @@ test("WARC parser recovers original HTTP status, headers, target URL and payload
   ]);
   const warc = Buffer.concat([
     Buffer.from(`WARC/1.0\r\nWARC-Type: response\r\nWARC-Target-URI: https://planning.example.gov/docs/plan.pdf\r\nContent-Length: ${http.length}\r\n\r\n`, "latin1"),
-    http
+    http,
+    Buffer.from("\r\n\r\nWARC-SEPARATOR-MUST-NOT-ENTER-PDF", "latin1")
   ]);
   const parsed = parseWarcHttpResponse(warc);
   assert.equal(parsed.status, 200);
   assert.equal(parsed.targetUrl, "https://planning.example.gov/docs/plan.pdf");
   assert.equal(parsed.httpHeaders.get("content-type"), "application/pdf");
   assert.deepEqual(parsed.body, body);
+});
+
+test("WARC parser rejects records whose declared payload is truncated", () => {
+  const http = Buffer.from("HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nabc", "latin1");
+  const warc = Buffer.concat([
+    Buffer.from(`WARC/1.0\r\nWARC-Type: response\r\nWARC-Target-URI: https://planning.example.gov/docs/plan.pdf\r\nContent-Length: ${http.length + 10}\r\n\r\n`, "latin1"),
+    http
+  ]);
+  assert.throws(() => parseWarcHttpResponse(warc), /Truncated WARC payload/);
 });
 
 test("Common Crawl recovery range-fetches a WARC record and returns the original archived bytes", async () => {
@@ -73,7 +83,8 @@ test("Common Crawl recovery range-fetches a WARC record and returns the original
   ]);
   const warc = Buffer.concat([
     Buffer.from(`WARC/1.0\r\nWARC-Type: response\r\nWARC-Target-URI: ${original}\r\nContent-Length: ${http.length}\r\n\r\n`, "latin1"),
-    http
+    http,
+    Buffer.from("\r\n\r\n")
   ]);
   const compressed = gzipSync(warc);
   const record = {
