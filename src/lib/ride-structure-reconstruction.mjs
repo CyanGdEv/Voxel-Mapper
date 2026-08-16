@@ -205,6 +205,7 @@ function reconstructEnclosure(feature, association, subtype) {
         id: `${feature.id}:portal:${index}`,
         x: crossing.x,
         z: crossing.z,
+        elevationM: crossing.elevationM,
         direction: crossing.direction,
         clearanceWidthM: 3,
         clearanceAboveTrackM: 3,
@@ -426,35 +427,59 @@ function buildDesignFamilies(structures) {
   return [...families.values()].map((family) => ({ ...family, instanceCount: family.instances.length }));
 }
 
+/**
+ * Intersects each 3D track-plan segment with every enclosure edge. Endpoint
+ * inside/outside transitions alone are insufficient because a coarse segment
+ * can enter and leave an enclosure while both endpoints remain outside.
+ */
 function trackPolygonCrossings(track, ring) {
   const points = trackProfilePoints(track);
   const crossings = [];
   for (let index = 1; index < points.length; index += 1) {
     const a = points[index - 1], b = points[index];
-    const insideA = pointInPolygon([a.x, a.z], ring), insideB = pointInPolygon([b.x, b.z], ring);
-    if (insideA === insideB) continue;
-    const t = binaryBoundaryFraction(a, b, ring, insideA);
-    crossings.push({
-      x: a.x + (b.x - a.x) * t,
-      z: a.z + (b.z - a.z) * t,
-      elevationM: finiteOrNull(a.elevationM) != null && finiteOrNull(b.elevationM) != null ? a.elevationM + (b.elevationM - a.elevationM) * t : null,
-      direction: normalize2([b.x - a.x, b.z - a.z])
-    });
+    const hits = [];
+    for (let edgeIndex = 1; edgeIndex < ring.length; edgeIndex += 1) {
+      const t = segmentIntersectionFraction([a.x, a.z], [b.x, b.z], ring[edgeIndex - 1], ring[edgeIndex]);
+      if (t == null) continue;
+      if (hits.some((entry) => Math.abs(entry - t) < 1e-6)) continue;
+      hits.push(t);
+    }
+    if (ring.length > 2 && !samePlanPoint(ring[0], ring[ring.length - 1])) {
+      const t = segmentIntersectionFraction([a.x, a.z], [b.x, b.z], ring[ring.length - 1], ring[0]);
+      if (t != null && !hits.some((entry) => Math.abs(entry - t) < 1e-6)) hits.push(t);
+    }
+    hits.sort((left, right) => left - right);
+    for (const t of hits) {
+      const elevationA = finiteOrNull(a.elevationM), elevationB = finiteOrNull(b.elevationM);
+      const crossing = {
+        x: a.x + (b.x - a.x) * t,
+        z: a.z + (b.z - a.z) * t,
+        elevationM: elevationA != null && elevationB != null ? elevationA + (elevationB - elevationA) * t : null,
+        direction: normalize2([b.x - a.x, b.z - a.z])
+      };
+      if (crossings.some((entry) => Math.hypot(entry.x - crossing.x, entry.z - crossing.z) < 0.05)) continue;
+      crossings.push(crossing);
+    }
   }
   return crossings.slice(0, 8);
 }
+function segmentIntersectionFraction(a, b, c, d) {
+  const rx = b[0] - a[0], rz = b[1] - a[1];
+  const sx = d[0] - c[0], sz = d[1] - c[1];
+  const denominator = cross2(rx, rz, sx, sz);
+  if (Math.abs(denominator) < 1e-10) return null;
+  const qx = c[0] - a[0], qz = c[1] - a[1];
+  const t = cross2(qx, qz, sx, sz) / denominator;
+  const u = cross2(qx, qz, rx, rz) / denominator;
+  const epsilon = 1e-9;
+  if (t < -epsilon || t > 1 + epsilon || u < -epsilon || u > 1 + epsilon) return null;
+  return Math.max(0, Math.min(1, t));
+}
+function cross2(ax, az, bx, bz) { return ax * bz - az * bx; }
+function samePlanPoint(a, b) { return Math.hypot(Number(a?.[0]) - Number(b?.[0]), Number(a?.[1]) - Number(b?.[1])) < 1e-9; }
 function trackProfilePoints(track) {
   if (track.rideProfile?.samples?.length) return track.rideProfile.samples.filter((sample) => Number.isFinite(sample.x) && Number.isFinite(sample.z));
   return geometryPoints(track.localGeometry).map(([x, z]) => ({ x, z, elevationM: null }));
-}
-function binaryBoundaryFraction(a, b, ring, insideA) {
-  let lo = 0, hi = 1;
-  for (let i = 0; i < 18; i += 1) {
-    const mid = (lo + hi) / 2;
-    const inside = pointInPolygon([a.x + (b.x - a.x) * mid, a.z + (b.z - a.z) * mid], ring);
-    if (inside === insideA) lo = mid; else hi = mid;
-  }
-  return (lo + hi) / 2;
 }
 function pointInPolygon(point, ring) {
   let inside = false;
