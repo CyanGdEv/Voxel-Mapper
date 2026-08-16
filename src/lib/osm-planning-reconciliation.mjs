@@ -103,7 +103,7 @@ export function rankPlanningApplicationsByOsm(applications, indexOrOsm, options 
     }
     matches.sort((a, b) => b.weightedScore - a.weightedScore || b.strength - a.strength || a.name.localeCompare(b.name));
     const strongest = matches[0]?.weightedScore || 0;
-    const corroboration = Math.min(0.18, Math.max(0, matches.length - 1) * 0.03);
+    const corroboration = Math.min(0.12, Math.max(0, matches.length - 1) * 0.02);
     const score = round(Math.min(1, strongest + corroboration));
     return {
       ...application,
@@ -152,6 +152,10 @@ export async function reconcilePlanningTopology(map, options = {}) {
     const demolished = isConfirmedDemolition(candidate);
     if (!operation && !currentAuthority && !demolished) continue;
 
+    if (operation === "delete" && !currentAuthority && !demolished) {
+      skip(summary, candidate, "delete-not-current-authority");
+      continue;
+    }
     if (operation === "delete" || demolished) {
       const target = findDeleteTarget(map.features || [], candidate, options);
       if (!target) { skip(summary, candidate, "delete-target-not-found"); continue; }
