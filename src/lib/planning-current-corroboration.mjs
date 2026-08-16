@@ -22,7 +22,7 @@ export function corroboratePlanningGeometryCandidate(candidate, referenceFeature
     planningAuthorityAmbiguityGap: Number(context.ambiguityGap ?? DEFAULT_AMBIGUITY_GAP)
   });
   if (!match.accepted) return rejected(`geometry-${match.reason}`, { match });
-  const observedAt = parseDate(match.feature?.source?.timestamp);
+  const observedAt = parsePlanningDate(match.feature?.source?.timestamp);
   if (!observedAt) return rejected("current-observation-missing-timestamp", { match });
   if (!(observedAt.getTime() > decisionAt.getTime())) {
     return rejected("observation-not-post-decision", {
@@ -67,7 +67,7 @@ export function latestPlanningDecisionDate(applicationTemporal, drawingIssueDate
   for (const temporal of applicationTemporal || []) {
     for (const evidence of temporal?.dateEvidence || []) {
       if (!/decision[-_ ]?date/i.test(String(evidence?.kind || ""))) continue;
-      const date = parseDate(evidence?.value);
+      const date = parsePlanningDate(evidence?.value);
       if (date) values.push(date);
     }
   }
@@ -76,7 +76,25 @@ export function latestPlanningDecisionDate(applicationTemporal, drawingIssueDate
   return values[0];
 }
 
+export function parsePlanningDate(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  // UK local planning registers commonly emit DD/MM/YYYY. Parse this form
+  // explicitly before the platform Date parser so 09/08/2016 is never treated
+  // as 8 September or rejected differently across runtimes.
+  const uk = text.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})(?:\s+.*)?$/);
+  if (uk) {
+    const day = Number(uk[1]), month = Number(uk[2]), year = Number(uk[3]);
+    if (day >= 1 && day <= 31 && month >= 1 && month <= 12) {
+      const date = new Date(Date.UTC(year, month - 1, day));
+      if (date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day) return date;
+    }
+    return null;
+  }
+  const date = new Date(text);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 function rejected(reason, extra = {}) { return { accepted: false, reason, ...extra }; }
-function parseDate(value) { if (!value) return null; const date = new Date(value); return Number.isNaN(date.getTime()) ? null : date; }
 function clamp(value) { return Math.max(0, Math.min(0.995, Number(value) || 0)); }
 function round(value) { return Math.round(Number(value) * 1000) / 1000; }
