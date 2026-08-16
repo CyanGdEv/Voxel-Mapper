@@ -4,6 +4,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { extractPlanningDocument } from "./planning-vector-extractor.mjs";
 import { loadPlanningPdfJsRuntime } from "./planning-pdfjs-runtime.mjs";
+import { enrichPlanningRideStructureEvidence } from "./planning-ride-structure-enrichment.mjs";
 import { enrichPlanningTextEvidence } from "./planning-text-evidence.mjs";
 import { compactPlanningExtraction, normalizeExtractorClass } from "./planning-extraction-worker.mjs";
 
@@ -29,12 +30,11 @@ export async function extractPlanningShardToBundle(catalog, options = {}) {
     const extractionItem = { ...item, classification: normalizeExtractorClass(item.classification) };
     try {
       const extraction = await extractPlanningDocument(extractionItem, extractionOptions);
+      enrichPlanningRideStructureEvidence(extraction, extractionOptions);
       enrichPlanningTextEvidence(extraction, extractionOptions);
       const compact = compactPlanningExtraction(extraction);
       const pageEntries = [];
-      for (const page of compact.pages || []) {
-        pageEntries.push(await writeExtractedPage(pagesDir, compact, page));
-      }
+      for (const page of compact.pages || []) pageEntries.push(await writeExtractedPage(pagesDir, compact, page));
       return {
         status: compact.status,
         contentHash: compact.contentHash,
@@ -47,6 +47,7 @@ export async function extractPlanningShardToBundle(catalog, options = {}) {
         vectorPageCount: compact.vectorPageCount || 0,
         textPageCount: compact.textPageCount || 0,
         rasterFallbackPageCount: compact.rasterFallbackPageCount || 0,
+        rideStructureTemplateCount: compact.normalizedEvidence?.rideStructureTemplates?.length || 0,
         pages: pageEntries,
         rasterFallbackQueue: compact.rasterFallbackQueue || [],
         warnings: compact.warnings || []
@@ -90,6 +91,7 @@ export async function extractPlanningShardToBundle(catalog, options = {}) {
     geometryCandidateCount: sum(pages, "geometryCount"),
     verticalObservationCount: sum(pages, "verticalCount"),
     materialObservationCount: sum(pages, "materialCount"),
+    rideStructureTemplateCount: sum(pages, "rideStructureTemplateCount"),
     rasterFallbackPages: rasterFallbackQueue.length,
     failures,
     rasterFallbackQueue,
@@ -105,6 +107,7 @@ export async function extractPlanningShardToBundle(catalog, options = {}) {
       vectorPageCount: result.vectorPageCount || 0,
       textPageCount: result.textPageCount || 0,
       rasterFallbackPageCount: result.rasterFallbackPageCount || 0,
+      rideStructureTemplateCount: result.rideStructureTemplateCount || 0,
       warnings: result.warnings || [],
       error: result.error || null
     })),
@@ -122,14 +125,17 @@ async function writeExtractedPage(pagesDir, extraction, page) {
   const geometry = (normalized.geometryCandidates || []).filter((entry) => samePage(entry, contentHash, pageNumber));
   const vertical = (normalized.verticalObservations || []).filter((entry) => samePage(entry, contentHash, pageNumber));
   const material = (normalized.materialObservations || []).filter((entry) => samePage(entry, contentHash, pageNumber));
+  const templates = (normalized.rideStructureTemplates || []).filter((entry) => samePage(entry, contentHash, pageNumber));
   const metadata = (normalized.drawingMetadata || []).filter((entry) => samePage(entry, contentHash, pageNumber, true))
     .map((entry) => ({ ...entry, contentHash: entry.contentHash || contentHash, pageNumber }));
   const geometryFile = geometry.length ? `pages/${stem}.geometry.ndjson` : null;
   const verticalFile = vertical.length ? `pages/${stem}.vertical.ndjson` : null;
   const materialFile = material.length ? `pages/${stem}.material.ndjson` : null;
+  const templateFile = templates.length ? `pages/${stem}.ride-structure-template.ndjson` : null;
   if (geometryFile) await writeNdjson(path.join(path.dirname(pagesDir), geometryFile), geometry);
   if (verticalFile) await writeNdjson(path.join(path.dirname(pagesDir), verticalFile), vertical);
   if (materialFile) await writeNdjson(path.join(path.dirname(pagesDir), materialFile), material);
+  if (templateFile) await writeNdjson(path.join(path.dirname(pagesDir), templateFile), templates);
   return {
     contentHash,
     pageNumber,
@@ -146,9 +152,11 @@ async function writeExtractedPage(pagesDir, extraction, page) {
     geometryFile,
     verticalFile,
     materialFile,
+    templateFile,
     geometryCount: geometry.length,
     verticalCount: vertical.length,
-    materialCount: material.length
+    materialCount: material.length,
+    rideStructureTemplateCount: templates.length
   };
 }
 
@@ -171,7 +179,7 @@ export async function mergeExtractionBundles(inputRoot, outDir) {
       if (seenPage.has(key)) continue;
       seenPage.add(key);
       const copied = { ...pageEntry };
-      for (const field of ["geometryFile", "verticalFile", "materialFile"]) {
+      for (const field of ["geometryFile", "verticalFile", "materialFile", "templateFile"]) {
         if (!pageEntry[field]) continue;
         const source = path.resolve(located.root, pageEntry[field]);
         const filename = path.basename(pageEntry[field]);
@@ -197,6 +205,7 @@ export async function mergeExtractionBundles(inputRoot, outDir) {
     geometryCandidateCount: sum(pages, "geometryCount"),
     verticalObservationCount: sum(pages, "verticalCount"),
     materialObservationCount: sum(pages, "materialCount"),
+    rideStructureTemplateCount: sum(pages, "rideStructureTemplateCount"),
     rasterFallbackPages: rasterFallbackQueue.length,
     failures,
     rasterFallbackQueue,
@@ -213,6 +222,7 @@ export async function readBundlePage(bundleRoot, pageEntry) {
     geometryCandidates: pageEntry.geometryFile ? await readNdjson(path.join(root, pageEntry.geometryFile)) : [],
     verticalObservations: pageEntry.verticalFile ? await readNdjson(path.join(root, pageEntry.verticalFile)) : [],
     materialObservations: pageEntry.materialFile ? await readNdjson(path.join(root, pageEntry.materialFile)) : [],
+    rideStructureTemplates: pageEntry.templateFile ? await readNdjson(path.join(root, pageEntry.templateFile)) : [],
     drawingMetadata: (pageEntry.drawingMetadata || []).map((entry) => ({
       ...entry,
       contentHash: entry.contentHash || pageEntry.contentHash,
@@ -229,7 +239,8 @@ export async function writeEvidencePageStreams(bundleRoot, pageEntry, evidence, 
   const groups = [
     ["geometryCandidates", "geometryFile", "geometryCount", "geometry"],
     ["verticalObservations", "verticalFile", "verticalCount", "vertical"],
-    ["materialObservations", "materialFile", "materialCount", "material"]
+    ["materialObservations", "materialFile", "materialCount", "material"],
+    ["rideStructureTemplates", "templateFile", "rideStructureTemplateCount", "ride-structure-template"]
   ];
   for (const [arrayKey, fileKey, countKey, suffix] of groups) {
     const values = evidence?.[arrayKey] || [];
@@ -375,7 +386,6 @@ async function mapLimit(values, limit, mapper) {
 function pageSort(a, b) {
   return String(a.contentHash || "").localeCompare(String(b.contentHash || "")) || Number(a.pageNumber || 0) - Number(b.pageNumber || 0);
 }
-
 function sum(values, key) { return (values || []).reduce((total, value) => total + Number(value?.[key] || 0), 0); }
 function safeName(value) { return String(value || "unknown").replace(/[^a-zA-Z0-9._-]+/g, "_"); }
 function clampInt(value, min, max) { const number = Math.floor(Number(value)); return Number.isFinite(number) ? Math.max(min, Math.min(max, number)) : min; }
@@ -398,14 +408,12 @@ function onceDrain(stream) {
     stream.once("error", reject);
   });
 }
-
 function closeWriteStream(stream) {
   return new Promise((resolve, reject) => {
     stream.once("error", reject);
     stream.end(resolve);
   });
 }
-
 async function writeSmallJson(filename, value) {
   await mkdir(path.dirname(filename), { recursive: true });
   await writeFile(filename, `${JSON.stringify(value, null, 2)}\n`);
