@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import path from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { georegisterPlanningEvidence } from "../src/lib/planning-georegistration.mjs";
+import { georegisterPlanningEvidenceBatch } from "../src/lib/planning-georegistration-batch.mjs";
 import {
   EXTRACTION_BUNDLE_FORMAT,
   REGISTERED_BUNDLE_FORMAT,
@@ -13,41 +14,178 @@ import {
 
 const args = parseArgs(process.argv.slice(2));
 if (!args.evidence || !args.reference || !args.out) {
-  console.error("Usage: planning-georegister.mjs --evidence planning-vector-evidence --reference planning-georeg-reference.json --out FILE [--registered-out DIR] [--control-points FILE] [--strict]");
+  console.error("Usage: planning-georegister.mjs --evidence planning-vector-evidence --reference planning-georeg-reference.json --out FILE [--registered-out PATH] [--control-points FILE] [--strict]");
   process.exit(2);
 }
 
-const bundle = await loadBundleManifest(args.evidence, EXTRACTION_BUNDLE_FORMAT);
 const reference = await readJson(args.reference);
 const controlPoints = args.controlPoints ? normalizeControlPointFile(await readJson(args.controlPoints)) : [];
-const registeredRoot = path.resolve(args.registeredOut || "planning-registered-evidence");
-await mkdir(registeredRoot, { recursive: true });
-const registrations = [];
-const registeredPages = [];
-let registeredGeometryCandidates = 0;
-let registeredVerticalObservations = 0;
-let registeredMaterialObservations = 0;
+const evidencePath = path.resolve(args.evidence);
+const evidenceStat = await stat(evidencePath);
 
-for (const pageEntry of bundle.manifest.pages || []) {
-  const evidence = await readBundlePage(bundle.root, pageEntry);
-  const extraction = {
-    schemaVersion: 1,
-    contentHash: pageEntry.contentHash,
-    pageCount: 1,
-    normalizedEvidence: {
+if (evidenceStat.isDirectory()) {
+  await georegisterBundle(evidencePath, reference, controlPoints);
+} else {
+  await georegisterLegacyJson(evidencePath, reference, controlPoints);
+}
+
+async function georegisterLegacyJson(evidencePath, reference, controlPoints) {
+  const extraction = await readJson(evidencePath);
+  const result = georegisterPlanningEvidenceBatch(extraction, reference.features || [], registrationOptions(controlPoints));
+  await writeJson(args.out, {
+    ...result,
+    bbox: reference.bbox || null,
+    referenceProvider: reference.provider || null,
+    referenceFeatureCount: reference.featureCount ?? reference.features?.length ?? 0
+  });
+  if (args.registeredOut) await writeJson(args.registeredOut, result.registeredEvidence);
+
+  console.log(JSON.stringify({
+    status: result.status,
+    mode: "legacy-json",
+    groups: result.groupCount,
+    registeredGroups: result.registeredGroupCount,
+    unregisteredGroups: result.unregisteredGroupCount,
+    registeredGeometryCandidates: result.registeredEvidence?.geometryCandidates?.length || 0,
+    registeredVerticalObservations: result.registeredEvidence?.verticalObservations?.length || 0,
+    registeredMaterialObservations: result.registeredEvidence?.materialObservations?.length || 0,
+    out: path.resolve(args.out),
+    registeredOut: args.registeredOut ? path.resolve(args.registeredOut) : null
+  }, null, 2));
+  if (args.strict && result.status !== "registered") process.exitCode = 1;
+}
+
+async function georegisterBundle(evidencePath, reference, controlPoints) {
+  const bundle = await loadBundleManifest(evidencePath, EXTRACTION_BUNDLE_FORMAT);
+  const registeredRoot = path.resolve(args.registeredOut || "planning-registered-evidence");
+  await mkdir(registeredRoot, { recursive: true });
+  const registrations = [];
+  const registeredPages = [];
+  let registeredGeometryCandidates = 0;
+  let registeredVerticalObservations = 0;
+  let registeredMaterialObservations = 0;
+
+  for (const pageEntry of bundle.manifest.pages || []) {
+    const evidence = await readBundlePage(bundle.root, pageEntry);
+    const extraction = {
       schemaVersion: 1,
-      coordinateSpace: "pdf-user-space-points",
-      georegistrationStatus: "required",
-      worldGeometryReady: false,
-      geometryCandidates: evidence.geometryCandidates,
-      verticalObservations: evidence.verticalObservations,
-      materialObservations: evidence.materialObservations,
-      drawingMetadata: evidence.drawingMetadata
+      contentHash: pageEntry.contentHash,
+      pageCount: 1,
+      normalizedEvidence: {
+        schemaVersion: 1,
+        coordinateSpace: "pdf-user-space-points",
+        georegistrationStatus: "required",
+        worldGeometryReady: false,
+        geometryCandidates: evidence.geometryCandidates,
+        verticalObservations: evidence.verticalObservations,
+        materialObservations: evidence.materialObservations,
+        drawingMetadata: evidence.drawingMetadata
+      }
+    };
+    const scopedControls = controlsForPage(controlPoints, pageEntry, bundle.manifest.pageCount || 1);
+    const result = georegisterPlanningEvidence(extraction, reference.features || [], registrationOptions(scopedControls));
+    const compact = {
+      contentHash: pageEntry.contentHash,
+      pageNumber: pageEntry.pageNumber,
+      classification: pageEntry.classification || null,
+      status: result.status,
+      solution: result.solution ? compactSolution(result.solution) : null,
+      automaticMatches: result.automaticMatches || [],
+      explicitControlPoints: result.explicitControlPoints || 0,
+      automaticControlPoints: result.automaticControlPoints || 0
+    };
+    registrations.push(compact);
+    if (result.status !== "registered" || !result.registeredEvidence) continue;
+    const registeredPage = await writeEvidencePageStreams(registeredRoot, {
+      ...pageEntry,
+      georegistrationStatus: "registered",
+      registration: compact.solution,
+      geometryFile: null,
+      verticalFile: null,
+      materialFile: null
+    }, result.registeredEvidence);
+    registeredPage.registration = compact.solution;
+    registeredPage.georegistrationStatus = "registered";
+    registeredPages.push(registeredPage);
+    registeredGeometryCandidates += registeredPage.geometryCount || 0;
+    registeredVerticalObservations += registeredPage.verticalCount || 0;
+    registeredMaterialObservations += registeredPage.materialCount || 0;
+  }
+
+  const unregisteredPages = registrations.filter((entry) => entry.status !== "registered").map((entry) => ({
+    contentHash: entry.contentHash,
+    pageNumber: entry.pageNumber,
+    classification: entry.classification,
+    rejectionReasons: entry.solution?.rejectionReasons || ["registration-failed"]
+  }));
+  const status = registeredPages.length === registrations.length
+    ? "registered"
+    : registeredPages.length ? "partially-registered" : "unregistered";
+  const registeredManifest = {
+    schemaVersion: 1,
+    format: REGISTERED_BUNDLE_FORMAT,
+    stage: "registered",
+    coordinateSpace: "local-world-metres",
+    georegistrationStatus: status,
+    worldGeometryReady: registeredPages.length > 0,
+    worldGeometryAuthority: false,
+    spatialAuthorityEligible: true,
+    temporalResolutionRequired: true,
+    sourceBundleFormat: bundle.manifest.format,
+    pageCount: registrations.length,
+    registeredPageCount: registeredPages.length,
+    unregisteredPageCount: unregisteredPages.length,
+    geometryCandidateCount: registeredGeometryCandidates,
+    verticalObservationCount: registeredVerticalObservations,
+    materialObservationCount: registeredMaterialObservations,
+    pages: registeredPages.sort(pageSort),
+    unregisteredPages
+  };
+  await writeBundleManifest(registeredRoot, registeredManifest);
+  const report = {
+    schemaVersion: 2,
+    status,
+    groupCount: registrations.length,
+    registeredGroupCount: registeredPages.length,
+    unregisteredGroupCount: unregisteredPages.length,
+    registrations,
+    unregisteredPages,
+    bbox: reference.bbox || null,
+    referenceProvider: reference.provider || null,
+    referenceFeatureCount: reference.featureCount ?? reference.features?.length ?? 0,
+    registeredEvidence: {
+      format: REGISTERED_BUNDLE_FORMAT,
+      manifest: path.relative(path.dirname(path.resolve(args.out)), path.join(registeredRoot, "manifest.json")),
+      coordinateSpace: "local-world-metres",
+      worldGeometryReady: registeredPages.length > 0,
+      worldGeometryAuthority: false,
+      temporalResolutionRequired: true,
+      registeredPageCount: registeredPages.length,
+      geometryCandidateCount: registeredGeometryCandidates,
+      verticalObservationCount: registeredVerticalObservations,
+      materialObservationCount: registeredMaterialObservations
     }
   };
-  const scopedControls = controlsForPage(controlPoints, pageEntry, bundle.manifest.pageCount || 1);
-  const result = georegisterPlanningEvidence(extraction, reference.features || [], {
-    controlPoints: scopedControls,
+  await writeJson(args.out, report);
+
+  console.log(JSON.stringify({
+    status,
+    mode: "chunked-bundle",
+    groups: registrations.length,
+    registeredGroups: registeredPages.length,
+    unregisteredGroups: unregisteredPages.length,
+    registeredGeometryCandidates,
+    registeredVerticalObservations,
+    registeredMaterialObservations,
+    out: path.resolve(args.out),
+    registeredOut: registeredRoot
+  }, null, 2));
+  if (args.strict && status !== "registered") process.exitCode = 1;
+}
+
+function registrationOptions(controlPoints) {
+  return {
+    controlPoints,
     model: args.model || "similarity",
     inlierThresholdM: number(args.inlierThresholdM, 1.5),
     maxRmseM: number(args.maxRmseM, 1.25),
@@ -56,105 +194,8 @@ for (const pageEntry of bundle.manifest.pages || []) {
     maxScaleRelativeError: number(args.maxScaleRelativeError, 0.22),
     maxAutoScaleRelativeError: number(args.maxAutoScaleRelativeError, 0.28),
     maxAutoShapeRmseM: number(args.maxAutoShapeRmseM, 1.8)
-  });
-  const compact = {
-    contentHash: pageEntry.contentHash,
-    pageNumber: pageEntry.pageNumber,
-    classification: pageEntry.classification || null,
-    status: result.status,
-    solution: result.solution ? compactSolution(result.solution) : null,
-    automaticMatches: result.automaticMatches || [],
-    explicitControlPoints: result.explicitControlPoints || 0,
-    automaticControlPoints: result.automaticControlPoints || 0
   };
-  registrations.push(compact);
-  if (result.status !== "registered" || !result.registeredEvidence) continue;
-  const registeredPage = await writeEvidencePageStreams(registeredRoot, {
-    ...pageEntry,
-    georegistrationStatus: "registered",
-    registration: compact.solution,
-    geometryFile: null,
-    verticalFile: null,
-    materialFile: null
-  }, result.registeredEvidence);
-  registeredPage.registration = compact.solution;
-  registeredPage.georegistrationStatus = "registered";
-  registeredPages.push(registeredPage);
-  registeredGeometryCandidates += registeredPage.geometryCount || 0;
-  registeredVerticalObservations += registeredPage.verticalCount || 0;
-  registeredMaterialObservations += registeredPage.materialCount || 0;
 }
-
-const unregisteredPages = registrations.filter((entry) => entry.status !== "registered").map((entry) => ({
-  contentHash: entry.contentHash,
-  pageNumber: entry.pageNumber,
-  classification: entry.classification,
-  rejectionReasons: entry.solution?.rejectionReasons || ["registration-failed"]
-}));
-const status = registeredPages.length === registrations.length
-  ? "registered"
-  : registeredPages.length ? "partially-registered" : "unregistered";
-const registeredManifest = {
-  schemaVersion: 1,
-  format: REGISTERED_BUNDLE_FORMAT,
-  stage: "registered",
-  coordinateSpace: "local-world-metres",
-  georegistrationStatus: status,
-  worldGeometryReady: registeredPages.length > 0,
-  worldGeometryAuthority: false,
-  spatialAuthorityEligible: true,
-  temporalResolutionRequired: true,
-  sourceBundleFormat: bundle.manifest.format,
-  pageCount: registrations.length,
-  registeredPageCount: registeredPages.length,
-  unregisteredPageCount: unregisteredPages.length,
-  geometryCandidateCount: registeredGeometryCandidates,
-  verticalObservationCount: registeredVerticalObservations,
-  materialObservationCount: registeredMaterialObservations,
-  pages: registeredPages.sort(pageSort),
-  unregisteredPages
-};
-await writeBundleManifest(registeredRoot, registeredManifest);
-const report = {
-  schemaVersion: 2,
-  status,
-  groupCount: registrations.length,
-  registeredGroupCount: registeredPages.length,
-  unregisteredGroupCount: unregisteredPages.length,
-  registrations,
-  unregisteredPages,
-  bbox: reference.bbox || null,
-  referenceProvider: reference.provider || null,
-  referenceFeatureCount: reference.featureCount ?? reference.features?.length ?? 0,
-  registeredEvidence: {
-    format: REGISTERED_BUNDLE_FORMAT,
-    manifest: path.relative(path.dirname(path.resolve(args.out)), path.join(registeredRoot, "manifest.json")),
-    coordinateSpace: "local-world-metres",
-    worldGeometryReady: registeredPages.length > 0,
-    worldGeometryAuthority: false,
-    temporalResolutionRequired: true,
-    registeredPageCount: registeredPages.length,
-    geometryCandidateCount: registeredGeometryCandidates,
-    verticalObservationCount: registeredVerticalObservations,
-    materialObservationCount: registeredMaterialObservations
-  }
-};
-await writeJson(args.out, report);
-
-console.log(JSON.stringify({
-  status,
-  groups: registrations.length,
-  registeredGroups: registeredPages.length,
-  unregisteredGroups: unregisteredPages.length,
-  registeredGeometryCandidates,
-  registeredVerticalObservations,
-  registeredMaterialObservations,
-  out: path.resolve(args.out),
-  registeredOut: registeredRoot
-}, null, 2));
-
-if (args.strict && status !== "registered") process.exitCode = 1;
-
 function compactSolution(solution) {
   return {
     status: solution.status,
