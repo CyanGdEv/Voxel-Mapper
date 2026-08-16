@@ -1,5 +1,3 @@
-import { geometryBounds } from "./geo.mjs";
-
 const DEFAULT_ASSOCIATION_MAX_M = 28;
 const DEFAULT_ASSOCIATION_AMBIGUITY_M = 4;
 const STRUCTURE_SUBTYPES = new Set([
@@ -154,7 +152,12 @@ function reconstructSupport(feature, association, templateByCode, options) {
     if (traced.length) {
       members = traced;
       heightSource = "planning-section-template";
-      templateLink = { accepted: true, code, templateId: template.id };
+      templateLink = {
+        accepted: true,
+        code,
+        templateId: template.id,
+        sourceTemplateIds: template.sourceTemplateIds || [template.id]
+      };
     }
   }
 
@@ -321,15 +324,55 @@ function currentRideTemplates(values) {
     (template?.planningTemporal?.state === "current" && Number(template?.planningTemporal?.confidence || 0) >= 0.85)
   );
 }
+
+/**
+ * A single support detail sheet normally draws one frame as many independent
+ * vector paths. Those paths are not conflicting templates. Merge all current
+ * paths with the same support code on the same document/page into one design.
+ * The same code on two current pages remains ambiguous and fails closed.
+ */
 function indexTemplatesByCode(values) {
-  const result = new Map();
+  const byCodePage = new Map();
   for (const template of values || []) {
     const code = normalizeCode(template.supportCode);
     if (!code) continue;
-    if (!result.has(code)) result.set(code, []);
-    result.get(code).push(template);
+    const pageKey = `${template.contentHash || "unknown"}:p${Number(template.pageNumber || 1)}`;
+    const key = `${code}|${pageKey}`;
+    if (!byCodePage.has(key)) byCodePage.set(key, { code, pageKey, templates: [] });
+    byCodePage.get(key).templates.push(template);
   }
+
+  const result = new Map();
+  for (const group of byCodePage.values()) {
+    const templates = group.templates.sort((a, b) => String(a.id || "").localeCompare(String(b.id || "")));
+    const scales = [...new Set(templates.map((entry) => Number(entry.scaleDenominator)).filter(Number.isFinite))];
+    const bounds = unionBounds(templates.map((entry) => entry.boundsPt).filter(Boolean));
+    const composite = {
+      ...templates[0],
+      id: `ride-support-template:${group.code}:${group.pageKey}`,
+      supportCode: group.code,
+      commands: templates.flatMap((entry) => entry.commands || []),
+      boundsPt: bounds,
+      scaleDenominator: scales.length === 1 ? scales[0] : null,
+      sourceTemplateIds: templates.map((entry) => entry.id).filter(Boolean),
+      sourcePathCount: templates.length,
+      composite: true
+    };
+    if (!result.has(group.code)) result.set(group.code, []);
+    result.get(group.code).push(composite);
+  }
+  for (const templates of result.values()) templates.sort((a, b) => String(a.id).localeCompare(String(b.id)));
   return result;
+}
+
+function unionBounds(values) {
+  if (!values.length) return null;
+  return {
+    minX: Math.min(...values.map((entry) => Number(entry.minX))),
+    minY: Math.min(...values.map((entry) => Number(entry.minY))),
+    maxX: Math.max(...values.map((entry) => Number(entry.maxX))),
+    maxY: Math.max(...values.map((entry) => Number(entry.maxY)))
+  };
 }
 function supportCode(feature) { return normalizeCode(feature.tags?.["ride_structure:support_code"] || feature.supportCode || ""); }
 function rideSubtype(feature) { return String(feature.tags?.["ride_structure:type"] || feature.subtype || "").toLowerCase(); }
