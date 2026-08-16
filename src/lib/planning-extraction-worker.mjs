@@ -1,5 +1,6 @@
 import { extractPlanningDocument } from "./planning-vector-extractor.mjs";
 import { loadPlanningPdfJsRuntime } from "./planning-pdfjs-runtime.mjs";
+import { enrichPlanningLegendEvidence } from "./planning-legend-enrichment.mjs";
 import { enrichPlanningTextEvidence } from "./planning-text-evidence.mjs";
 
 const DEFAULT_CONCURRENCY = 2;
@@ -25,6 +26,7 @@ export async function processPlanningExtractionShard(catalog, options = {}) {
     const extractionItem = { ...item, classification: normalizeExtractorClass(item.classification) };
     try {
       const extraction = await extractPlanningDocument(extractionItem, extractionOptions);
+      enrichPlanningLegendEvidence(extraction, extractionOptions);
       enrichPlanningTextEvidence(extraction, extractionOptions);
       const compact = compactPlanningExtraction(extraction);
       return { status: compact.status, item, extraction: compact };
@@ -53,6 +55,7 @@ export async function processPlanningExtractionShard(catalog, options = {}) {
     geometryCandidates: successful.reduce((sum, result) => sum + (result.extraction?.normalizedEvidence?.geometryCandidates?.length || 0), 0),
     verticalObservations: successful.reduce((sum, result) => sum + (result.extraction?.normalizedEvidence?.verticalObservations?.length || 0), 0),
     materialObservations: successful.reduce((sum, result) => sum + (result.extraction?.normalizedEvidence?.materialObservations?.length || 0), 0),
+    legendEntries: successful.reduce((sum, result) => sum + (result.extraction?.normalizedEvidence?.legendEntries?.length || 0), 0),
     rasterFallbackPages: rasterFallbackQueue.length,
     failures: failed.map((result) => ({
       contentHash: result.item?.contentHash || null,
@@ -66,8 +69,9 @@ export async function processPlanningExtractionShard(catalog, options = {}) {
 
 /**
  * Drops PDF-renderer working data after semantic extraction has completed.
- * Geometry candidates, level/material observations, title-block metadata,
- * provenance and raster-fallback decisions remain in normalizedEvidence.
+ * Geometry candidates, level/material observations, learned legend entries,
+ * title-block metadata, provenance and raster-fallback decisions remain in
+ * normalizedEvidence.
  *
  * The previous manifest serialized the same path commands in raw vector paths,
  * page-level candidates and normalized candidates. Large CAD-heavy applications
@@ -98,6 +102,12 @@ export function compactPlanningExtraction(extraction) {
       truncated: Boolean(page.vector.truncated)
     } : null,
     metadata: page.metadata ? { ...page.metadata, contentHash: page.metadata.contentHash || contentHash } : null,
+    legend: page.legend ? {
+      schemaVersion: page.legend.schemaVersion || 1,
+      status: page.legend.status || null,
+      counts: page.legend.counts || null,
+      terrainPolicy: page.legend.terrainPolicy || null
+    } : null,
     rasterFallback: page.rasterFallback || null
   }));
   return {
@@ -135,6 +145,7 @@ export function mergePlanningExtractionManifests(manifests) {
   const geometryCandidates = extractedDocuments.flatMap((document) => document.normalizedEvidence?.geometryCandidates || []);
   const verticalObservations = extractedDocuments.flatMap((document) => document.normalizedEvidence?.verticalObservations || []);
   const materialObservations = extractedDocuments.flatMap((document) => document.normalizedEvidence?.materialObservations || []);
+  const legendEntries = extractedDocuments.flatMap((document) => document.normalizedEvidence?.legendEntries || []);
   const drawingMetadata = extractedDocuments.flatMap((document) =>
     (document.normalizedEvidence?.drawingMetadata || []).map((metadata) => ({
       ...metadata,
@@ -154,6 +165,7 @@ export function mergePlanningExtractionManifests(manifests) {
     geometryCandidateCount: geometryCandidates.length,
     verticalObservationCount: verticalObservations.length,
     materialObservationCount: materialObservations.length,
+    legendEntryCount: legendEntries.length,
     rasterFallbackPages: fallback.length,
     failures,
     documents: extractedDocuments.map(documentSummary),
@@ -165,6 +177,7 @@ export function mergePlanningExtractionManifests(manifests) {
       geometryCandidates,
       verticalObservations,
       materialObservations,
+      legendEntries,
       drawingMetadata
     },
     rasterFallbackQueue: fallback
@@ -191,6 +204,7 @@ function documentSummary(document) {
     vectorPageCount: document.vectorPageCount || 0,
     textPageCount: document.textPageCount || 0,
     rasterFallbackPageCount: document.rasterFallbackPageCount || 0,
+    legendEntryCount: document.normalizedEvidence?.legendEntries?.length || 0,
     pages: (document.pages || []).map((page) => ({
       pageNumber: page.pageNumber,
       widthPt: page.widthPt ?? null,
@@ -199,6 +213,7 @@ function documentSummary(document) {
       text: page.text || null,
       vector: page.vector || null,
       metadata: page.metadata || null,
+      legend: page.legend || null,
       rasterFallback: page.rasterFallback || null
     })),
     warnings: document.warnings || []
