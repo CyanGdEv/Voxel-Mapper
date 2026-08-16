@@ -217,14 +217,17 @@ test("failed local portal does not claim national-plus-local coverage", async ()
     const result = await augmentPlanningFromLocalPortals({
       cacheDir: path.join(root, "cache"),
       noCache: true,
+      disablePlanItDiscovery: true,
       fetchPlanningPortalImpl: async () => { throw new Error("fixture outage"); }
     }, planning, osmData);
 
     assert.equal(result.applicationCount, 0);
     assert.equal(result.coverageStatus, "partial-or-unknown");
-    assert.equal(result.status, "local-portal-source-failed");
+    assert.equal(result.status, "planning-discovery-source-failed");
+    assert.equal(result.planningDiscoveryFailure, true);
     assert.equal(result.localPortalFallback.sourceFailure, true);
     assert.equal(result.localPortalFallback.successfulAdapters, 0);
+    assert.equal(result.discoveryIndexFallback.status, "not-needed");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
