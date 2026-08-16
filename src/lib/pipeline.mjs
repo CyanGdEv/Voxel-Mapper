@@ -14,6 +14,7 @@ import {
   fusePlanningAuthorityIntoEvidenceGraph,
   applyPlanningAuthorityWinners
 } from "./planning-authority-fusion.mjs";
+import { reconcilePlanningTopology } from "./osm-planning-reconciliation.mjs";
 import { buildPlanningDocumentQueue } from "./planning-documents.mjs";
 import { compileMap } from "./raster.mjs";
 import { buildBedrockAddon } from "./bedrock.mjs";
@@ -35,6 +36,11 @@ export async function buildPark(options = {}, progress = () => {}) {
 
   progress("Normalizing map geometry and provenance");
   const map = await normalizeMap(sources, options);
+  progress("Reconciling verified-current planning topology against OSM");
+  const planningTopologyReconciliation = await reconcilePlanningTopology(map, options);
+  if (planningTopologyReconciliation.added || planningTopologyReconciliation.replaced || planningTopologyReconciliation.deleted) {
+    refreshMapDerivedData(map);
+  }
   progress("Repairing source-relative path gaps and area geometry");
   const pathGeometryEvidence = enhancePathGeometry(map, options);
   progress("Measuring image-visible path edges and surface appearance");
@@ -82,8 +88,12 @@ export async function buildPark(options = {}, progress = () => {}) {
   const planningDocumentQueuePath = await writeJson(
     path.join(outputDir, "planning-document-queue.json"), planningDocumentQueue
   );
+  const planningTopologyReconciliationPath = await writeJson(
+    path.join(outputDir, "planning-topology-reconciliation.json"), planningTopologyReconciliation
+  );
   const planningAuthorityFusionPath = await writeJson(path.join(outputDir, "planning-authority-fusion.json"), {
     schemaVersion: 1,
+    topology: planningTopologyReconciliation,
     association: planningAuthorityFusion,
     evidenceGraph: planningAuthorityGraph,
     resolution: planningAuthorityResolution
@@ -106,7 +116,10 @@ export async function buildPark(options = {}, progress = () => {}) {
         status: planningAuthorityFusion.status,
         matchedFeatures: planningAuthorityFusion.matchedFeatures,
         winningAttributes: planningAuthorityGraph.winningAttributes,
-        appliedAttributes: planningAuthorityResolution.appliedAttributes
+        appliedAttributes: planningAuthorityResolution.appliedAttributes,
+        topologyAdded: planningTopologyReconciliation.added,
+        topologyReplaced: planningTopologyReconciliation.replaced,
+        topologyDeleted: planningTopologyReconciliation.deleted
       },
       orthophoto: withoutLargeData(sources.orthophoto),
       mapFusion: sources.mapFusion,
@@ -120,6 +133,7 @@ export async function buildPark(options = {}, progress = () => {}) {
     rideProfiles: compactRideEvidence(rideProfiles),
     evidenceGraph,
     planningAuthority: {
+      topology: planningTopologyReconciliation,
       association: planningAuthorityFusion,
       graph: planningAuthorityGraph,
       resolution: planningAuthorityResolution
@@ -225,6 +239,7 @@ export async function buildPark(options = {}, progress = () => {}) {
       sourcePlan: sourcePlanPath,
       planningAcquisition: planningAcquisitionPath,
       planningDocumentQueue: planningDocumentQueuePath,
+      planningTopologyReconciliation: planningTopologyReconciliationPath,
       planningAuthorityFusion: planningAuthorityFusionPath,
       compilation: compilationPath,
       fidelity: fidelityPath,
@@ -256,6 +271,9 @@ export async function buildPark(options = {}, progress = () => {}) {
       planningJurisdictions: sources.planning?.jurisdictionCount || 0,
       planningDocumentQueueItems: planningDocumentQueue.itemCount,
       planningDocumentQueueApplications: planningDocumentQueue.applicationsQueued,
+      planningTopologyAdded: planningTopologyReconciliation.added,
+      planningTopologyReplaced: planningTopologyReconciliation.replaced,
+      planningTopologyDeleted: planningTopologyReconciliation.deleted,
       planningAuthorityMatchedFeatures: planningAuthorityFusion.matchedFeatures,
       planningAuthorityWinningAttributes: planningAuthorityGraph.winningAttributes,
       planningAuthorityAppliedAttributes: planningAuthorityResolution.appliedAttributes,
