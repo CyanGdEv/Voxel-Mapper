@@ -147,7 +147,10 @@ export function parsePublicAccessMajorApplications(html, listingUrl, hints = [])
 }
 
 async function discoverPortalApplications(adapter, options, hints) {
-  const cacheDir = path.join(options.cacheDir || ".tpmap-cache", "planning-lpa-fallback");
+  // Keep local-register HTML beside the national planning index cache so the
+  // existing Actions cache restores both on normal repeat generations. A
+  // refresh/no-cache run still bypasses it through cachedJson exactly as before.
+  const cacheDir = path.join(options.cacheDir || ".tpmap-cache", "planning-data-england", "lpa-fallback");
   const cacheKey = `${adapter.id}\n${adapter.listingUrl}`;
   const { data, cacheHit } = await cachedJson({
     cacheDir,
