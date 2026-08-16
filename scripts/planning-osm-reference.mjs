@@ -43,9 +43,11 @@ const sources = {
   elevation: { provider: "none", resolutionM: null, points: [] }
 };
 const map = await normalizeMap(sources, { planning: [], override: [] });
+const supportedGeometry = new Set(["Polygon", "MultiPolygon", "LineString", "MultiLineString"]);
+const supportedKinds = new Set(["building", "structure", "path", "road", "ride_track", "barrier", "water", "terrain_detail"]);
 const features = map.features
-  .filter((feature) => ["Polygon", "MultiPolygon"].includes(feature.localGeometry?.type))
-  .filter((feature) => ["building", "structure", "path", "road", "ride_track", "barrier", "water", "terrain_detail"].includes(feature.kind))
+  .filter((feature) => supportedGeometry.has(feature.localGeometry?.type))
+  .filter((feature) => supportedKinds.has(feature.kind))
   .map((feature) => ({
     id: feature.id,
     name: feature.name || null,
@@ -57,7 +59,7 @@ const features = map.features
   }));
 
 const output = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   bbox,
   center,
   provider: "OpenStreetMap Overpass",
@@ -66,12 +68,15 @@ const output = {
   cacheHit,
   featureCount: features.length,
   byKind: countBy(features, (feature) => feature.kind),
+  byGeometryType: countBy(features, (feature) => feature.localGeometry?.type),
   coordinateSpace: "local-world-metres",
+  temporalRole: "current-spatial-observation",
+  note: "Polygon features support georegistration control matching; current line and polygon features also support post-decision implementation corroboration. Overpass is requested with out meta geom so timestamps/versions remain available.",
   features
 };
 await mkdir(path.dirname(path.resolve(args.out)), { recursive: true });
 await writeFile(path.resolve(args.out), JSON.stringify(output, null, 2) + "\n");
-console.log(JSON.stringify({ out: path.resolve(args.out), featureCount: features.length, cacheHit, byKind: output.byKind }, null, 2));
+console.log(JSON.stringify({ out: path.resolve(args.out), featureCount: features.length, cacheHit, byKind: output.byKind, byGeometryType: output.byGeometryType }, null, 2));
 
 function parseArgs(values) {
   const result = {};
