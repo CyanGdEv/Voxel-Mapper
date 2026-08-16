@@ -18,12 +18,25 @@ test("player-facing generation workflow exposes bbox as its only dispatch input"
 test("bbox generation reuses planning authority and compiles reconstruction only once before world fan-out", async () => {
   const yaml = await readFile(generateWorldPath, "utf8");
   assert.match(yaml, /uses: \.\/\.github\/workflows\/planning-documents\.yml/);
-  assert.match(yaml, /shards: "20"/);
+  assert.match(yaml, /max_applications: "2500"/);
+  assert.match(yaml, /shards: "256"/);
   assert.match(yaml, /name: planning-current-state-evidence/);
   assert.match(yaml, /planning-current-authority-evidence\.json/);
   assert.match(yaml, /scripts\/prepare-bbox-world-shards\.mjs/);
   assert.equal((yaml.match(/scripts\/prepare-bbox-world-shards\.mjs/g) || []).length, 1);
   assert.doesNotMatch(yaml, /scripts\/generate-bbox-world\.mjs/);
+});
+
+test("planning application processing can fan out to the GitHub matrix ceiling of 256", async () => {
+  const yaml = await readFile(planningPath, "utf8");
+  const acquire = yaml.split("  acquire:")[1].split("  catalog:")[0];
+  const extract = yaml.split("  extract-vector:")[1].split("  merge-extraction:")[0];
+  const georegister = yaml.split("  georegister:")[1].split("  finalize-current-state:")[0];
+  assert.match(acquire, /max-parallel: 256/);
+  assert.match(extract, /max-parallel: 256/);
+  assert.match(georegister, /max-parallel: 256/);
+  assert.match(yaml, /--extraction-shards 256/);
+  assert.match(yaml, /planning-georeg-plan\.mjs --evidence planning-vector-evidence --shards 256/);
 });
 
 test("Bedrock world generation fans out to a dynamic matrix capped at twenty concurrent shard jobs", async () => {
@@ -70,8 +83,10 @@ test("planning workflow supports reusable workflow_call without removing develop
   const yaml = await readFile(planningPath, "utf8");
   assert.match(yaml, /workflow_call:/);
   assert.match(yaml, /workflow_dispatch:/);
-  assert.match(yaml, /default: "680"/);
-  assert.match(yaml, /default: "20"/);
+  assert.match(yaml, /default: "2500"/);
+  assert.match(yaml, /default: "256"/);
+  assert.match(yaml, /hard cap 2500/);
+  assert.match(yaml, /hard cap 256/);
 });
 
 test("planning current-state resolution consumes merged georegistration in the same job without a huge intermediate artifact", async () => {

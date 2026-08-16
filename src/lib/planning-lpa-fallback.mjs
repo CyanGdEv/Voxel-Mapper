@@ -5,6 +5,8 @@ import {
   rankPlanningApplicationsByOsm
 } from "./osm-planning-reconciliation.mjs";
 
+const MAX_PLANNING_APPLICATIONS = 2_500;
+
 const PORTAL_ADAPTERS = Object.freeze([
   Object.freeze({
     id: "staffordshire-moorlands-publicaccess",
@@ -22,6 +24,10 @@ export async function augmentPlanningFromLocalPortals(options, planning, osmData
   const jurisdictions = Array.isArray(planning?.jurisdictions) ? planning.jurisdictions : [];
   const osmDiscovery = buildOsmPlanningSearchIndex(osmData, options);
   const hints = osmDiscovery.searchTerms;
+  const maxApplications = Math.max(0, Math.min(
+    MAX_PLANNING_APPLICATIONS,
+    Number(options.maxPlanningApplications ?? options.maxPlanningApplicationsPerBuild ?? MAX_PLANNING_APPLICATIONS)
+  ));
   const applications = rankPlanningApplicationsByOsm(
     Array.isArray(planning?.applications) ? [...planning.applications] : [],
     osmDiscovery,
@@ -30,10 +36,11 @@ export async function augmentPlanningFromLocalPortals(options, planning, osmData
   const attempts = [];
 
   if (!jurisdictions.length || !hints.length) {
+    const bounded = applications.slice(0, maxApplications);
     return {
       ...planning,
-      applications,
-      applicationCount: applications.length,
+      applications: bounded,
+      applicationCount: bounded.length,
       coverageStatus: planning?.coverageStatus || "partial-or-unknown",
       osmPlanningDiscovery: compactDiscovery(osmDiscovery),
       localPortalFallback: { attempted: false, hints, attempts, addedApplications: 0 }
@@ -71,7 +78,7 @@ export async function augmentPlanningFromLocalPortals(options, planning, osmData
 
   const merged = dedupeApplications(applications);
   const addedApplications = Math.max(0, merged.length - (planning?.applications?.length || 0));
-  const ranked = rankPlanningApplicationsByOsm(merged, osmDiscovery, options);
+  const ranked = rankPlanningApplicationsByOsm(merged, osmDiscovery, options).slice(0, maxApplications);
   return {
     ...planning,
     applications: ranked,

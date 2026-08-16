@@ -16,7 +16,7 @@ export function buildPlanningGeoregistrationShardPlan(manifest, options = {}) {
     throw new Error(`Expected ${EXTRACTION_BUNDLE_FORMAT}, found ${manifest?.format || "unknown bundle format"}`);
   }
   const pages = [...(manifest.pages || [])].sort(pageSort);
-  const requested = clampInt(options.shards ?? 20, 1, 100);
+  const requested = clampInt(options.shards ?? 256, 1, 256);
   const activeShardCount = pages.length ? Math.min(requested, pages.length) : 1;
   const bins = Array.from({ length: activeShardCount }, (_, shard) => ({ shard, weight: 0, pageKeys: [] }));
   const weightedPages = pages.map((page) => ({

@@ -10,7 +10,7 @@ const LOW_VALUE_CLASSES = new Set(["decision", "supporting", "unknown"]);
 
 export function buildPlanningDocumentCatalog(manifests, options = {}) {
   const values = Array.isArray(manifests) ? manifests : [manifests].filter(Boolean);
-  const extractionShards = Math.max(1, Math.min(100, Number(options.planningExtractionShards ?? 20)));
+  const extractionShards = Math.max(1, Math.min(256, Number(options.planningExtractionShards ?? 256)));
   const content = new Map();
   const applications = new Map();
   const failures = [];
@@ -92,7 +92,7 @@ export function isExtractablePlanningDocument(document, options = {}) {
   return !LOW_VALUE_CLASSES.has(document.classification);
 }
 
-export function extractionShardForContent(contentHash, shardCount = 20) {
+export function extractionShardForContent(contentHash, shardCount = 256) {
   return shardForApplication(`content:${contentHash}`, shardCount);
 }
 

@@ -75,15 +75,17 @@ test("planning delete operation removes an explicitly targeted OSM feature", asy
   assert.equal(features.length, 0);
 });
 
-test("planning manifest enforces the 680 application default safety limit", async () => {
+test("planning manifest enforces the 2500 application hard safety limit", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "voxel-mapper-planning-limit-"));
   const filename = path.join(directory, "planning.json");
   await writeFile(filename, JSON.stringify({
-    applications: Array.from({ length: 681 }, (_, index) => ({ reference: `APP/${index + 1}`, features: [] }))
+    applications: Array.from({ length: 2501 }, (_, index) => ({ reference: `APP/${index + 1}`, features: [] }))
   }));
   const projector = createProjector({ lat: 51, lon: 0 });
-  await assert.rejects(
-    () => fusePlanningApplications([], projector, { planning: [filename] }),
-    /contains 681 applications; limit is 680/
-  );
+  for (const options of [{ planning: [filename] }, { planning: [filename], maxPlanningApplications: 9_999 }]) {
+    await assert.rejects(
+      () => fusePlanningApplications([], projector, options),
+      /contains 2501 applications; limit is 2500/
+    );
+  }
 });

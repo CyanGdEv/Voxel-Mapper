@@ -75,6 +75,18 @@ test("georegistration planner deterministically balances expensive pages across 
   assert.ok(first.maxShardWeight < first.totalWeight, "no single runner receives the whole georegistration workload");
 });
 
+test("georegistration planner defaults to and clamps at 256 runners", () => {
+  const pages = Array.from({ length: 300 }, (_, index) => page(`p${String(index).padStart(3, "0")}`, 1, 1));
+  const manifest = extractionManifest(pages);
+  const defaultPlan = buildPlanningGeoregistrationShardPlan(manifest);
+  const oversizedPlan = buildPlanningGeoregistrationShardPlan(manifest, { shards: 999 });
+  assert.equal(defaultPlan.requestedShards, 256);
+  assert.equal(defaultPlan.activeShardCount, 256);
+  assert.equal(defaultPlan.activeShards.length, 256);
+  assert.equal(oversizedPlan.requestedShards, 256);
+  assert.equal(oversizedPlan.activeShardCount, 256);
+});
+
 test("georegistration input materialization copies only the pages assigned to that shard", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "voxel-georeg-shard-input-"));
   try {

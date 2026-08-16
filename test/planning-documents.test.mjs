@@ -40,6 +40,15 @@ test("planning applications become deterministic download/discovery queue items"
   assert.equal(new Set(app101.map((item) => item.shard)).size, 1, "all documents for one app stay in one shard");
 });
 
+test("planning document fanout defaults to and clamps at 256 shards", () => {
+  const planning = { applications: [{ entity: 1, "documentation-url": "https://planning.example.gov/app/1" }] };
+  const defaultQueue = buildPlanningDocumentQueue(planning);
+  const oversizedQueue = buildPlanningDocumentQueue(planning, { planningDocumentShards: 999 });
+  assert.equal(defaultQueue.shardCount, 256);
+  assert.equal(oversizedQueue.shardCount, 256);
+  assert.ok(defaultQueue.items[0].shard >= 0 && defaultQueue.items[0].shard < 256);
+});
+
 test("classification prioritizes reconstruction-relevant drawing types", () => {
   assert.equal(classifyPlanningDocument("Proposed General Arrangement", "https://x.example/ga.pdf"), "site-plan");
   assert.equal(classifyPlanningDocument("North and South Elevations", "https://x.example/123.pdf"), "elevation");

@@ -22,8 +22,8 @@ jobs:
     uses: ./.github/workflows/planning-documents.yml
     with:
       bbox: ${{ inputs.bbox }}
-      max_applications: "680"
-      shards: "20"
+      max_applications: "2500"
+      shards: "256"
       refresh: false
 
   prepare-world:

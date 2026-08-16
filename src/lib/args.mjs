@@ -172,7 +172,7 @@ function validatePathRecoveryNumbers(options) {
   range("treeLineSpacingM", 1, 30);
   range("vegetationMinSpacingM", 1, 30);
   if (options.maxPathDiscoveryCells !== undefined && (!Number.isInteger(options.maxPathDiscoveryCells) || options.maxPathDiscoveryCells < 1_000)) throw new UserError("--max-path-discovery-cells must be an integer of at least 1000");
-  if (options.maxPlanningApplications !== undefined && (!Number.isInteger(options.maxPlanningApplications) || options.maxPlanningApplications < 1 || options.maxPlanningApplications > 10000)) throw new UserError("--max-planning-applications must be an integer between 1 and 10000");
+  if (options.maxPlanningApplications !== undefined && (!Number.isInteger(options.maxPlanningApplications) || options.maxPlanningApplications < 1 || options.maxPlanningApplications > 2500)) throw new UserError("--max-planning-applications must be an integer between 1 and 2500");
   if (options.maxTerrainRocks !== undefined && (!Number.isInteger(options.maxTerrainRocks) || options.maxTerrainRocks < 0 || options.maxTerrainRocks > 100_000)) throw new UserError("--max-terrain-rocks must be an integer between 0 and 100000");
   if (options.maxVegetationModels !== undefined && (!Number.isInteger(options.maxVegetationModels) || options.maxVegetationModels < 0 || options.maxVegetationModels > 200_000)) throw new UserError("--max-vegetation-models must be an integer between 0 and 200000");
   if (options.pathDiscoveryRampGradePercent !== undefined && options.pathDiscoverySteepGradePercent !== undefined && options.pathDiscoverySteepGradePercent < options.pathDiscoveryRampGradePercent) {

@@ -67,6 +67,40 @@ test("planning acquisition discovers LPAs, deduplicates applications and respect
   }
 });
 
+test("planning acquisition hard-caps even oversized requests at 2500 applications", async () => {
+  const cacheDir = await mkdtemp(path.join(os.tmpdir(), "voxel-planning-cap-"));
+  const applicationOffsets = [];
+  try {
+    const result = await acquireEnglandPlanningData({
+      bbox: ALTON,
+      cacheDir,
+      noCache: true,
+      maxPlanningApplications: 9_999,
+      fetchJsonImpl: async (url) => {
+        const dataset = url.searchParams.get("dataset");
+        if (dataset === "local-planning-authority") {
+          return { entities: [{ entity: 9001, reference: "E06000021", name: "Test Planning Authority" }] };
+        }
+        const offset = Number(url.searchParams.get("offset"));
+        const limit = Number(url.searchParams.get("limit"));
+        applicationOffsets.push(offset);
+        return {
+          entities: Array.from({ length: limit }, (_, index) => ({
+            entity: offset + index + 1,
+            reference: `26/${String(offset + index + 1).padStart(5, "0")}/FUL`,
+            dataset: "planning-application"
+          }))
+        };
+      }
+    });
+    assert.equal(result.applicationCount, 2_500);
+    assert.equal(result.pagesFetched, 25);
+    assert.equal(Math.max(...applicationOffsets), 2_400);
+  } finally {
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});
+
 test("dateline-spanning bbox is rejected only by the England API adapter", () => {
   assert.throws(
     () => bboxPolygonWkt({ south: -10, west: 179, north: 10, east: -179 }),

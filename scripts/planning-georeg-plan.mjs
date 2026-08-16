@@ -12,13 +12,13 @@ const value = (name) => {
 };
 
 if (args.includes("--help") || !value("--evidence")) {
-  console.log(`Voxel Mapper planning georegistration shard planner\n\nUsage:\n  node scripts/planning-georeg-plan.mjs --evidence planning-vector-evidence [options]\n\nOptions:\n  --out FILE       Plan output (default planning-georeg-shard-plan.json)\n  --shards N       Maximum parallel georegistration shards (default 20)\n`);
+  console.log(`Voxel Mapper planning georegistration shard planner\n\nUsage:\n  node scripts/planning-georeg-plan.mjs --evidence planning-vector-evidence [options]\n\nOptions:\n  --out FILE       Plan output (default planning-georeg-shard-plan.json)\n  --shards N       Maximum parallel georegistration shards (default 256, max 256)\n`);
   process.exit(args.includes("--help") ? 0 : 2);
 }
 
 const bundle = await loadBundleManifest(path.resolve(value("--evidence")), EXTRACTION_BUNDLE_FORMAT);
 const plan = buildPlanningGeoregistrationShardPlan(bundle.manifest, {
-  shards: Number(value("--shards") || 20)
+  shards: Number(value("--shards") || 256)
 });
 const out = path.resolve(value("--out") || "planning-georeg-shard-plan.json");
 await writeJson(out, plan);
