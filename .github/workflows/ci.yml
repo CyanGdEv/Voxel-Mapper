@@ -54,6 +54,7 @@ jobs:
           gh run download 31957176886 --repo "$GITHUB_REPOSITORY" --name planning-document-queue --dir replay/queue
           mkdir -p planning-georegistration-download
           cp replay/georeg/planning-georeg-reference.json planning-georegistration-download/planning-georeg-reference.json
+          cp replay/georeg/planning-georegistration.json planning-georegistration-download/planning-georegistration.json
           cp replay/catalog/planning-document-catalog.json planning-document-catalog.json
           cp replay/queue/planning-document-queue.json planning-document-queue.json
       - name: Re-materialize world authority with implemented-scheme proof
@@ -74,5 +75,6 @@ jobs:
           if (!(counts.rideStructureTemplates > 0)) throw new Error('Expected current ride structure templates in world handoff');
           if (!(scheme.certifiedSpatialPages > 0)) throw new Error('Expected at least one independently certified spatial planning page');
           if (!(scheme.implementedApplications > 0)) throw new Error('Expected at least one independently implemented planning application');
+          if (!scheme.georegistrationProofAvailable) throw new Error('Expected robust georegistration proof to be reused');
           console.log(JSON.stringify({ counts, implementedSchemeAuthority: scheme }, null, 2));
           NODE
