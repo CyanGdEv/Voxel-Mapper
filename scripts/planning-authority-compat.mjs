@@ -18,18 +18,24 @@ const bundle = await loadBundleManifest(bundleRoot, AUTHORITY_BUNDLE_FORMAT);
 const geometryCandidates = [];
 const verticalObservations = [];
 const materialObservations = [];
+const rideStructureTemplates = [];
 const drawingMetadata = [];
 for (const page of bundle.manifest.pages || []) {
   const evidence = await readBundlePage(bundle.root, page);
   geometryCandidates.push(...(evidence.geometryCandidates || []).filter(isAuthorityEntry));
   verticalObservations.push(...(evidence.verticalObservations || []).filter(isAuthorityEntry));
   materialObservations.push(...(evidence.materialObservations || []).filter(isAuthorityEntry));
+  // Structural section/elevation templates are intentionally never world
+  // geometry authority. They may enter the compact handoff only when the
+  // revision resolver marked the page current and explicitly allowed the
+  // template for later exact support-code linkage.
+  rideStructureTemplates.push(...(evidence.rideStructureTemplates || []).filter(isCurrentTemplate));
   drawingMetadata.push(...(evidence.drawingMetadata || []).filter(isAuthorityEntry));
 }
 const hasAuthority = geometryCandidates.length || verticalObservations.length || materialObservations.length || drawingMetadata.length;
 const output = {
-  schemaVersion: 2,
-  coordinateSpace: "local-world-metres",
+  schemaVersion: 3,
+  coordinateSpace: "local-world-metres-plus-nonspatial-templates",
   authorityScope: "planning-current-state-only",
   sourceStorage: "chunked-page-ndjson",
   sourceBundle: pointer.bundlePath || null,
@@ -39,12 +45,20 @@ const output = {
   geometryCandidates,
   verticalObservations,
   materialObservations,
+  rideStructureTemplates: dedupeTemplates(rideStructureTemplates),
   drawingMetadata,
   counts: {
     geometryCandidates: geometryCandidates.length,
     verticalObservations: verticalObservations.length,
     materialObservations: materialObservations.length,
+    rideStructureTemplates: dedupeTemplates(rideStructureTemplates).length,
     drawingMetadata: drawingMetadata.length
+  },
+  templatePolicy: {
+    spatialAuthority: false,
+    worldGeometryAuthority: false,
+    exactAuthoritativePlanAnchorLinkRequired: true,
+    terrainGeometryMutable: false
   },
   corroboration: pointer.corroboration || null
 };
@@ -52,6 +66,20 @@ await writeJson(path.resolve(args.out), output);
 console.log(JSON.stringify({ out: path.resolve(args.out), counts: output.counts, worldGeometryAuthority: output.worldGeometryAuthority }, null, 2));
 
 function isAuthorityEntry(entry) { return entry?.worldGeometryAuthority === true && entry?.planningTemporal?.state === "current"; }
+function isCurrentTemplate(entry) {
+  return entry?.templateAuthorityEligible === true && entry?.planningTemporal?.state === "current" && entry?.worldGeometryAuthority !== true;
+}
+function dedupeTemplates(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values || []) {
+    const key = value?.id || `${value?.contentHash || ""}:p${value?.pageNumber || 0}:${value?.supportCode || ""}:${value?.component || ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+  }
+  return result.sort((a, b) => String(a.contentHash || "").localeCompare(String(b.contentHash || "")) || Number(a.pageNumber || 0) - Number(b.pageNumber || 0) || String(a.id || "").localeCompare(String(b.id || "")));
+}
 function parseArgs(values) {
   const result = {};
   for (let index = 0; index < values.length; index += 1) {
