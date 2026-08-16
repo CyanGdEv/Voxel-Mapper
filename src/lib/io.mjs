@@ -41,11 +41,6 @@ export async function writeBinary(filename, value) {
 }
 
 function nextTempFilename(filename) {
-  // Multiple planning workers can legitimately resolve different source URLs
-  // to identical content hashes at the same time. A process-id-only temporary
-  // name makes those atomic writes collide with each other. Give every write a
-  // unique in-process staging path; final rename remains atomic and converges
-  // safely when the destination bytes/content hash are identical.
   tempWriteSequence += 1;
   return `${filename}.tmp-${process.pid}-${tempWriteSequence}`;
 }
@@ -89,4 +84,59 @@ export async function cachedJson({ cacheDir, key, noCache, fetcher }) {
   const data = await fetcher();
   await writeJson(filename, data);
   return { data, cacheHit: false, filename };
+}
+
+export async function cachedBinary({ cacheDir, key, noCache, fetcher, extension = ".bin" }) {
+  const suffix = String(extension).startsWith(".") ? extension : `.${extension}`;
+  const filename = path.join(cacheDir, `${sha256(key)}${suffix}`);
+  if (!noCache && await exists(filename)) return { data: null, cacheHit: true, filename };
+  const data = await fetcher();
+  await writeBinary(filename, data);
+  return { data, cacheHit: false, filename };
+}
+
+export async function fetchJson(url, init = {}, { timeoutMs = 120_000, retries = 2 } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      const body = await response.text();
+      if (!response.ok) throw new UserError(`HTTP ${response.status} from ${new URL(url).host}`, body.slice(0, 500));
+      try {
+        return JSON.parse(body);
+      } catch {
+        throw new UserError(`Expected JSON from ${new URL(url).host}`, body.slice(0, 500));
+      }
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) await new Promise((resolve) => setTimeout(resolve, 750 * (2 ** attempt)));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastError;
+}
+
+export async function fetchBinary(url, init = {}, { timeoutMs = 180_000, retries = 2 } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      if (!response.ok) {
+        const body = await response.text();
+        throw new UserError(`HTTP ${response.status} from ${new URL(url).host}`, body.slice(0, 500));
+      }
+      return Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) await new Promise((resolve) => setTimeout(resolve, 750 * (2 ** attempt)));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  throw lastError;
 }
