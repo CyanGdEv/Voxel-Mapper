@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   createPinnedIpv4Lookup,
+  httpsUpgradeCandidate,
   isPublicIpv4,
   publicIpv4Answers,
   resolvePublicIpv4
@@ -55,4 +56,10 @@ test("pinned IPv4 lookup supports both single-address and all-address Node callb
   });
 
   assert.throws(() => createPinnedIpv4Lookup("127.0.0.1"), /non-public IPv4/);
+});
+
+test("legacy HTTP planning URLs can be upgraded to the same-host HTTPS endpoint", () => {
+  const upgraded = httpsUpgradeCandidate("http://publicaccess.example.gov/portal/servlets/ApplicationSearchServlet?PKID=42");
+  assert.equal(upgraded?.toString(), "https://publicaccess.example.gov/portal/servlets/ApplicationSearchServlet?PKID=42");
+  assert.equal(httpsUpgradeCandidate("https://publicaccess.example.gov/app/42"), null);
 });
