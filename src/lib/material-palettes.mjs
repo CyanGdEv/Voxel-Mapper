@@ -106,10 +106,11 @@ const ALIASES = Object.freeze({
   "metal roof": "metal_roof", metal: "metal_roof", steel: "metal_roof",
   glass: "glass", glazing: "glass", grass: "grass", earth: "earth", soil: "earth"
 });
+const ALIAS_LOOKUP = new Map(Object.entries(ALIASES).map(([key, value]) => [clean(key), value]));
 
 export function createMaterialRegistry(records = []) {
   const palettes = new Map(Object.entries(BUILTIN).map(([key, value]) => [key, structuredClone(value)]));
-  const aliases = new Map(Object.entries(ALIASES));
+  const aliases = new Map(ALIAS_LOOKUP);
   const custom = [];
   for (const record of records || []) {
     if (!record || typeof record !== "object") continue;
@@ -160,7 +161,7 @@ export function resolveFeatureMaterialPalettes(feature, registry) {
 export function surfaceMaterialPalette(value) {
   const key = clean(value);
   if (!key) return null;
-  const directKey = BUILTIN[key] ? key : ALIASES[key];
+  const directKey = BUILTIN[key] ? key : ALIAS_LOOKUP.get(key);
   if (!directKey || !SURFACE_BUILTINS.has(directKey)) return null;
   return { ...structuredClone(BUILTIN[directKey]), role: "surface" };
 }
