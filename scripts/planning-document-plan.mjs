@@ -3,6 +3,7 @@ import path from "node:path";
 import { appendFile } from "node:fs/promises";
 import { ensureDir, sha256, writeJson } from "../src/lib/io.mjs";
 import { acquireSources } from "../src/lib/sources.mjs";
+import { collapsePlanningAcquisitionAliases } from "../src/lib/planning-acquisition-aliases.mjs";
 import { buildPlanningDocumentQueue } from "../src/lib/planning-documents.mjs";
 
 const args = process.argv.slice(2);
@@ -47,9 +48,20 @@ if (!(planning.applicationCount > 0) && (
   );
 }
 
-const queue = buildPlanningDocumentQueue(planning, {
+// Keep every discovered application in the immutable lifecycle snapshot, but do
+// not spend acquisition shards refetching a weaker secondary/consultation page
+// when the same bbox already contains a high-confidence first-party register
+// counterpart. This is acquisition deduplication only; it grants no authority.
+const acquisition = collapsePlanningAcquisitionAliases(planning.applications || []);
+const queue = buildPlanningDocumentQueue({
+  ...planning,
+  applications: acquisition.applications
+}, {
   planningDocumentShards: Number(value("--shards") || DEFAULT_SHARDS)
 });
+queue.applicationCount = Array.isArray(planning.applications) ? planning.applications.length : Number(planning.applicationCount || 0);
+queue.acquisitionApplicationCount = acquisition.applications.length;
+queue.acquisitionAliases = acquisition.aliases;
 
 // Keep a compact, immutable lifecycle snapshot next to the queue. Discovery-
 // only indexes deliberately contribute no temporal authority; their role is to
@@ -77,6 +89,8 @@ console.log(`Planning coverage: ${planning.coverageStatus || planning.status || 
 console.log(`Local portal applications added: ${planning.localPortalFallback?.addedApplications || 0}`);
 console.log(`Discovery-index applications added: ${planning.discoveryIndexFallback?.addedApplications || 0}`);
 console.log(`Applications: ${planning.applicationCount || 0}`);
+console.log(`Acquisition applications: ${acquisition.applications.length}`);
+console.log(`Acquisition aliases collapsed: ${acquisition.aliases.length}`);
 console.log(`Queue items: ${queue.itemCount}`);
 console.log(`Active shards: ${activeShards.join(",") || "none"}`);
 console.log(`Queue: ${out}`);
