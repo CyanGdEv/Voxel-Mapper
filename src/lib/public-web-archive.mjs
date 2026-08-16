@@ -1,4 +1,5 @@
-import { fetchViaPublicDns } from "./public-dns-http.mjs";
+import { fetchViaPublicDns, httpsUpgradeCandidate } from "./public-dns-http.mjs";
+import { isSafePublicHttpUrl } from "./planning-documents.mjs";
 
 const CDX_ENDPOINT = "https://web.archive.org/cdx/search/cdx";
 const REPLAY_ORIGIN = "https://web.archive.org";
@@ -15,30 +16,43 @@ export async function fetchArchivedPublicUrl(urlValue, init = {}, options = {}) 
   const fetchImpl = options.fetchImpl || globalThis.fetch;
   if (typeof fetchImpl !== "function") throw new Error("No fetch implementation is available for web-archive recovery");
 
-  const cdxUrl = buildWaybackCdxUrl(originalUrl, options);
-  const cdxResponse = await fetchArchiveResponse(cdxUrl, {
-    headers: {
-      Accept: "application/json",
-      "User-Agent": options.userAgent || "VoxelMapper/0.12"
+  const captures = [];
+  const lookupFailures = [];
+  for (const sourceUrl of archiveSourceCandidates(originalUrl)) {
+    try {
+      const cdxUrl = buildWaybackCdxUrl(sourceUrl, options);
+      const cdxResponse = await fetchArchiveResponse(cdxUrl, {
+        headers: {
+          Accept: "application/json",
+          "User-Agent": options.userAgent || "VoxelMapper/0.12"
+        }
+      }, { ...options, fetchImpl });
+      if (!cdxResponse?.ok) {
+        lookupFailures.push(`${sourceUrl}: HTTP ${cdxResponse?.status ?? "?"}`);
+        continue;
+      }
+
+      let payload;
+      try {
+        payload = await cdxResponse.json();
+      } catch (error) {
+        lookupFailures.push(`${sourceUrl}: invalid CDX JSON (${error?.message || error})`);
+        continue;
+      }
+      captures.push(...parseWaybackCdx(payload).filter((capture) => capture.statuscode === "200"));
+    } catch (error) {
+      lookupFailures.push(`${sourceUrl}: ${error?.message || error}`);
     }
-  }, { ...options, fetchImpl });
-  if (!cdxResponse?.ok) {
-    throw new Error(`Wayback CDX HTTP ${cdxResponse?.status ?? "?"} for ${new URL(originalUrl).host}`);
   }
 
-  let payload;
-  try {
-    payload = await cdxResponse.json();
-  } catch (error) {
-    throw new Error(`Wayback CDX returned invalid JSON for ${new URL(originalUrl).host}: ${error?.message || error}`);
-  }
-  const captures = parseWaybackCdx(payload)
-    .filter((capture) => capture.statuscode === "200")
+  const uniqueCaptures = dedupeCaptures(captures)
     .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
-  if (!captures.length) throw new Error(`No public Wayback capture for ${originalUrl}`);
+  if (!uniqueCaptures.length) {
+    throw new Error(`No public Wayback capture for ${originalUrl}${lookupFailures.length ? ` (${lookupFailures.join("; ")})` : ""}`);
+  }
 
   const replayFailures = [];
-  for (const capture of captures) {
+  for (const capture of uniqueCaptures) {
     const replayUrl = buildWaybackReplayUrl(capture);
     try {
       const response = await fetchArchiveResponse(replayUrl, {
@@ -72,6 +86,17 @@ export async function fetchArchivedPublicUrl(urlValue, init = {}, options = {}) 
   throw new Error(`Wayback replay failed for ${originalUrl}: ${replayFailures.join("; ") || "no usable capture"}`);
 }
 
+export function archiveSourceCandidates(urlValue) {
+  const originalUrl = assertSafeOriginalUrl(urlValue);
+  const result = [originalUrl];
+  const upgraded = httpsUpgradeCandidate(originalUrl);
+  if (upgraded) {
+    const value = assertSafeOriginalUrl(upgraded);
+    if (!result.includes(value)) result.push(value);
+  }
+  return result;
+}
+
 export function buildWaybackCdxUrl(urlValue, options = {}) {
   const originalUrl = assertSafeOriginalUrl(urlValue);
   const endpoint = new URL(options.cdxEndpoint || CDX_ENDPOINT);
@@ -96,7 +121,7 @@ export function parseWaybackCdx(payload) {
     if (!Array.isArray(raw) || raw.length !== header.length) continue;
     const row = Object.fromEntries(header.map((field, index) => [field, String(raw[index] ?? "")]));
     if (!/^\d{14}$/.test(row.timestamp || "")) continue;
-    try { assertSafeOriginalUrl(row.original); } catch { continue; }
+    try { row.original = assertSafeOriginalUrl(row.original); } catch { continue; }
     rows.push(row);
   }
   return rows;
@@ -157,12 +182,21 @@ async function fetchArchiveResponse(url, init, options) {
 
 function assertSafeOriginalUrl(value) {
   const url = value instanceof URL ? new URL(value) : new URL(String(value));
-  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error(`Unsupported archive source protocol: ${url.protocol}`);
   if (url.username || url.password) throw new Error("Credential-bearing archive source URLs are not allowed");
-  if (!url.hostname || /^(localhost|127\.|10\.|192\.168\.|169\.254\.)/i.test(url.hostname) || url.hostname.endsWith(".local")) {
-    throw new Error(`Private archive source hostname is not allowed: ${url.hostname}`);
-  }
+  if (!isSafePublicHttpUrl(url)) throw new Error(`Unsafe archive source URL: ${url}`);
   return url.toString();
+}
+
+function dedupeCaptures(captures) {
+  const seen = new Set();
+  const result = [];
+  for (const capture of captures) {
+    const key = `${capture.timestamp}\n${capture.original}\n${capture.digest || ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(capture);
+  }
+  return result;
 }
 
 function clampInt(value, min, max) {
