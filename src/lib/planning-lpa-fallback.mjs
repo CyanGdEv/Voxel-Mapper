@@ -112,7 +112,11 @@ export function parsePublicAccessMajorApplications(html, listingUrl, hints = [])
       .map((match) => stripHtml(match[1]).replace(/\s+/g, " ").trim());
     const rowText = cells.filter(Boolean).join(" | ") || stripHtml(rowHtml).replace(/\s+/g, " ").trim();
     const normalizedRow = normalizeText(rowText);
-    if (normalizedHints.length && !normalizedHints.some((hint) => normalizedRow.includes(hint))) continue;
+    // Match normalized token sequences, not arbitrary substrings. The previous
+    // includes() check treated ride names such as "Rita" as a match inside
+    // unrelated words such as "heritage", which could enqueue hundreds of
+    // irrelevant portal attachments and dominate generation wall-clock time.
+    if (normalizedHints.length && !normalizedHints.some((hint) => containsNormalizedPhrase(normalizedRow, hint))) continue;
     const documentationUrl = new URL(htmlDecode(anchor[1]), listingUrl).toString();
     const receivedDate = cells[1] || null;
     const validDate = cells[2] || null;
@@ -195,6 +199,19 @@ function compactDiscovery(index) {
     byRole: index.byRole,
     searchTerms: index.searchTerms
   };
+}
+
+function containsNormalizedPhrase(text, phrase) {
+  const haystack = String(text || "").split(" ").filter(Boolean);
+  const needle = String(phrase || "").split(" ").filter(Boolean);
+  if (!needle.length || needle.length > haystack.length) return false;
+  outer: for (let index = 0; index <= haystack.length - needle.length; index += 1) {
+    for (let offset = 0; offset < needle.length; offset += 1) {
+      if (haystack[index + offset] !== needle[offset]) continue outer;
+    }
+    return true;
+  }
+  return false;
 }
 
 function normalizeText(value) {
