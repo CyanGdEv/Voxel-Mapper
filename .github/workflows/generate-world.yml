@@ -1,6 +1,12 @@
 name: Generate Voxel Mapper world
 
 on:
+  workflow_call:
+    inputs:
+      bbox:
+        description: "WGS84 bbox: south,west,north,east"
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       bbox:
@@ -41,9 +47,6 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .tpmap-cache
-          # Raw bbox values contain commas, which current GitHub cache key
-          # validation rejects. Internal source/preparation caches are keyed by
-          # request URL/content hash/bbox identity, so a shared valid prefix is safe.
           key: bbox-world-v3-${{ github.run_id }}
           restore-keys: |
             bbox-world-v3-
@@ -94,12 +97,6 @@ jobs:
           compression-level: 6
           retention-days: 7
 
-      # All deterministic shard plans are uploaded in one indexed artifact.
-      # The previous workflow performed up to 20 serial artifact handshakes
-      # after compilation, adding ~18 seconds to the critical path even though
-      # the files were already prepared together. Workers select only their
-      # matrix-indexed JSON after this single upload; no chunk plans are removed
-      # or recomputed.
       - name: Upload all indexed Bedrock shard inputs once
         uses: actions/upload-artifact@v4
         with:
