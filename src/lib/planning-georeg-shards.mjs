@@ -199,7 +199,7 @@ export async function mergePlanningGeoregistrationShards(inputRoot, outDir, opti
     manifest,
     reports,
     report: {
-      schemaVersion: 4,
+      schemaVersion: 3,
       status,
       mode: "parallel-chunked-bundle",
       groupCount: registrations.length || manifest.pageCount,
