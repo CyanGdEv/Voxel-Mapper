@@ -53,21 +53,21 @@ test("catalog extraction fanout defaults to and clamps at 256 shards", () => {
   assert.equal(buildPlanningDocumentCatalog([], { planningExtractionShards: 999 }).extractionShards, 256);
 });
 
-test("catalog excludes low-value decision/supporting PDFs from extraction by default", () => {
+test("catalog extracts every supported acquired planning PDF regardless of priority class", () => {
   const catalog = buildPlanningDocumentCatalog([{
     selectedShard: 4,
     results: [{
       application: { key: "entity:3" },
       documents: [
         { status: "downloaded", contentHash: HASH_A, objectPath: `objects/${HASH_A}.pdf`, contentType: "application/pdf", classification: "decision" },
-        { status: "downloaded", contentHash: HASH_B, objectPath: `objects/${HASH_B}.pdf`, contentType: "application/pdf", classification: "elevation" }
+        { status: "downloaded", contentHash: HASH_B, objectPath: `objects/${HASH_B}.pdf`, contentType: "application/pdf", classification: "supporting" }
       ]
     }]
   }]);
   assert.equal(catalog.uniqueDocuments, 2);
-  assert.equal(catalog.extractionQueueItems, 1);
-  assert.equal(catalog.extractionQueue[0].contentHash, HASH_B);
-  assert.equal(catalog.extractionQueue[0].shard, 4);
+  assert.equal(catalog.extractionQueueItems, 2);
+  assert.deepEqual(new Set(catalog.extractionQueue.map((item) => item.contentHash)), new Set([HASH_A, HASH_B]));
+  assert.ok(catalog.extractionQueue.every((item) => item.shard === 4));
 });
 
 test("extraction shard is stable by content hash when acquisition affinity is unavailable", () => {

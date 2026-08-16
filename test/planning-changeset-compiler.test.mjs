@@ -202,3 +202,28 @@ test("ambiguous same-kind geometry fails closed", () => {
   assert.equal(compiled.candidates.length, 0);
   assert.equal(compiled.changes[0].reason, "ambiguous-existing-feature-match");
 });
+
+
+test("post-decision corroboration target disambiguates otherwise ambiguous current planning geometry", () => {
+  const map = mapWith([
+    feature("osm:a", "building", polygon(0, 0, 10, 10)),
+    feature("osm:b", "building", polygon(0.1, 0.1, 10.1, 10.1))
+  ]);
+  const candidate = current({
+    id: "plan:corroborated",
+    classification: "location_plan",
+    semantic: "site-edge-or-route",
+    localGeometry: polygon(0, 0, 12, 12)
+  });
+  candidate.planningTemporal.implementationCorroboration = { featureId: "osm:a", matchScore: 0.91 };
+  candidate.planningTemporal.reason = "post-decision-current-osm-geometry-corroboration";
+  const evidence = {
+    geometryCandidates: [candidate],
+    materialObservations: []
+  };
+  const compiled = compilePlanningChangeSet(map, evidence);
+  assert.equal(compiled.counts.review, 0);
+  assert.equal(compiled.changes[0].targetFeatureId, "osm:a");
+  assert.equal(compiled.changes[0].semanticReason, "implementation-corroborated-existing-feature-kind");
+  assert.ok(compiled.counts.replace + compiled.counts.retain === 1);
+});

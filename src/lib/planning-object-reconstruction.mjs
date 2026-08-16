@@ -128,7 +128,6 @@ function reconstructTree(candidate, object, schedule) {
   const heightM = finiteInRange(schedule.heightM, 1, 80);
   if (heightM == null) return { accepted: false, reason: "tree-schedule-height-missing-or-invalid" };
   const crownSpreadM = finiteInRange(schedule.crownSpreadM, 0.5, 60);
-  if (crownSpreadM == null) return { accepted: false, reason: "tree-schedule-crown-spread-missing-or-invalid" };
   const diameterMm = finiteInRange(schedule.diameterMm, 10, 5000);
   return {
     accepted: true,
@@ -138,14 +137,19 @@ function reconstructTree(candidate, object, schedule) {
       crownSpreadM,
       trunkDiameterM: diameterMm == null ? null : round(diameterMm / 1000),
       species: schedule.species || null,
-      shapeModel: "measured-envelope-natural-tree-v1",
+      shapeModel: "user-schematic-tall-tree-v1",
       geometryPolicy: {
         deterministic: true,
         measuredHeightHardLimit: true,
-        measuredCrownSpreadHardLimit: true,
-        naturalTrunkBranchRootGeometry: true
+        fixedSchematicFootprint: true,
+        horizontalShapeFromUserSchematic: true,
+        crownSpreadControlsGeometry: false
       },
-      dimensionSources: { height: "current-schedule", crownSpread: "current-schedule", trunkDiameter: diameterMm == null ? null : "current-schedule" }
+      dimensionSources: {
+        height: "current-schedule",
+        crownSpread: crownSpreadM == null ? null : "current-schedule",
+        trunkDiameter: diameterMm == null ? null : "current-schedule"
+      }
     })
   };
 }
