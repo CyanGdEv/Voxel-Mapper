@@ -5,6 +5,14 @@ on:
     branches: [agent/bedrock-terrain-materialization-fix]
     paths:
       - ".github/workflows/branch-full-park-validation.yml"
+      - ".github/workflows/planning-documents.yml"
+      - "scripts/planning-vector-extract.mjs"
+      - "scripts/planning-vector-merge.mjs"
+      - "scripts/planning-georegister.mjs"
+      - "scripts/planning-resolve-revisions.mjs"
+      - "scripts/planning-authority-compat.mjs"
+      - "src/lib/planning-evidence-bundle.mjs"
+      - "src/lib/planning-current-corroboration.mjs"
       - "src/lib/planning-lpa-fallback.mjs"
       - "src/lib/planning-portal-documents.mjs"
       - "src/lib/planning-document-worker.mjs"
