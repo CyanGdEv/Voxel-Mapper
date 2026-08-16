@@ -355,6 +355,23 @@ function dedupeFallback(values) {
   return result.sort((a, b) => (b.priority || 0) - (a.priority || 0) || String(a.contentHash || "").localeCompare(String(b.contentHash || "")) || Number(a.pageNumber || 0) - Number(b.pageNumber || 0));
 }
 
+async function mapLimit(values, limit, mapper) {
+  const items = Array.isArray(values) ? values : [];
+  if (!items.length) return [];
+  const concurrency = clampInt(limit, 1, Math.max(1, items.length));
+  const results = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const index = cursor++;
+      if (index >= items.length) return;
+      results[index] = await mapper(items[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
 function pageSort(a, b) {
   return String(a.contentHash || "").localeCompare(String(b.contentHash || "")) || Number(a.pageNumber || 0) - Number(b.pageNumber || 0);
 }
