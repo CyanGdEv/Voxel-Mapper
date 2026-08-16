@@ -94,86 +94,20 @@ jobs:
           compression-level: 6
           retention-days: 7
 
-      - name: Upload shard input 0
-        if: ${{ hashFiles('world-shard-inputs/shard-0.json') != '' }}
+      # All deterministic shard plans are uploaded in one indexed artifact.
+      # The previous workflow performed up to 20 serial artifact handshakes
+      # after compilation, adding ~18 seconds to the critical path even though
+      # the files were already prepared together. Workers select only their
+      # matrix-indexed JSON after this single upload; no chunk plans are removed
+      # or recomputed.
+      - name: Upload all indexed Bedrock shard inputs once
         uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-0, path: world-shard-inputs/shard-0.json, retention-days: 7 }
-      - name: Upload shard input 1
-        if: ${{ hashFiles('world-shard-inputs/shard-1.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-1, path: world-shard-inputs/shard-1.json, retention-days: 7 }
-      - name: Upload shard input 2
-        if: ${{ hashFiles('world-shard-inputs/shard-2.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-2, path: world-shard-inputs/shard-2.json, retention-days: 7 }
-      - name: Upload shard input 3
-        if: ${{ hashFiles('world-shard-inputs/shard-3.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-3, path: world-shard-inputs/shard-3.json, retention-days: 7 }
-      - name: Upload shard input 4
-        if: ${{ hashFiles('world-shard-inputs/shard-4.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-4, path: world-shard-inputs/shard-4.json, retention-days: 7 }
-      - name: Upload shard input 5
-        if: ${{ hashFiles('world-shard-inputs/shard-5.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-5, path: world-shard-inputs/shard-5.json, retention-days: 7 }
-      - name: Upload shard input 6
-        if: ${{ hashFiles('world-shard-inputs/shard-6.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-6, path: world-shard-inputs/shard-6.json, retention-days: 7 }
-      - name: Upload shard input 7
-        if: ${{ hashFiles('world-shard-inputs/shard-7.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-7, path: world-shard-inputs/shard-7.json, retention-days: 7 }
-      - name: Upload shard input 8
-        if: ${{ hashFiles('world-shard-inputs/shard-8.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-8, path: world-shard-inputs/shard-8.json, retention-days: 7 }
-      - name: Upload shard input 9
-        if: ${{ hashFiles('world-shard-inputs/shard-9.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-9, path: world-shard-inputs/shard-9.json, retention-days: 7 }
-      - name: Upload shard input 10
-        if: ${{ hashFiles('world-shard-inputs/shard-10.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-10, path: world-shard-inputs/shard-10.json, retention-days: 7 }
-      - name: Upload shard input 11
-        if: ${{ hashFiles('world-shard-inputs/shard-11.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-11, path: world-shard-inputs/shard-11.json, retention-days: 7 }
-      - name: Upload shard input 12
-        if: ${{ hashFiles('world-shard-inputs/shard-12.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-12, path: world-shard-inputs/shard-12.json, retention-days: 7 }
-      - name: Upload shard input 13
-        if: ${{ hashFiles('world-shard-inputs/shard-13.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-13, path: world-shard-inputs/shard-13.json, retention-days: 7 }
-      - name: Upload shard input 14
-        if: ${{ hashFiles('world-shard-inputs/shard-14.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-14, path: world-shard-inputs/shard-14.json, retention-days: 7 }
-      - name: Upload shard input 15
-        if: ${{ hashFiles('world-shard-inputs/shard-15.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-15, path: world-shard-inputs/shard-15.json, retention-days: 7 }
-      - name: Upload shard input 16
-        if: ${{ hashFiles('world-shard-inputs/shard-16.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-16, path: world-shard-inputs/shard-16.json, retention-days: 7 }
-      - name: Upload shard input 17
-        if: ${{ hashFiles('world-shard-inputs/shard-17.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-17, path: world-shard-inputs/shard-17.json, retention-days: 7 }
-      - name: Upload shard input 18
-        if: ${{ hashFiles('world-shard-inputs/shard-18.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-18, path: world-shard-inputs/shard-18.json, retention-days: 7 }
-      - name: Upload shard input 19
-        if: ${{ hashFiles('world-shard-inputs/shard-19.json') != '' }}
-        uses: actions/upload-artifact@v4
-        with: { name: voxel-world-shard-input-19, path: world-shard-inputs/shard-19.json, retention-days: 7 }
+        with:
+          name: voxel-world-shard-inputs
+          path: world-shard-inputs/shard-*.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
   build-world-shards:
     needs: prepare-world
@@ -190,11 +124,14 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - name: Download this shard's compiled chunk plan
+      - name: Download indexed compiled chunk plans
         uses: actions/download-artifact@v4
         with:
-          name: voxel-world-shard-input-${{ matrix.shard }}
+          name: voxel-world-shard-inputs
           path: shard-input
+      - name: Require this matrix shard input
+        shell: bash
+        run: test -f "shard-input/shard-${{ matrix.shard }}.json"
       - name: Build deterministic Bedrock chunk shard
         run: >-
           node scripts/build-world-shard.mjs
