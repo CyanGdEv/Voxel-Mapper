@@ -101,6 +101,7 @@ export function extractPlanningMaterialObservations(textItems, pageNumber = 1, c
         confidence: roundConfidence(match.confidence * window.confidenceFactor),
         source: window.itemCount > 1 ? "pdf-text-material-window" : "pdf-text-material-label",
         evidenceItems: window.itemCount,
+        evidenceItemIndices: [...window.itemIndices],
         georegistrationRequired: true
       });
     }
@@ -129,7 +130,9 @@ export function classifyPlanningMaterialText(value) {
     });
   }
 
-  // Specific asphalt/concrete/paving rules suppress their generic fallback.
+  // Specific asphalt/concrete/paving rules suppress their generic fallback in
+  // a single text window. A second pass below also suppresses weaker matches
+  // produced by overlapping PDF text windows.
   const materials = new Set(candidates.map((entry) => entry.material));
   return candidates
     .filter((entry) => !(entry.material === "weathered_asphalt" && entry.confidence <= 0.72 && hasSpecificAsphalt(materials)))
@@ -168,11 +171,13 @@ function materialWindows(items, options) {
         const current = ordered[end];
         if (previous && !withinHorizontalGap(previous, current, maxGapPt)) break;
         raw = raw ? `${raw} ${current.text}` : current.text;
+        const covered = ordered.slice(start, end + 1);
         result.push({
           raw,
           xPt: ordered[start].xPt,
-          yPt: average(ordered.slice(start, end + 1).map((entry) => entry.yPt)),
+          yPt: average(covered.map((entry) => entry.yPt)),
           itemCount: end - start + 1,
+          itemIndices: covered.map((entry) => entry.index),
           confidenceFactor: end === start ? 1 : Math.max(0.88, 1 - 0.035 * (end - start))
         });
         previous = current;
@@ -220,15 +225,51 @@ function normalizeItems(values) {
 }
 
 function dedupeMaterialObservations(values) {
-  const seen = new Set();
+  const ordered = [...values].sort((a, b) =>
+    Number(b.confidence || 0) - Number(a.confidence || 0) ||
+    Number(b.evidenceItems || 0) - Number(a.evidenceItems || 0) ||
+    finiteSort(a.xPt, b.xPt)
+  );
   const result = [];
-  for (const value of values) {
+  const seen = new Set();
+
+  for (const value of ordered) {
     const key = `${value.pageNumber}:${value.material}:${round(value.xPt, 1)}:${round(value.yPt, 1)}:${value.normalizedText}`;
     if (seen.has(key)) continue;
+    if (result.some((accepted) => shadowsObservation(value, accepted))) continue;
     seen.add(key);
     result.push(value);
   }
-  return result;
+
+  return result.sort((a, b) =>
+    Number(a.pageNumber || 0) - Number(b.pageNumber || 0) ||
+    finiteSort(b.yPt, a.yPt) ||
+    finiteSort(a.xPt, b.xPt) ||
+    Number(b.confidence || 0) - Number(a.confidence || 0)
+  );
+}
+
+function shadowsObservation(candidate, accepted) {
+  if (Number(candidate.pageNumber || 0) !== Number(accepted.pageNumber || 0)) return false;
+  if (!overlappingEvidenceItems(candidate, accepted)) return false;
+
+  // Same material from a shorter/weaker window is redundant.
+  if (candidate.material === accepted.material && Number(candidate.confidence || 0) <= Number(accepted.confidence || 0)) return true;
+
+  // A qualified asphalt label must beat a generic trailing `tarmac/asphalt`
+  // token from the same PDF text run.
+  if (candidate.material === "weathered_asphalt" && Number(candidate.confidence || 0) <= 0.72 &&
+      ["red_tarmac", "fresh_black_asphalt", "light_asphalt"].includes(accepted.material)) return true;
+
+  if (candidate.material === "concrete" && accepted.material === "old_concrete") return true;
+  if (candidate.material === "stone" && accepted.material === "paving_stones") return true;
+  if (candidate.material === "sand" && accepted.material === "resin_bound_beige") return true;
+  return false;
+}
+
+function overlappingEvidenceItems(left, right) {
+  const a = new Set(left.evidenceItemIndices || []);
+  return (right.evidenceItemIndices || []).some((index) => a.has(index));
 }
 
 function hasSpecificAsphalt(materials) {
