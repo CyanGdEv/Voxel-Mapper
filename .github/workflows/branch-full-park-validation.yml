@@ -9,6 +9,9 @@ on:
       - "src/lib/planning-portal-documents.mjs"
       - "src/lib/planning-document-worker.mjs"
       - "src/lib/planning-documents.mjs"
+      - "src/lib/planning-extraction-worker.mjs"
+      - "src/lib/planning-georegistration-batch.mjs"
+      - "src/lib/io.mjs"
 
 permissions:
   contents: read
