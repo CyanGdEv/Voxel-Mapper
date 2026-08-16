@@ -1,0 +1,97 @@
+name: PR33 authority replay benchmark
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: pr33-authority-replay
+  cancel-in-progress: true
+
+jobs:
+  authority-replay:
+    if: github.head_ref == 'agent/sub15-generation-critical-path'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download full registered planning evidence from the certified production-bbox benchmark
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-georegistration-evidence
+          path: planning-georegistration-download
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: CyanGdEv/Voxel-Mapper
+          run-id: 31963035125
+      - name: Download matching planning document catalog
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-document-acquisition-catalog
+          path: planning-catalog-download
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: CyanGdEv/Voxel-Mapper
+          run-id: 31963035125
+      - name: Download matching application snapshot
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-document-queue
+          path: planning-queue-download
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: CyanGdEv/Voxel-Mapper
+          run-id: 31963035125
+      - name: Prepare exact authority replay inputs
+        shell: bash
+        run: |
+          cp planning-catalog-download/planning-document-catalog.json planning-document-catalog.json
+          cp planning-queue-download/planning-document-queue.json planning-document-queue.json
+          cp planning-georegistration-download/planning-georeg-reference.json planning-georeg-reference.json
+          cp planning-georegistration-download/planning-georegistration.json planning-georegistration.json
+      - name: Benchmark current-state revision resolution
+        shell: bash
+        run: |
+          start=$(date +%s%3N)
+          node scripts/planning-resolve-revisions.mjs \
+            --registered planning-georegistration-download/planning-registered-evidence \
+            --reference planning-georeg-reference.json \
+            --catalog planning-document-catalog.json \
+            --queue planning-document-queue.json \
+            --out planning-revision-resolution.json \
+            --resolved-out planning-current-state-evidence.json \
+            --authority-out planning-current-authority-pointer.json
+          end=$(date +%s%3N)
+          echo "revision_resolution_ms=$((end-start))" | tee authority-replay-timings.txt
+      - name: Benchmark implemented-scheme authority materialization
+        shell: bash
+        run: |
+          start=$(date +%s%3N)
+          node scripts/planning-authority-compat.mjs \
+            --manifest planning-current-authority-pointer.json \
+            --out planning-current-authority-evidence.json
+          end=$(date +%s%3N)
+          echo "authority_compat_ms=$((end-start))" | tee -a authority-replay-timings.txt
+      - name: Require full non-empty authority equivalence
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const authority = JSON.parse(fs.readFileSync('planning-current-authority-evidence.json', 'utf8'));
+          const counts = authority.counts || {};
+          console.log(JSON.stringify({ counts, worldGeometryAuthority: authority.worldGeometryAuthority, implementedSchemeAuthority: authority.implementedSchemeAuthority }, null, 2));
+          if (authority.worldGeometryAuthority !== true) throw new Error('Replay produced no world geometry authority');
+          if (Number(counts.geometryCandidates || 0) < 100) throw new Error(`Replay authority unexpectedly sparse: ${counts.geometryCandidates || 0}`);
+          NODE
+          cat authority-replay-timings.txt
+      - name: Upload authority replay timings
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr33-authority-replay-timings
+          path: authority-replay-timings.txt
+          retention-days: 7
