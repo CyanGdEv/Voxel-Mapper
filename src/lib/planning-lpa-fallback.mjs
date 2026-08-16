@@ -1,5 +1,9 @@
 import path from "node:path";
 import { cachedJson } from "./io.mjs";
+import {
+  buildOsmPlanningSearchIndex,
+  rankPlanningApplicationsByOsm
+} from "./osm-planning-reconciliation.mjs";
 
 const PORTAL_ADAPTERS = Object.freeze([
   Object.freeze({
@@ -15,15 +19,23 @@ const PORTAL_ADAPTERS = Object.freeze([
 ]);
 
 export async function augmentPlanningFromLocalPortals(options, planning, osmData) {
-  const applications = Array.isArray(planning?.applications) ? [...planning.applications] : [];
   const jurisdictions = Array.isArray(planning?.jurisdictions) ? planning.jurisdictions : [];
-  const hints = extractOsmPlanningHints(osmData);
+  const osmDiscovery = buildOsmPlanningSearchIndex(osmData, options);
+  const hints = osmDiscovery.searchTerms;
+  const applications = rankPlanningApplicationsByOsm(
+    Array.isArray(planning?.applications) ? [...planning.applications] : [],
+    osmDiscovery,
+    options
+  );
   const attempts = [];
 
   if (!jurisdictions.length || !hints.length) {
     return {
       ...planning,
+      applications,
+      applicationCount: applications.length,
       coverageStatus: planning?.coverageStatus || "partial-or-unknown",
+      osmPlanningDiscovery: compactDiscovery(osmDiscovery),
       localPortalFallback: { attempted: false, hints, attempts, addedApplications: 0 }
     };
   }
@@ -59,12 +71,14 @@ export async function augmentPlanningFromLocalPortals(options, planning, osmData
 
   const merged = dedupeApplications(applications);
   const addedApplications = Math.max(0, merged.length - (planning?.applications?.length || 0));
+  const ranked = rankPlanningApplicationsByOsm(merged, osmDiscovery, options);
   return {
     ...planning,
-    applications: merged,
-    applicationCount: merged.length,
+    applications: ranked,
+    applicationCount: ranked.length,
     coverageStatus: attempts.length ? "national-plus-local-portal" : (planning?.coverageStatus || "partial-or-unknown"),
     status: addedApplications > 0 ? "acquired-with-local-portal-fallback" : planning?.status,
+    osmPlanningDiscovery: compactDiscovery(osmDiscovery),
     localPortalFallback: {
       attempted: attempts.length > 0,
       hints,
@@ -74,17 +88,13 @@ export async function augmentPlanningFromLocalPortals(options, planning, osmData
   };
 }
 
-export function extractOsmPlanningHints(osmData) {
-  const result = [];
-  for (const element of osmData?.elements || []) {
-    const tags = element.tags || {};
-    if (tags.tourism !== "theme_park") continue;
-    for (const value of [tags.name, tags["name:en"], tags["addr:postcode"]]) {
-      const text = String(value || "").trim();
-      if (text && !result.includes(text)) result.push(text);
-    }
-  }
-  return result.slice(0, 8);
+/**
+ * Backwards-compatible string view used by local planning-register adapters.
+ * Unlike the old implementation this includes high-signal named rides,
+ * attractions and mapped park areas, not only the theme-park boundary name.
+ */
+export function extractOsmPlanningHints(osmData, options = {}) {
+  return buildOsmPlanningSearchIndex(osmData, options).searchTerms;
 }
 
 export function parsePublicAccessMajorApplications(html, listingUrl, hints = []) {
@@ -175,6 +185,16 @@ function dedupeApplications(applications) {
     result.push(application);
   }
   return result;
+}
+
+function compactDiscovery(index) {
+  return {
+    schemaVersion: index.schemaVersion,
+    anchorCount: index.anchorCount,
+    searchTermCount: index.searchTermCount,
+    byRole: index.byRole,
+    searchTerms: index.searchTerms
+  };
 }
 
 function normalizeText(value) {
