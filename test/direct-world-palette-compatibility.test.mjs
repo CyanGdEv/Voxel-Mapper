@@ -11,15 +11,19 @@ test("direct-world module is valid JavaScript", () => {
   assert.equal(result.status, 0, result.stderr || result.stdout);
 });
 test("appearance palettes are accepted by the direct-world compiler", async () => {
-  const [world, fidelity, aerial, raster] = await Promise.all([
+  const [world, ...emitters] = await Promise.all([
     readFile(new URL("../src/lib/mcworld.mjs", import.meta.url), "utf8"),
     readFile(new URL("../src/lib/fidelity.mjs", import.meta.url), "utf8"),
     readFile(new URL("../src/lib/aerial-appearance.mjs", import.meta.url), "utf8"),
-    readFile(new URL("../src/lib/raster.mjs", import.meta.url), "utf8")
+    readFile(new URL("../src/lib/raster.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/material-palettes.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/planning-object-renderer.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/ride-structure-renderer.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/natural-tree-geometry.mjs", import.meta.url), "utf8")
   ]);
   const section = world.slice(world.indexOf("const BEDROCK_BLOCKS"), world.indexOf("export const WORLD_PALETTES"));
   const allowed = blocks(section);
-  const emitted = new Set([...blocks(fidelity), ...blocks(aerial), ...blocks(raster)]);
+  const emitted = new Set(emitters.flatMap((text) => [...blocks(text)]));
   emitted.delete("minecraft:overworld");
   const unsupported = [...emitted].filter((b) => !allowed.has(b)).sort();
   assert.deepEqual(unsupported, []);

@@ -41,7 +41,12 @@ const BEDROCK_BLOCKS = new Set([
   "minecraft:spruce_log", "minecraft:spruce_planks",
   "minecraft:standing_sign", "minecraft:stone", "minecraft:stone_bricks", "minecraft:tuff", "minecraft:water",
   "minecraft:white_concrete", "minecraft:yellow_concrete",
-  "minecraft:azalea_leaves", "minecraft:birch_leaves", "minecraft:brown_terracotta", "minecraft:calcite", "minecraft:cyan_terracotta", "minecraft:dark_oak_leaves", "minecraft:deepslate", "minecraft:gray_concrete_powder", "minecraft:light_gray_concrete_powder", "minecraft:mud_bricks", "minecraft:oak_planks", "minecraft:orange_terracotta", "minecraft:packed_mud", "minecraft:podzol", "minecraft:polished_andesite", "minecraft:red_terracotta", "minecraft:smooth_sandstone", "minecraft:yellow_terracotta"
+  "minecraft:azalea_leaves", "minecraft:birch_leaves", "minecraft:brown_terracotta", "minecraft:calcite", "minecraft:cyan_terracotta", "minecraft:dark_oak_leaves", "minecraft:deepslate", "minecraft:gray_concrete_powder", "minecraft:light_gray_concrete_powder", "minecraft:mud_bricks", "minecraft:oak_planks", "minecraft:orange_terracotta", "minecraft:packed_mud", "minecraft:podzol", "minecraft:polished_andesite", "minecraft:red_terracotta", "minecraft:smooth_sandstone", "minecraft:yellow_terracotta",
+  "minecraft:gray_wool", "minecraft:black_wool", "minecraft:smooth_basalt", "minecraft:birch_planks",
+  "minecraft:stripped_spruce_wood", "minecraft:deepslate_bricks", "minecraft:polished_deepslate",
+  "minecraft:birch_log", "minecraft:cherry_log", "minecraft:cherry_leaves", "minecraft:acacia_log", "minecraft:acacia_leaves",
+  "minecraft:sea_lantern", "minecraft:polished_blackstone_wall", "minecraft:cobbled_deepslate_wall",
+  "minecraft:brick_wall", "minecraft:stone_brick_wall", "minecraft:stripped_spruce_log", "minecraft:iron_trapdoor"
 ]);
 
 export const WORLD_PALETTES = Object.freeze({
@@ -736,7 +741,14 @@ function resolveMaterial(source, profile, seed, x, y, z) {
 function defaultStates(name) {
   if (name === "minecraft:water") return { liquid_depth: { type: "int", value: 0 } };
   if (name === "minecraft:standing_sign") return { ground_sign_direction: { type: "int", value: 8 } };
-  if (name.endsWith("_log")) return { pillar_axis: { type: "string", value: "y" } };
+  if (name === "minecraft:iron_trapdoor") {
+    return {
+      direction: { type: "int", value: 0 },
+      open_bit: { type: "byte", value: 0 },
+      upside_down_bit: { type: "byte", value: 0 }
+    };
+  }
+  if (name.endsWith("_log") || name.endsWith("_wood")) return { pillar_axis: { type: "string", value: "y" } };
   if (name.endsWith("_leaves")) {
     return {
       persistent_bit: { type: "byte", value: 1 },
