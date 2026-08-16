@@ -21,7 +21,7 @@ export function corroboratePlanningGeometryCandidate(candidate, referenceFeature
   // bounds for every candidate dominated the post-georegistration critical
   // path. The index below caches only deterministic geometry descriptors; the
   // scoring equation, compatibility rules, gates and ambiguity semantics are
-  // byte-for-byte equivalent to the original authority matcher.
+  // equivalent to the canonical authority matcher.
   const match = matchIndexedGeometryCandidate(candidate, referenceFeatures || [], {
     planningAuthorityMinMatchScore: Number(context.minMatchScore ?? DEFAULT_MIN_SCORE),
     planningAuthorityAmbiguityGap: Number(context.ambiguityGap ?? DEFAULT_AMBIGUITY_GAP)
@@ -38,7 +38,7 @@ export function corroboratePlanningGeometryCandidate(candidate, referenceFeature
   }
 
   const score = Number(match.score || 0);
-  const temporalConfidence = clamp(0.82 + Math.max(0, score - DEFAULT_MIN_SCORE) * 0.55);
+  const temporalConfidence = clampTemporal(0.82 + Math.max(0, score - DEFAULT_MIN_SCORE) * 0.55);
   return {
     accepted: true,
     match,
@@ -172,10 +172,10 @@ function geometryMatchScorePrepared(a, b) {
   const distanceScore = Math.max(0, 1 - distance / Math.max(8, diag));
   const overlapWidth = Math.max(0, Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX));
   const overlapHeight = Math.max(0, Math.min(a.maxZ, b.maxZ) - Math.max(a.minZ, b.minZ));
-  const overlap = clamp(overlapWidth * overlapHeight / Math.max(0.01, Math.min(a.area, b.area)));
+  const overlap = clampScore(overlapWidth * overlapHeight / Math.max(0.01, Math.min(a.area, b.area)));
   const scaleScore = Math.min(a.area, b.area) / Math.max(a.area, b.area);
   const typeScore = a.family === b.family ? 1 : 0.55;
-  return clamp(0.43 * overlap + 0.29 * distanceScore + 0.18 * scaleScore + 0.10 * typeScore);
+  return clampScore(0.43 * overlap + 0.29 * distanceScore + 0.18 * scaleScore + 0.10 * typeScore);
 }
 
 function semanticCompatible(semantic, kind) {
@@ -206,5 +206,6 @@ function geometryPoints(geometry) {
   return [];
 }
 function rejected(reason, extra = {}) { return { accepted: false, reason, ...extra }; }
-function clamp(value) { return Math.max(0, Math.min(0.995, Number(value) || 0)); }
+function clampScore(value) { return Math.max(0, Math.min(1, Number(value) || 0)); }
+function clampTemporal(value) { return Math.max(0, Math.min(0.995, Number(value) || 0)); }
 function round(value) { return Math.round(Number(value) * 1000) / 1000; }
