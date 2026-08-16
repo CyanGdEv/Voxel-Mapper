@@ -101,15 +101,14 @@ test("authoritative support with explicit height reconstructs while missing vert
     localGeometry: { type: "Point", coordinates: [10, 2] },
     tags: { "ride_structure:type": "support_column" }
   });
-  const map = { features: [track, support, missing] };
-  const model = reconstructRideStructures3d(map, {});
+  const model = reconstructRideStructures3d({ features: [track, support, missing] }, {});
   assert.equal(model.structures.length, 1);
   assert.equal(model.structures[0].id, "ride-structure:support-1");
   assert.equal(model.structures[0].members[0].to.dyM, 8);
   assert.ok(model.deferred.some((entry) => entry.featureId === "support-2" && entry.reason === "support-vertical-evidence-missing"));
 });
 
-test("same-page multi-path support detail is one design template, not an ambiguity", () => {
+test("same-page multi-path support detail becomes one traced design template", () => {
   const track = rideTrack("ride-1", [[0, 0], [20, 0]]);
   const support = authoritativeFeature({
     id: "support-frame-12",
@@ -140,6 +139,7 @@ test("same-page multi-path support detail is one design template, not an ambigui
   assert.equal(model.deferred.filter((entry) => entry.featureId === support.id).length, 0);
   assert.equal(model.structures.length, 1);
   assert.equal(model.structures[0].templateLink.accepted, true);
+  assert.deepEqual(model.structures[0].templateLink.sourceTemplateIds, ["member-a", "member-b"]);
   assert.ok(model.structures[0].members.length >= 2);
 });
 
@@ -172,16 +172,13 @@ test("same support code on two current detail pages fails closed as ambiguous", 
   assert.ok(model.deferred.some((entry) => entry.reason === "support-template-ambiguous"));
 });
 
-test("sound tunnel reconstructs as a built enclosure with track portals and no terrain excavation", () => {
+test("sound tunnel reconstructs as a built enclosure even when one coarse track segment crosses it", () => {
   const track = rideTrack("ride-1", [[0, 0], [20, 0]], 15);
   const tunnel = authoritativeFeature({
     id: "sound-enclosure-1",
     kind: "structure",
     subtype: "sound_tunnel",
-    localGeometry: {
-      type: "Polygon",
-      coordinates: [[[5, -3], [15, -3], [15, 3], [5, 3], [5, -3]]]
-    },
+    localGeometry: { type: "Polygon", coordinates: [[[5, -3], [15, -3], [15, 3], [5, 3], [5, -3]]] },
     tags: { "ride_structure:type": "sound_tunnel", "ride_structure:sound_tunnel": "yes" },
     vertical: { heightM: 7 }
   });
@@ -193,6 +190,8 @@ test("sound tunnel reconstructs as a built enclosure with track portals and no t
   assert.equal(enclosure.terrainExcavation, false);
   assert.equal(enclosure.terrainGeometryMutable, false);
   assert.equal(enclosure.portals.length, 2);
+  assert.deepEqual(enclosure.portals.map((portal) => Math.round(portal.x)).sort((a, b) => a - b), [5, 15]);
+  assert.ok(enclosure.portals.every((portal) => portal.elevationM === 15));
 });
 
 test("ambiguous nearby ride association fails closed", () => {
@@ -210,7 +209,7 @@ test("ambiguous nearby ride association fails closed", () => {
   assert.equal(result.reason, "ambiguous-ride-association");
 });
 
-test("sound tunnel renderer never clears or overwrites phase-1 terrain", () => {
+test("sound tunnel renderer preserves the complete phase-1 terrain set and never clears at or below terrain", () => {
   const track = rideTrack("ride-1", [[0, 0], [20, 0]], 15);
   const tunnel = authoritativeFeature({
     id: "sound-enclosure-1",
@@ -223,12 +222,12 @@ test("sound tunnel renderer never clears or overwrites phase-1 terrain", () => {
   const map = { features: [track, tunnel] };
   const model = reconstructRideStructures3d(map, {});
   const compilation = terrainCompilation();
-  const phaseOneBefore = JSON.stringify(compilation.chunks[0].o.filter((op) => op[0] === 1));
+  const phaseOneBefore = phaseOneOps(compilation);
   const render = renderRideStructures3d({ compilation, rideStructures: model, map });
   assert.equal(render.terrainGeometryChanged, false);
   assert.equal(render.terrainElevationChanged, false);
-  assert.equal(JSON.stringify(compilation.chunks[0].o.filter((op) => op[0] === 1)), phaseOneBefore);
-  const terrainViolations = compilation.chunks.flatMap((chunk) => chunk.o)
+  assert.deepEqual(phaseOneOps(compilation), phaseOneBefore);
+  const terrainViolations = compilation.chunks.flatMap((chunk) => chunk.o || [])
     .filter((op) => op[0] === 8.3 && op[2] <= 10);
   assert.equal(terrainViolations.length, 0);
   assert.ok(render.enclosureShellVoxels > 0);
@@ -263,6 +262,7 @@ function candidate(id, vectorPathIndex, closed, boundsPt) {
     confidence: 0.75
   };
 }
+
 function authoritativeFeature(value) {
   return {
     ...value,
@@ -271,27 +271,22 @@ function authoritativeFeature(value) {
     source: value.source || { provider: "planning", contentHash: "current-doc", pageNumber: 1 }
   };
 }
+
 function rideTrack(id, coordinates, elevationM = 12) {
   return {
     id,
     kind: "ride_track",
     name: id,
     localGeometry: { type: "LineString", coordinates },
-    rideProfile: {
-      samples: coordinates.map(([x, z]) => ({ x, z, elevationM }))
-    },
+    rideProfile: { samples: coordinates.map(([x, z]) => ({ x, z, elevationM })) },
     authority: { rank: 360, layer: "planning-current-authority", worldGeometryAuthority: true }
   };
 }
+
 function terrainCompilation() {
   return {
     palette: ["minecraft:grass_block"],
-    chunks: [{
-      x: 0,
-      z: 0,
-      // Existing terrain top is exactly y=10 for the complete test footprint.
-      o: [[1, 0, 10, -8, 20, 10, 8, 0]]
-    }],
+    chunks: [{ x: 0, z: 0, o: [[1, 0, 10, -8, 20, 10, 8, 0]] }],
     signs: [],
     stats: {},
     meta: {
@@ -300,4 +295,12 @@ function terrainCompilation() {
       baseY: 0
     }
   };
+}
+
+function phaseOneOps(compilation) {
+  return (compilation.chunks || [])
+    .flatMap((chunk) => chunk.o || [])
+    .filter((op) => op[0] === 1)
+    .map((op) => JSON.stringify(op))
+    .sort();
 }
