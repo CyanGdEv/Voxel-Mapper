@@ -45,7 +45,7 @@ test("CAD-exported joined material words remain recognizable", () => {
   }
 });
 
-test("material evidence spans adjacent PDF text items on one drawing line", () => {
+test("material evidence spans adjacent PDF text items on one drawing line without weaker asphalt duplication", () => {
   const observations = extractPlanningMaterialObservations([
     { text: "Light", xPt: 20, yPt: 100, widthPt: 18, fontSizePt: 9 },
     { text: "grey", xPt: 41, yPt: 100.5, widthPt: 16, fontSizePt: 9 },
@@ -58,6 +58,30 @@ test("material evidence spans adjacent PDF text items on one drawing line", () =
   assert.equal(match.contentHash, "abc");
   assert.equal(match.source, "pdf-text-material-window");
   assert.ok(match.evidenceItems >= 3);
+  assert.ok(!observations.some((entry) => entry.material === "weathered_asphalt"));
+});
+
+test("overlapping windows prune concrete, stone and sand fallbacks behind more specific materials", () => {
+  const oldConcrete = extractPlanningMaterialObservations([
+    { text: "Weathered", xPt: 10, yPt: 50, widthPt: 38, fontSizePt: 9 },
+    { text: "concrete", xPt: 51, yPt: 50, widthPt: 34, fontSizePt: 9 }
+  ]);
+  assert.ok(oldConcrete.some((entry) => entry.material === "old_concrete"));
+  assert.ok(!oldConcrete.some((entry) => entry.material === "concrete"));
+
+  const paving = extractPlanningMaterialObservations([
+    { text: "Stone", xPt: 10, yPt: 40, widthPt: 22, fontSizePt: 9 },
+    { text: "pavers", xPt: 35, yPt: 40, widthPt: 26, fontSizePt: 9 }
+  ]);
+  assert.ok(paving.some((entry) => entry.material === "paving_stones"));
+  assert.ok(!paving.some((entry) => entry.material === "stone"));
+
+  const resin = extractPlanningMaterialObservations([
+    { text: "Sand", xPt: 10, yPt: 30, widthPt: 20, fontSizePt: 9 },
+    { text: "resin-bound", xPt: 33, yPt: 30, widthPt: 44, fontSizePt: 9 }
+  ]);
+  assert.ok(resin.some((entry) => entry.material === "resin_bound_beige"));
+  assert.ok(!resin.some((entry) => entry.material === "sand"));
 });
 
 test("material windows never join text from separate drawing lines", () => {
