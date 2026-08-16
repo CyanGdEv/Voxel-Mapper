@@ -28,6 +28,21 @@ test("appearance palettes are accepted by the direct-world compiler", async () =
   const unsupported = [...emitted].filter((b) => !allowed.has(b)).sort();
   assert.deepEqual(unsupported, []);
 });
+test("planning timber and ride structure identifiers stay Bedrock-compatible", async () => {
+  const [world, materials, rides] = await Promise.all([
+    readFile(new URL("../src/lib/mcworld.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/material-palettes.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/ride-structure-renderer.mjs", import.meta.url), "utf8")
+  ]);
+  const section = world.slice(world.indexOf("const BEDROCK_BLOCKS"), world.indexOf("export const WORLD_PALETTES"));
+  const allowed = blocks(section);
+  assert.equal(materials.includes("minecraft:stripped_spruce_wood"), true);
+  assert.equal(allowed.has("minecraft:stripped_spruce_wood"), true);
+  assert.equal(allowed.has("minecraft:stripped_spruce_log"), true);
+  assert.equal(allowed.has("minecraft:iron_trapdoor"), true);
+  assert.equal(rides.includes("minecraft:bricks"), false);
+  assert.equal(rides.includes("minecraft:brick_block"), true);
+});
 test("Java rooted_dirt alias is not emitted", async () => {
   const text = (await Promise.all([
     readFile(new URL("../src/lib/fidelity.mjs", import.meta.url), "utf8"),
