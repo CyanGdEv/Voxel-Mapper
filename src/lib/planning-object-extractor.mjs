@@ -15,6 +15,10 @@ const COMMON_TREE_SPECIES = [
 ];
 
 const RULES = [
+  // Quantified engineering descriptions are very strong primary-object evidence.
+  // Keep this ahead of relational references such as "... to outfall OF3".
+  rule("drainage", "pipe", /\b(?:dia(?:meter)?\.?\s*)?\d{2,4}\s*mm\s+(?:dia(?:meter)?\.?\s*)?(?:pipe|sewer|drain|culvert)\b|\b(?:pipe|sewer|drain|culvert)\s+(?:dia(?:meter)?\.?\s*)?\d{2,4}\s*mm\b/, 0.995),
+
   rule("accessibility", "accessible_ramp", /\b(?:accessible|disabled|dda|wheelchair)\s+(?:access\s+)?ramp\b|\bramp\s+(?:to\s+)?(?:accessible|disabled)\b/, 0.99),
   rule("accessibility", "accessible_parking", /\b(?:accessible|disabled|blue\s+badge)\s+(?:parking\s+)?(?:bay|space)\b/, 0.99),
   rule("accessibility", "tactile_paving", /\b(?:tactile|blister|corduroy)\s+(?:paving|surface)\b/, 0.98),
@@ -130,17 +134,10 @@ export function enrichPlanningObjectEvidence(extraction, options = {}) {
       ? ridePlanningObject(candidate.rideStructureEvidence)
       : classifyPlanningObjectText(joined, { classification: candidate.classification, closed: candidate.closed });
     if (!classification) continue;
-
     const center = boundsCenter(candidate.boundsPt);
     const attributes = extractPlanningObjectAttributes(joined, classification);
-    const materialCandidates = nearbyEvidence(
-      extraction.normalizedEvidence.materialObservations || [], candidate, center,
-      Number(options.planningObjectObservationRadiusPt ?? DEFAULT_OBSERVATION_RADIUS_PT)
-    ).map(compactMaterialObservation);
-    const levelCandidates = nearbyEvidence(
-      extraction.normalizedEvidence.verticalObservations || [], candidate, center,
-      Number(options.planningObjectObservationRadiusPt ?? DEFAULT_OBSERVATION_RADIUS_PT)
-    ).map(compactVerticalObservation);
+    const materialCandidates = nearbyEvidence(extraction.normalizedEvidence.materialObservations || [], candidate, center, Number(options.planningObjectObservationRadiusPt ?? DEFAULT_OBSERVATION_RADIUS_PT)).map(compactMaterialObservation);
+    const levelCandidates = nearbyEvidence(extraction.normalizedEvidence.verticalObservations || [], candidate, center, Number(options.planningObjectObservationRadiusPt ?? DEFAULT_OBSERVATION_RADIUS_PT)).map(compactVerticalObservation);
     if (materialCandidates.length) attributes.materialCandidates = materialCandidates;
     if (levelCandidates.length) attributes.levelCandidates = levelCandidates;
 
@@ -192,23 +189,11 @@ export function enrichPlanningObjectEvidence(extraction, options = {}) {
       pageNumber: Number(template.pageNumber || 1),
       classification: normalizeClass(template.classification),
       objectCode: template.supportCode || null,
-      attributes: {
-        objectCode: template.supportCode || null,
-        explicitHeightM: finiteOrNull(template.explicitHeightM),
-        scaleDenominator: finiteOrNull(template.scaleDenominator)
-      },
+      attributes: { objectCode: template.supportCode || null, explicitHeightM: finiteOrNull(template.explicitHeightM), scaleDenominator: finiteOrNull(template.scaleDenominator) },
       coordinateSpace: "pdf-template-space",
       anchorPt: null,
       source: "planning-pdf-ride-object-template",
-      authority: {
-        georegistrationRequired: false,
-        temporalResolutionRequired: true,
-        spatialAuthorityEligible: false,
-        worldGeometryAuthority: false,
-        terrainGeometryAuthority: false,
-        terrainElevationAuthority: false,
-        linkageRequired: true
-      }
+      authority: { georegistrationRequired: false, temporalResolutionRequired: true, spatialAuthorityEligible: false, worldGeometryAuthority: false, terrainGeometryAuthority: false, terrainElevationAuthority: false, linkageRequired: true }
     };
     template.planningObject = object;
     objects.push(object);
@@ -224,15 +209,7 @@ export function enrichPlanningObjectEvidence(extraction, options = {}) {
     objectCount: objects.length,
     textOnlyObservationCount: textOnly.length,
     byType: counts,
-    policy: {
-      evidenceOnly: true,
-      mutatesCandidateKind: false,
-      georegistrationStillRequired: true,
-      temporalCurrentStateStillRequired: true,
-      textOnlyRowsRequireExactLinkage: true,
-      terrainGeometryMutable: false,
-      terrainElevationMutable: false
-    }
+    policy: { evidenceOnly: true, mutatesCandidateKind: false, georegistrationStillRequired: true, temporalCurrentStateStillRequired: true, textOnlyRowsRequireExactLinkage: true, terrainGeometryMutable: false, terrainElevationMutable: false }
   };
   return extraction.planningObjectExtraction;
 }
@@ -240,12 +217,6 @@ export function enrichPlanningObjectEvidence(extraction, options = {}) {
 export function classifyPlanningObjectText(value, context = {}) {
   const text = normalizeText(value);
   if (!text) return null;
-
-  // A drawing label can legitimately contain both a generic structural word
-  // and a more specific domain phrase: e.g. "lighting column", "accessible
-  // ramp" or "acoustic wall". First-match ordering made those brittle. Rank
-  // every matching rule by evidence confidence, then by matched phrase length;
-  // only use declaration order as the final deterministic tie-break.
   const matches = [];
   for (let index = 0; index < RULES.length; index += 1) {
     const entry = RULES[index];
@@ -254,20 +225,9 @@ export function classifyPlanningObjectText(value, context = {}) {
     matches.push({ entry, index, matchLength: String(match[0] || "").trim().length });
   }
   if (!matches.length) return null;
-  matches.sort((a, b) =>
-    Number(b.entry.confidence || 0) - Number(a.entry.confidence || 0) ||
-    b.matchLength - a.matchLength ||
-    a.index - b.index
-  );
+  matches.sort((a, b) => Number(b.entry.confidence || 0) - Number(a.entry.confidence || 0) || b.matchLength - a.matchLength || a.index - b.index);
   const winner = matches[0].entry;
-  return {
-    objectType: winner.objectType,
-    subtype: winner.subtype,
-    semantic: `${winner.objectType}-${winner.subtype}`,
-    confidence: winner.confidence,
-    classification: normalizeClass(context.classification),
-    closed: Boolean(context.closed)
-  };
+  return { objectType: winner.objectType, subtype: winner.subtype, semantic: `${winner.objectType}-${winner.subtype}`, confidence: winner.confidence, classification: normalizeClass(context.classification), closed: Boolean(context.closed) };
 }
 
 export function extractPlanningObjectAttributes(value, classification = null) {
@@ -276,7 +236,6 @@ export function extractPlanningObjectAttributes(value, classification = null) {
   const attributes = {};
   const objectCode = extractObjectCode(raw, classification);
   if (objectCode) attributes.objectCode = objectCode;
-
   const height = firstNumber(text, /\b(?:overall\s+height|column\s+height|height|ht)\s*[:=]?\s*([0-9]{1,3}(?:\.[0-9]{1,3})?)\s*m\b/);
   if (validRange(height, 0.05, 250)) attributes.heightM = height;
   const width = firstNumber(text, /\b(?:overall\s+width|width|wd)\s*[:=]?\s*([0-9]{1,3}(?:\.[0-9]{1,3})?)\s*m\b/);
@@ -285,26 +244,22 @@ export function extractPlanningObjectAttributes(value, classification = null) {
   if (validRange(length, 0.05, 2000)) attributes.lengthM = length;
   const spacing = firstNumber(text, /\b(?:spacing|centres|centers|c\/c)\s*[:=]?\s*([0-9]{1,3}(?:\.[0-9]{1,3})?)\s*m\b/);
   if (validRange(spacing, 0.05, 100)) attributes.spacingM = spacing;
-
   const pipeMm = firstNumber(text, /\b(?:dia(?:meter)?\.?\s*)?([0-9]{2,4})\s*mm\s+(?:dia(?:meter)?\.?\s*)?(?:pipe|sewer|drain|culvert)\b|\b(?:pipe|sewer|drain|culvert)\s+(?:dia(?:meter)?\.?\s*)?([0-9]{2,4})\s*mm\b/, true);
   if (validRange(pipeMm, 20, 5000)) attributes.pipeDiameterMm = pipeMm;
   const diameterMm = firstNumber(text, /\b(?:stem|trunk|post|column)?\s*(?:diameter|dia\.?|Ø)\s*[:=]?\s*([0-9]{2,4})\s*mm\b/);
   if (validRange(diameterMm, 10, 5000)) attributes.diameterMm = diameterMm;
   const crown = firstNumber(text, /\b(?:crown\s+spread|canopy\s+spread|spread)\s*[:=]?\s*([0-9]{1,3}(?:\.[0-9]{1,2})?)\s*m\b/);
   if (validRange(crown, 0.1, 100)) attributes.crownSpreadM = crown;
-
   const pitch = firstNumber(text, /\b(?:roof\s+)?pitch\s*[:=]?\s*([0-9]{1,2}(?:\.[0-9])?)\s*(?:deg|degree|degrees|°)\b/);
   if (validRange(pitch, 0, 89.9)) attributes.pitchDeg = pitch;
   const ratio = text.match(/\b(?:gradient|fall|slope|ramp)?\s*[:=]?\s*1\s*[:/]\s*([0-9]{1,4}(?:\.[0-9]+)?)\b/);
   if (ratio && Number(ratio[1]) > 0) attributes.gradientRatio = `1:${Number(ratio[1])}`;
   const percent = firstNumber(text, /\b(?:gradient|fall|slope)\s*[:=]?\s*([0-9]{1,2}(?:\.[0-9]+)?)\s*%\b/);
   if (validRange(percent, 0, 100)) attributes.gradientPercent = percent;
-
   const dimensions = raw.match(/\b([0-9]{2,5}(?:\.[0-9]+)?)\s*[x×]\s*([0-9]{2,5}(?:\.[0-9]+)?)\s*mm\b/i);
   if (dimensions) attributes.sizeMm = [Number(dimensions[1]), Number(dimensions[2])];
   const ral = raw.match(/\bRAL\s*[-:]?\s*([0-9]{4})\b/i);
   if (ral) attributes.ral = `RAL ${ral[1]}`;
-
   const status = detectObjectStatus(text);
   if (status) attributes.status = status;
   if (classification?.objectType === "tree") {
@@ -367,10 +322,7 @@ function preserveTextOnlyInDrawingMetadata(extraction, observations) {
   const metadata = [...(extraction.normalizedEvidence.drawingMetadata || [])];
   for (const [pageNumber, values] of byPage) {
     let target = metadata.find((entry) => Number(entry.pageNumber || 1) === pageNumber && (!entry.contentHash || entry.contentHash === extraction.contentHash));
-    if (!target) {
-      target = { contentHash: extraction.contentHash || null, pageNumber, scaleDenominator: null, drawingNumber: null, revision: null, status: null, issueDate: null, source: "pdf-object-schedule-metadata" };
-      metadata.push(target);
-    }
+    if (!target) { target = { contentHash: extraction.contentHash || null, pageNumber, scaleDenominator: null, drawingNumber: null, revision: null, status: null, issueDate: null, source: "pdf-object-schedule-metadata" }; metadata.push(target); }
     target.planningObjectTextObservations = values;
   }
   extraction.normalizedEvidence.drawingMetadata = metadata;
@@ -386,7 +338,6 @@ function ridePlanningObject(evidence) {
   const subtype = evidence?.subtype || "ride_component";
   return { objectType: "ride_component", subtype, semantic: `ride-component-${subtype}`, confidence: Number(evidence?.confidence ?? 0.96) };
 }
-
 function nearbyTextForCandidate(candidate, items, options) {
   const bounds = candidate.boundsPt;
   if (!bounds) return [];
@@ -406,7 +357,6 @@ function nearbyTextForCandidate(candidate, items, options) {
   ranked.sort((a, b) => a.edgeDistance - b.edgeDistance || a.centerDistance - b.centerDistance || String(a.text || "").localeCompare(String(b.text || "")));
   return ranked.slice(0, max);
 }
-
 function nearbyEvidence(values, candidate, center, radius) {
   if (!center) return [];
   return (values || []).filter((entry) => {
@@ -416,7 +366,6 @@ function nearbyEvidence(values, candidate, center, radius) {
     return Number.isFinite(x) && Number.isFinite(y) && Math.hypot(x - center[0], y - center[1]) <= radius;
   }).sort((a, b) => distanceToCenter(a, center) - distanceToCenter(b, center) || Number(b.confidence || 0) - Number(a.confidence || 0)).slice(0, 6);
 }
-
 function logicalTextLines(items, tolerancePt) {
   const values = (items || []).filter((item) => String(item?.text || "").trim()).map((item, index) => ({ ...item, index }));
   values.sort((a, b) => Number(b.yPt || 0) - Number(a.yPt || 0) || Number(a.xPt || 0) - Number(b.xPt || 0));
@@ -435,14 +384,7 @@ function logicalTextLines(items, tolerancePt) {
 
 function extractObjectCode(raw, classification) {
   const text = String(raw || "").toUpperCase();
-  const prefixes = classification?.objectType === "tree" ? ["T", "TREE"]
-    : classification?.objectType === "lighting" ? ["L", "LC", "LP"]
-    : classification?.objectType === "drainage" ? ["MH", "SW", "FW", "G", "OF"]
-    : classification?.objectType === "signage" ? ["S", "SGN"]
-    : classification?.objectType === "barrier" ? ["F", "FN", "G", "GT", "B"]
-    : classification?.objectType === "street_furniture" ? ["B", "BN", "BIN", "P"]
-    : classification?.objectType === "utility" ? ["U", "P", "PL", "TX"]
-    : [];
+  const prefixes = codePrefixes(classification);
   for (const prefix of prefixes) {
     const match = text.match(new RegExp(`\\b${escapeRegex(prefix)}\\s*[-:#]?\\s*(\\d{1,4}[A-Z]?)\\b`));
     if (match) return `${prefix}-${match[1]}`;
@@ -450,14 +392,28 @@ function extractObjectCode(raw, classification) {
   const labelled = text.match(/\b(?:TYPE|REF|REFERENCE|ID|NO)\s*[-:#]?\s*([A-Z]{1,5}\s*[-]?\s*\d{1,4}[A-Z]?)\b/);
   return labelled ? labelled[1].replace(/\s+/g, "-").replace(/--+/g, "-") : null;
 }
-
+function codePrefixes(classification) {
+  if (classification?.objectType === "tree") return ["T", "TREE"];
+  if (classification?.objectType === "lighting") return ["L", "LC", "LP"];
+  if (classification?.objectType === "drainage") {
+    if (classification.subtype === "manhole") return ["MH"];
+    if (classification.subtype === "outfall") return ["OF"];
+    if (classification.subtype === "gully") return ["G"];
+    if (["pipe", "drain"].includes(classification.subtype)) return ["SW", "FW", "P"];
+    return ["SW", "FW", "MH", "G", "OF"];
+  }
+  if (classification?.objectType === "signage") return ["S", "SGN"];
+  if (classification?.objectType === "barrier") return classification.subtype === "gate" ? ["GT", "G"] : ["F", "FN", "B"];
+  if (classification?.objectType === "street_furniture") return ["B", "BN", "BIN", "P"];
+  if (classification?.objectType === "utility") return ["U", "P", "PL", "TX"];
+  return [];
+}
 function extractTreeSpecies(raw) {
   const labelled = String(raw || "").match(/\bspecies\s*[:=-]?\s*([A-Za-z][A-Za-z -]{2,50}?)(?=\s+(?:height|ht|stem|trunk|crown|spread|retained|removed|proposed|existing|new|\d+(?:\.\d+)?\s*m)\b|[,;]|$)/i);
   if (labelled) return labelled[1].trim().replace(/\s+/g, " ");
   const lower = normalizeText(raw);
   return COMMON_TREE_SPECIES.find((species) => new RegExp(`\\b${escapeRegex(species)}\\b`).test(lower)) || null;
 }
-
 function detectObjectStatus(text) {
   if (/\b(?:to\s+be\s+removed|remove|removed|fell|felled|demolish|demolished)\b/.test(text)) return "removed";
   if (/\b(?:retained|retain|existing\s+to\s+remain)\b/.test(text)) return "retained";
@@ -465,13 +421,8 @@ function detectObjectStatus(text) {
   if (/\bexisting\b/.test(text)) return "existing";
   return null;
 }
-
-function compactMaterialObservation(entry) {
-  return { material: entry.material || null, raw: entry.raw || null, confidence: round(Number(entry.confidence ?? 0.7)), source: entry.source || null, xPt: finiteOrNull(entry.xPt), yPt: finiteOrNull(entry.yPt) };
-}
-function compactVerticalObservation(entry) {
-  return { label: entry.label || null, valueM: finiteOrNull(entry.valueM), datum: entry.datum || null, confidence: round(Number(entry.confidence ?? 0.7)), source: entry.source || null, xPt: finiteOrNull(entry.xPt), yPt: finiteOrNull(entry.yPt) };
-}
+function compactMaterialObservation(entry) { return { material: entry.material || null, raw: entry.raw || null, confidence: round(Number(entry.confidence ?? 0.7)), source: entry.source || null, xPt: finiteOrNull(entry.xPt), yPt: finiteOrNull(entry.yPt) }; }
+function compactVerticalObservation(entry) { return { label: entry.label || null, valueM: finiteOrNull(entry.valueM), datum: entry.datum || null, confidence: round(Number(entry.confidence ?? 0.7)), source: entry.source || null, xPt: finiteOrNull(entry.xPt), yPt: finiteOrNull(entry.yPt) }; }
 function dedupeTextObservations(values) {
   const map = new Map();
   for (const value of values || []) {
