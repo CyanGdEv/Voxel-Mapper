@@ -12,6 +12,7 @@ import {
 } from "./planning-documents.mjs";
 import { extractPortalPlanningDocumentLinks } from "./planning-portal-documents.mjs";
 import { fetchViaPublicDns } from "./public-dns-http.mjs";
+import { fetchArchivedPublicUrl, originalUrlFromWaybackReplay } from "./public-web-archive.mjs";
 
 const DEFAULT_CONCURRENCY = 6;
 const DEFAULT_MAX_DOCUMENT_MB = 120;
@@ -19,7 +20,7 @@ const DEFAULT_MAX_DISCOVERY_HTML_MB = 8;
 const DEFAULT_CACHE_MAX_AGE_HOURS = 168;
 const DEFAULT_DISCOVERY_CACHE_MAX_AGE_HOURS = 24;
 const DEFAULT_MAX_DISCOVERED_LINKS_PER_APPLICATION = 120;
-const DISCOVERY_PARSER_VERSION = 2;
+const DISCOVERY_PARSER_VERSION = 3;
 
 export async function processPlanningDocumentShard(queue, options = {}) {
   const selected = options.shardIndex == null ? queue : selectPlanningDocumentShard(queue, Number(options.shardIndex));
@@ -127,31 +128,43 @@ export async function discoverPlanningPage(item, options = {}) {
     return { ...(await readJson(cacheFile)), cacheHit: true };
   }
 
-  const response = await fetchResponse(item.url, {
+  const fetched = await fetchResponse(item.url, {
     headers: {
       "User-Agent": options.userAgent || "VoxelMapper/0.12",
       Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"
     }
   }, options);
+  const { response, retrieval } = fetched;
   const contentType = String(response.headers?.get?.("content-type") || "").toLowerCase();
   const contentLength = Number(response.headers?.get?.("content-length") || 0);
   const maxBytes = Number(options.maxDiscoveryHtmlMb ?? DEFAULT_MAX_DISCOVERY_HTML_MB) * 1024 * 1024;
   if (contentLength && contentLength > maxBytes) throw new Error(`Planning application page exceeds ${options.maxDiscoveryHtmlMb ?? DEFAULT_MAX_DISCOVERY_HTML_MB} MiB`);
   const html = await response.text();
   if (Buffer.byteLength(html) > maxBytes) throw new Error(`Planning application page exceeds ${options.maxDiscoveryHtmlMb ?? DEFAULT_MAX_DISCOVERY_HTML_MB} MiB`);
-  const finalUrl = response.url || item.url;
+
+  // Archive replay is a transport source, not the authority URL. Parse raw
+  // archived HTML against the captured first-party URL so relative document
+  // links remain council URLs and downstream authority provenance is unchanged.
+  const finalUrl = retrieval.mode === "web-archive"
+    ? (retrieval.capturedOriginalUrl || item.url)
+    : (response.url || item.url);
   const links = mergeDiscoveredLinks(
-    extractDocumentLinks(html, finalUrl),
-    extractPortalPlanningDocumentLinks(html, finalUrl).map((link) => ({
+    restoreArchivedOriginalLinks(extractDocumentLinks(html, finalUrl), retrieval),
+    restoreArchivedOriginalLinks(extractPortalPlanningDocumentLinks(html, finalUrl).map((link) => ({
       ...link,
       classification: classifyPlanningDocument(link.label || "", link.url),
       direct: true
-    }))
+    })), retrieval)
   );
   const result = {
     parserVersion: DISCOVERY_PARSER_VERSION,
     url: item.url,
     finalUrl,
+    retrievalMode: retrieval.mode,
+    retrievalUrl: retrieval.replayUrl || response.url || finalUrl,
+    archiveCaptureAt: retrieval.captureAt || null,
+    archiveCaptureTimestamp: retrieval.captureTimestamp || null,
+    archiveDigest: retrieval.digest || null,
     contentType,
     fetchedAt: new Date().toISOString(),
     htmlHash: sha256(html),
@@ -181,12 +194,13 @@ export async function downloadImmutablePlanningDocument(item, url, label, option
     if (previousObject && await exists(previousObject)) return { ...previous, status: "cached", cacheHit: true };
   }
 
-  const response = await fetchResponse(url, {
+  const fetched = await fetchResponse(url, {
     headers: {
       "User-Agent": options.userAgent || "VoxelMapper/0.12",
       Accept: "application/pdf,image/*,application/octet-stream,*/*;q=0.5"
     }
   }, options);
+  const { response, retrieval } = fetched;
   const contentType = String(response.headers?.get?.("content-type") || "application/octet-stream").split(";")[0].trim().toLowerCase();
   const contentLength = Number(response.headers?.get?.("content-length") || 0);
   const maxBytes = Number(options.maxPlanningDocumentMb ?? DEFAULT_MAX_DOCUMENT_MB) * 1024 * 1024;
@@ -195,7 +209,11 @@ export async function downloadImmutablePlanningDocument(item, url, label, option
   if (bytes.length > maxBytes) throw new Error(`Planning document exceeds ${options.maxPlanningDocumentMb ?? DEFAULT_MAX_DOCUMENT_MB} MiB: ${url}`);
   if (!bytes.length) throw new Error(`Planning document is empty: ${url}`);
 
-  const finalUrl = response.url || url;
+  // For archived content the first-party URL remains canonical. The replay URL
+  // is recorded separately and never enters geometry classification/authority.
+  const finalUrl = retrieval.mode === "web-archive"
+    ? (retrieval.capturedOriginalUrl || url)
+    : (response.url || url);
   const contentHash = sha256(bytes);
   const extension = extensionForDocument(finalUrl, contentType);
   const objectFilename = `${contentHash}${extension}`;
@@ -213,6 +231,11 @@ export async function downloadImmutablePlanningDocument(item, url, label, option
     sourceItemId: item.id,
     url,
     finalUrl,
+    retrievalMode: retrieval.mode,
+    retrievalUrl: retrieval.replayUrl || response.url || finalUrl,
+    archiveCaptureAt: retrieval.captureAt || null,
+    archiveCaptureTimestamp: retrieval.captureTimestamp || null,
+    archiveDigest: retrieval.digest || null,
     label: label || null,
     filename: dispositionName || path.basename(new URL(finalUrl).pathname) || null,
     classification,
@@ -284,7 +307,18 @@ async function fetchResponse(url, init, options) {
         error.retryable = isRetryableHttpStatus(status);
         throw error;
       }
-      return response;
+      return {
+        response,
+        retrieval: {
+          mode: "live",
+          originalUrl: url,
+          capturedOriginalUrl: null,
+          replayUrl: null,
+          captureAt: null,
+          captureTimestamp: null,
+          digest: null
+        }
+      };
     } catch (error) {
       lastError = error;
       const retryable = error?.retryable !== false;
@@ -292,6 +326,27 @@ async function fetchResponse(url, init, options) {
       await new Promise((resolve) => setTimeout(resolve, 500 * (2 ** attempt)));
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  const archiveEnabled = options.disableWebArchiveFallback !== true && (
+    implementation === globalThis.fetch || typeof options.webArchiveFetchImpl === "function"
+  );
+  if (archiveEnabled) {
+    try {
+      return await fetchArchivedPublicUrl(url, init, {
+        fetchImpl: options.webArchiveFetchImpl || globalThis.fetch,
+        timeoutMs: options.webArchiveTimeoutMs ?? Math.min(timeoutMs, 30_000),
+        captureLimit: options.webArchiveCaptureLimit ?? 5,
+        userAgent: options.userAgent || "VoxelMapper/0.12",
+        disablePublicDnsFallback: options.disablePublicDnsFallback
+      });
+    } catch (archiveError) {
+      const combined = new Error(
+        `${lastError?.message || "Live planning fetch failed"}; web-archive fallback failed: ${archiveError?.message || archiveError}`
+      );
+      combined.cause = archiveError;
+      throw combined;
     }
   }
   throw lastError;
@@ -332,6 +387,14 @@ async function isFreshCache(filename, maxAgeHours) {
   if (!Number.isFinite(maxAgeHours) || maxAgeHours <= 0) return false;
   const details = await stat(filename);
   return Date.now() - details.mtimeMs <= maxAgeHours * 60 * 60 * 1000;
+}
+
+function restoreArchivedOriginalLinks(entries, retrieval) {
+  if (retrieval?.mode !== "web-archive") return entries;
+  return entries.map((entry) => {
+    const original = originalUrlFromWaybackReplay(entry?.url);
+    return original ? { ...entry, url: original } : entry;
+  });
 }
 
 function mergeDiscoveredLinks(...groups) {
