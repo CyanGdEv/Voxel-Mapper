@@ -33,6 +33,11 @@ const BUILTIN = Object.freeze({
     ["minecraft:smooth_stone", 0.40], ["minecraft:stone", 0.25],
     ["minecraft:andesite", 0.20], ["minecraft:light_gray_concrete", 0.15]
   ]),
+  paving_stones: palette("paving_stones", "Paving stones", "mixed", [
+    ["minecraft:stone_bricks", 0.40], ["minecraft:polished_andesite", 0.25],
+    ["minecraft:light_gray_concrete", 0.15], ["minecraft:smooth_stone", 0.10],
+    ["minecraft:andesite", 0.10]
+  ]),
   brick: palette("brick", "Brick", "running_bond", [
     ["minecraft:brick_block", 0.70], ["minecraft:red_terracotta", 0.20],
     ["minecraft:brown_terracotta", 0.10]
@@ -48,6 +53,10 @@ const BUILTIN = Object.freeze({
   gravel: palette("gravel", "Gravel", "speckled", [
     ["minecraft:gravel", 0.55], ["minecraft:andesite", 0.20],
     ["minecraft:gray_concrete_powder", 0.15], ["minecraft:tuff", 0.10]
+  ]),
+  sand: palette("sand", "Sand", "organic", [
+    ["minecraft:sand", 0.70], ["minecraft:smooth_sandstone", 0.15],
+    ["minecraft:sandstone", 0.15]
   ]),
   slate_roof: palette("slate_roof", "Slate roof", "mixed", [
     ["minecraft:deepslate_tiles", 0.55], ["minecraft:deepslate_bricks", 0.25],
@@ -72,24 +81,36 @@ const BUILTIN = Object.freeze({
   ])
 });
 
+const SURFACE_BUILTINS = new Set([
+  "weathered_asphalt", "fresh_black_asphalt", "light_asphalt", "red_tarmac",
+  "resin_bound_beige", "resin_bound_grey", "concrete", "old_concrete",
+  "paving_stones", "brick", "stone", "timber", "gravel", "sand", "grass", "earth"
+]);
+
 const ALIASES = Object.freeze({
   asphalt: "weathered_asphalt", tarmac: "weathered_asphalt", bitmac: "weathered_asphalt",
+  "weathered asphalt": "weathered_asphalt", "weathered tarmac": "weathered_asphalt",
   "black asphalt": "fresh_black_asphalt", "fresh asphalt": "fresh_black_asphalt",
+  "fresh black asphalt": "fresh_black_asphalt", "new tarmac": "fresh_black_asphalt",
+  "light asphalt": "light_asphalt", "light tarmac": "light_asphalt", "light grey asphalt": "light_asphalt", "light gray asphalt": "light_asphalt",
   "red asphalt": "red_tarmac", "red tarmac": "red_tarmac",
   "resin bound beige": "resin_bound_beige", "resin-bound beige": "resin_bound_beige",
   "resin bound grey": "resin_bound_grey", "resin-bound grey": "resin_bound_grey",
-  cement: "concrete", concrete: "concrete", "old concrete": "old_concrete",
+  cement: "concrete", concrete: "concrete", "old concrete": "old_concrete", "weathered concrete": "old_concrete",
+  paving: "paving_stones", "paving stones": "paving_stones", "paving slabs": "paving_stones",
+  "block paving": "paving_stones", pavers: "paving_stones", flagstone: "paving_stones", flagstones: "paving_stones",
   brick: "brick", brickwork: "brick", masonry: "stone", stone: "stone",
-  timber: "timber", wood: "timber", wooden: "timber", gravel: "gravel",
+  timber: "timber", wood: "timber", wooden: "timber", gravel: "gravel", sand: "sand",
   slate: "slate_roof", "slate tile": "slate_roof", "slate tiles": "slate_roof",
   "clay tile": "clay_tile_roof", "clay tiles": "clay_tile_roof", tile: "clay_tile_roof",
   "metal roof": "metal_roof", metal: "metal_roof", steel: "metal_roof",
   glass: "glass", glazing: "glass", grass: "grass", earth: "earth", soil: "earth"
 });
+const ALIAS_LOOKUP = new Map(Object.entries(ALIASES).map(([key, value]) => [clean(key), value]));
 
 export function createMaterialRegistry(records = []) {
   const palettes = new Map(Object.entries(BUILTIN).map(([key, value]) => [key, structuredClone(value)]));
-  const aliases = new Map(Object.entries(ALIASES));
+  const aliases = new Map(ALIAS_LOOKUP);
   const custom = [];
   for (const record of records || []) {
     if (!record || typeof record !== "object") continue;
@@ -130,6 +151,19 @@ export function resolveFeatureMaterialPalettes(feature, registry) {
     if (found) roles[role] = { ...structuredClone(found), role };
   }
   return Object.keys(roles).length ? roles : null;
+}
+
+/**
+ * Resolves only materials that are safe to apply as a top-surface palette.
+ * Roof/cladding/glazing palettes intentionally fail closed here even if their
+ * names are otherwise valid planning materials.
+ */
+export function surfaceMaterialPalette(value) {
+  const key = clean(value);
+  if (!key) return null;
+  const directKey = BUILTIN[key] ? key : ALIAS_LOOKUP.get(key);
+  if (!directKey || !SURFACE_BUILTINS.has(directKey)) return null;
+  return { ...structuredClone(BUILTIN[directKey]), role: "surface" };
 }
 
 export function primaryMaterialBlock(feature, role, fallback) {

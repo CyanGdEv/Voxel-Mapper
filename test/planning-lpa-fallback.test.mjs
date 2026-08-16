@@ -44,12 +44,16 @@ test("local planning register parser uses a generic OSM park hint instead of har
   assert.equal(applications[0]["decision-date"], "31/08/2026");
 });
 
-test("OSM planning hints are restricted to theme-park identity and postcode", () => {
+test("OSM planning hints include park identity, named rides and named park areas", () => {
   const hints = extractOsmPlanningHints({
-    elements: [{ type: "way", tags: { tourism: "theme_park", name: "Fixture Park", "addr:postcode": "ST10 1AA" } },
-      { type: "way", tags: { tourism: "attraction", name: "Do not use this ride as a park hint" } }]
+    elements: [
+      { type: "way", id: 1, tags: { tourism: "theme_park", name: "Fixture Park", "addr:postcode": "ST10 1AA" } },
+      { type: "way", id: 2, tags: { roller_coaster: "track", name: "Fixture Fury" } },
+      { type: "relation", id: 3, tags: { leisure: "park", name: "Adventure Valley", type: "multipolygon" } },
+      { type: "node", id: 4, tags: { tourism: "attraction", name: "Do not use unrelated point attraction" } }
+    ]
   });
-  assert.deepEqual(hints, ["Fixture Park", "ST10 1AA"]);
+  assert.deepEqual(hints, ["Fixture Park", "ST10 1AA", "Fixture Fury", "Adventure Valley"]);
 });
 
 test("bbox acquisition supplements a zero-result national planning feed from the discovered LPA portal", async () => {
@@ -106,6 +110,7 @@ test("bbox acquisition supplements a zero-result national planning feed from the
     assert.equal(sources.planning.localPortalFallback.addedApplications, 1);
     assert.equal(sources.planning.applications[0].organisationEntity, 999);
     assert.equal(sources.planning.applications[0].decision, "Planning Permission - Approved");
+    assert.ok(sources.planning.osmPlanningDiscovery.anchorCount >= 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

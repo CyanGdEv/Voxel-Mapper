@@ -29,11 +29,8 @@ if (args.queue) {
 const reference = args.reference ? await readJson(args.reference) : null;
 const bundleInput = await tryLoadRegisteredBundle(args.registered);
 
-if (!bundleInput) {
-  await resolveLegacyJson();
-} else {
-  await resolveBundle(bundleInput);
-}
+if (!bundleInput) await resolveLegacyJson();
+else await resolveBundle(bundleInput);
 
 async function resolveBundle(bundle) {
   const compactRegistered = compactRegisteredEvidence(bundle.manifest);
@@ -118,12 +115,14 @@ async function resolveBundle(bundle) {
     const verticalObservations = (evidence.verticalObservations || []).map((entry) => annotate(entry, baseDecision));
     const materialObservations = (evidence.materialObservations || []).map((entry) => annotate(entry, baseDecision));
     const drawingMetadata = (evidence.drawingMetadata || []).map((entry) => annotate(entry, baseDecision));
-    const resolvedEvidence = { geometryCandidates, verticalObservations, materialObservations, drawingMetadata };
+    const rideStructureTemplates = (evidence.rideStructureTemplates || []).map((entry) => annotateTemplate(entry, baseDecision));
+    const resolvedEvidence = { geometryCandidates, verticalObservations, materialObservations, rideStructureTemplates, drawingMetadata };
     const resolvedPage = await writeEvidencePageStreams(resolvedRoot, {
       ...pageEntry,
       geometryFile: null,
       verticalFile: null,
       materialFile: null,
+      templateFile: null,
       planningTemporal: baseDecision
     }, resolvedEvidence);
     resolvedPage.planningTemporal = baseDecision;
@@ -133,16 +132,19 @@ async function resolveBundle(bundle) {
       geometryCandidates: geometryCandidates.filter(isAuthorityEntry),
       verticalObservations: verticalObservations.filter(isAuthorityEntry),
       materialObservations: materialObservations.filter(isAuthorityEntry),
+      rideStructureTemplates: rideStructureTemplates.filter((entry) => entry.templateAuthorityEligible === true),
       drawingMetadata: drawingMetadata.filter(isAuthorityEntry)
     };
-    const authorityCount = authorityEvidence.geometryCandidates.length + authorityEvidence.verticalObservations.length + authorityEvidence.materialObservations.length;
+    const authorityCount = authorityEvidence.geometryCandidates.length + authorityEvidence.verticalObservations.length +
+      authorityEvidence.materialObservations.length + authorityEvidence.rideStructureTemplates.length;
     if (authorityCount > 0) {
       const authorityPage = await writeEvidencePageStreams(authorityRoot, {
         ...pageEntry,
         geometryFile: null,
         verticalFile: null,
         materialFile: null,
-        planningTemporal: authorityEvidence.geometryCandidates[0]?.planningTemporal || baseDecision
+        templateFile: null,
+        planningTemporal: authorityEvidence.geometryCandidates[0]?.planningTemporal || authorityEvidence.rideStructureTemplates[0]?.planningTemporal || baseDecision
       }, authorityEvidence);
       authorityPages.push(authorityPage);
     }
@@ -151,8 +153,9 @@ async function resolveBundle(bundle) {
   const resolvedBundleManifest = makeResolvedManifest(RESOLVED_BUNDLE_FORMAT, "resolved-current-state", resolvedPages, result, corroboration);
   const authorityBundleManifest = makeResolvedManifest(AUTHORITY_BUNDLE_FORMAT, "strict-current-authority", authorityPages, result, corroboration);
   authorityBundleManifest.authorityScope = "planning-current-state-only";
-  authorityBundleManifest.worldGeometryAuthority = authorityPages.length > 0;
+  authorityBundleManifest.worldGeometryAuthority = authorityPages.some(hasWorldAuthorityEvidence);
   authorityBundleManifest.worldGeometryReady = authorityPages.some((page) => Number(page.geometryCount || 0) > 0);
+  authorityBundleManifest.templateAuthorityRule = "current template is non-spatial and usable only through exact authoritative plan-anchor linkage";
   await writeBundleManifest(resolvedRoot, resolvedBundleManifest);
   await writeBundleManifest(authorityRoot, authorityBundleManifest);
   await writeJson(resolvedManifestPath, {
@@ -181,6 +184,7 @@ async function resolveBundle(bundle) {
     unresolvedPages: result.summary.unresolvedPages,
     conflicts: result.summary.conflicts,
     authoritativeGeometryCandidates: countPages(authorityPages, "geometryCount"),
+    authoritativeRideStructureTemplates: countPages(authorityPages, "rideStructureTemplateCount"),
     corroboratedGeometryCandidates: corroboration.promotedGeometryCandidates,
     resolvedEvidencePages: resolvedPages.length,
     authorityEvidencePages: authorityPages.length,
@@ -213,6 +217,7 @@ async function resolveLegacyJson() {
     unresolvedPages: result.summary.unresolvedPages,
     conflicts: result.summary.conflicts,
     authoritativeGeometryCandidates: result.summary.authoritativeGeometryCandidates,
+    authoritativeRideStructureTemplates: authorityEvidence.rideStructureTemplates?.length || 0,
     out: path.resolve(args.out),
     resolvedOut: args.resolvedOut ? path.resolve(args.resolvedOut) : null,
     authorityOut: args.authorityOut ? path.resolve(args.authorityOut) : null
@@ -229,35 +234,37 @@ function compactRegisteredEvidence(manifest) {
       contentHash: entry.contentHash || page.contentHash,
       pageNumber: Number(entry.pageNumber || page.pageNumber || 1)
     })));
-    if ((page.geometryCount || 0) + (page.verticalCount || 0) + (page.materialCount || 0) > 0) {
+    if ((page.geometryCount || 0) + (page.verticalCount || 0) + (page.materialCount || 0) + (page.rideStructureTemplateCount || 0) > 0) {
       pageRefs.push({ contentHash: page.contentHash, pageNumber: page.pageNumber });
     }
   }
   return {
-    schemaVersion: 2,
-    coordinateSpace: "local-world-metres",
-    worldGeometryReady: pageRefs.length > 0,
+    schemaVersion: 3,
+    coordinateSpace: "local-world-metres-plus-nonspatial-templates",
+    worldGeometryReady: (manifest.geometryCandidateCount || 0) > 0,
     worldGeometryAuthority: false,
     temporalResolutionRequired: true,
     drawingMetadata,
     geometryCandidates: pageRefs,
     verticalObservations: [],
-    materialObservations: []
+    materialObservations: [],
+    rideStructureTemplates: []
   };
 }
 
 function makeResolvedManifest(format, stage, pages, result, corroboration) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     format,
     stage,
-    coordinateSpace: "local-world-metres",
+    coordinateSpace: "local-world-metres-plus-nonspatial-templates",
     temporalResolutionRequired: result.summary.unresolvedPages > 0,
     temporalResolutionStatus: result.summary.unresolvedPages > 0 ? "partial" : "resolved",
     pageCount: pages.length,
     geometryCandidateCount: countPages(pages, "geometryCount"),
     verticalObservationCount: countPages(pages, "verticalCount"),
     materialObservationCount: countPages(pages, "materialCount"),
+    rideStructureTemplateCount: countPages(pages, "rideStructureTemplateCount"),
     pages: pages.sort(pageSort),
     corroboration: {
       attemptedGeometryCandidates: corroboration.attemptedGeometryCandidates,
@@ -275,16 +282,33 @@ function annotate(entry, decision) {
     worldGeometryAuthority: Boolean(decision.worldGeometryAuthority)
   };
 }
+function annotateTemplate(entry, decision) {
+  return {
+    ...entry,
+    planningTemporal: decision,
+    temporalResolutionRequired: decision.state === "unknown",
+    templateAuthorityEligible: decision.state === "current" && Boolean(decision.worldGeometryAuthority),
+    spatialAuthorityEligible: false,
+    worldGeometryReady: false,
+    worldGeometryAuthority: false,
+    linkageRequired: true,
+    terrainGeometryMutable: false
+  };
+}
 function isAuthorityEntry(entry) { return entry?.worldGeometryAuthority === true && entry?.planningTemporal?.state === "current"; }
+function hasWorldAuthorityEvidence(page) {
+  return Number(page.geometryCount || 0) + Number(page.verticalCount || 0) + Number(page.materialCount || 0) > 0;
+}
 function filterAuthorityEvidence(evidence) {
   const geometryCandidates = (evidence?.geometryCandidates || []).filter(isAuthorityEntry);
   const verticalObservations = (evidence?.verticalObservations || []).filter(isAuthorityEntry);
   const materialObservations = (evidence?.materialObservations || []).filter(isAuthorityEntry);
+  const rideStructureTemplates = (evidence?.rideStructureTemplates || []).filter((entry) => entry.templateAuthorityEligible === true);
   const drawingMetadata = (evidence?.drawingMetadata || []).filter(isAuthorityEntry);
   const hasAuthority = geometryCandidates.length > 0 || verticalObservations.length > 0 || materialObservations.length > 0 || drawingMetadata.length > 0;
   return {
-    schemaVersion: 1,
-    coordinateSpace: "local-world-metres",
+    schemaVersion: 2,
+    coordinateSpace: "local-world-metres-plus-nonspatial-templates",
     authorityScope: "planning-current-state-only",
     worldGeometryReady: geometryCandidates.length > 0,
     worldGeometryAuthority: hasAuthority,
@@ -292,11 +316,13 @@ function filterAuthorityEvidence(evidence) {
     geometryCandidates,
     verticalObservations,
     materialObservations,
+    rideStructureTemplates,
     drawingMetadata,
     counts: {
       geometryCandidates: geometryCandidates.length,
       verticalObservations: verticalObservations.length,
       materialObservations: materialObservations.length,
+      rideStructureTemplates: rideStructureTemplates.length,
       drawingMetadata: drawingMetadata.length
     }
   };

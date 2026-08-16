@@ -26,3 +26,7 @@ jobs:
         run: npm install --no-save --package-lock=false --ignore-scripts pdfjs-dist@4.10.38
       - name: Smoke-test real vector PDF extraction
         run: node scripts/planning-pdfjs-smoke.mjs
+      - name: Certify real Gray and CMYK planning legend resolution
+        run: node scripts/planning-pdf-colour-e2e.mjs
+      - name: Certify ICCBased, Separation and DeviceN planning legend resolution
+        run: node scripts/planning-pdf-complex-colour-e2e.mjs

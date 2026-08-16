@@ -1,29 +1,11 @@
 import path from "node:path";
 import { readFile } from "node:fs/promises";
+import { extractPlanningMaterialObservations } from "./planning-material-normalizer.mjs";
 
 const DEFAULT_MAX_PAGES = 240;
 const DEFAULT_MAX_VECTOR_PATHS_PER_PAGE = 25_000;
 const DEFAULT_MAX_TEXT_ITEMS_PER_PAGE = 50_000;
 const DEFAULT_MAX_COMMANDS_PER_PATH = 20_000;
-
-const MATERIAL_PATTERNS = [
-  ["weathered_asphalt", /\bweathered\s+(?:asphalt|tarmac|bitmac)\b/i],
-  ["fresh_black_asphalt", /\b(?:new|fresh|black)\s+(?:asphalt|tarmac|bitmac)\b/i],
-  ["red_tarmac", /\bred\s+(?:tarmac|asphalt|bitmac)\b/i],
-  ["resin_bound_beige", /\b(?:beige|buff)\s+resin(?:-bound)?\b|\bresin(?:-bound)?\s+(?:beige|buff)\b/i],
-  ["resin_bound_grey", /\bgr(?:e|a)y\s+resin(?:-bound)?\b|\bresin(?:-bound)?\s+gr(?:e|a)y\b/i],
-  ["concrete", /\bconcrete\b/i],
-  ["brick", /\bbrick(?:work| paving| pavers?)?\b/i],
-  ["stone", /\b(?:natural\s+)?stone\b|\bgranite\b/i],
-  ["timber", /\btimber\b|\bwood(?:en)?\b/i],
-  ["steel", /\bsteel\b/i],
-  ["glass", /\bglass\b|\bglazing\b/i],
-  ["slate_roof", /\bslate\b/i],
-  ["clay_tile_roof", /\bclay\s+tiles?\b|\broof\s+tiles?\b/i],
-  ["metal_roof", /\b(?:metal|zinc|aluminium|aluminum)\s+(?:roof|cladding|sheet)\b/i],
-  ["gravel", /\bgravel\b|\bchippings\b/i],
-  ["grass", /\bgrass\b|\bturf\b/i]
-];
 
 const LEVEL_LABELS = "FFL|SSL|AOD|RL|R\\.?L\\.?|RIDGE|EAVES?|GROUND\\s+LEVEL|GL|TOW|BOW|TOP\\s+OF\\s+WALL|BOTTOM\\s+OF\\s+WALL";
 
@@ -295,26 +277,7 @@ export function extractVerticalObservations(textItems, pageNumber = 1, contentHa
 }
 
 export function extractMaterialObservations(textItems, pageNumber = 1, contentHash = null) {
-  const observations = [];
-  for (const item of textItems || []) {
-    const raw = String(item.text || "").trim();
-    if (!raw) continue;
-    for (const [material, pattern] of MATERIAL_PATTERNS) {
-      if (!pattern.test(raw)) continue;
-      observations.push({
-        contentHash,
-        pageNumber,
-        xPt: finiteOrNull(item.xPt),
-        yPt: finiteOrNull(item.yPt),
-        material,
-        raw,
-        confidence: 0.76,
-        source: "pdf-text-material-label",
-        georegistrationRequired: true
-      });
-    }
-  }
-  return dedupeObservations(observations, (entry) => `${entry.pageNumber}:${entry.material}:${round(entry.xPt, 1)}:${round(entry.yPt, 1)}:${entry.raw}`);
+  return extractPlanningMaterialObservations(textItems, pageNumber, contentHash);
 }
 
 export function buildPageGeometryCandidates(paths, context = {}) {

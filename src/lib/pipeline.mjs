@@ -1,12 +1,16 @@
 import path from "node:path";
 import { acquireSources } from "./sources.mjs";
-import { normalizeMap, refreshMapDerivedData } from "./osm.mjs";
+import { applyLidarBuildingHeights, normalizeMap, refreshMapDerivedData } from "./osm.mjs";
 import { enrichUniversalFidelity } from "./fidelity.mjs";
 import { enrichOrthophotoEvidence } from "./orthophoto.mjs";
 import { enhancePathGeometry } from "./path-geometry.mjs";
 import { recoverPathTopology } from "./path-topology.mjs";
 import { enrichTerrainDetails } from "./terrain-detail.mjs";
 import { integrateRideProfiles } from "./ride-profile.mjs";
+import { reconstructRideStructures3d } from "./ride-structure-reconstruction.mjs";
+import { renderRideStructures3d } from "./ride-structure-renderer.mjs";
+import { reconstructPlanningObjects3d } from "./planning-object-reconstruction.mjs";
+import { renderPlanningObjects3d } from "./planning-object-renderer.mjs";
 import { assessAccuracy, enforceAccuracy } from "./confidence.mjs";
 import { buildEvidenceGraph } from "./evidence-graph.mjs";
 import {
@@ -14,6 +18,8 @@ import {
   fusePlanningAuthorityIntoEvidenceGraph,
   applyPlanningAuthorityWinners
 } from "./planning-authority-fusion.mjs";
+import { reconcileCompiledPlanningChanges } from "./planning-change-reconciliation.mjs";
+import { renderPlanningSurfacePaint } from "./planning-surface-renderer.mjs";
 import { buildPlanningDocumentQueue } from "./planning-documents.mjs";
 import { compileMap } from "./raster.mjs";
 import { buildBedrockAddon } from "./bedrock.mjs";
@@ -35,6 +41,34 @@ export async function buildPark(options = {}, progress = () => {}) {
 
   progress("Normalizing map geometry and provenance");
   const map = await normalizeMap(sources, options);
+  progress("Compiling verified-current planning changes against OSM");
+  const planningTopologyReconciliation = await reconcileCompiledPlanningChanges(map, options);
+  if (planningTopologyReconciliation.added || planningTopologyReconciliation.replaced || planningTopologyReconciliation.deleted || planningTopologyReconciliation.paint?.applied) {
+    const changedBuildingIds = new Set(
+      planningTopologyReconciliation.changes
+        .filter((change) => ["add", "replace"].includes(change.operation) && change.featureKind === "building")
+        .map((change) => change.featureId)
+        .filter(Boolean)
+    );
+    if (changedBuildingIds.size && typeof sources.elevation?.samplePairLocal === "function") {
+      for (const feature of map.features) {
+        if (!changedBuildingIds.has(feature.id)) continue;
+        feature.roof = null;
+        if (/lidar/i.test(String(feature.vertical?.heightSource || ""))) {
+          feature.vertical.heightM = null;
+          feature.vertical.heightSource = null;
+          feature.vertical.heightConfidence = null;
+          feature.vertical.heightSamples = null;
+          feature.vertical.heightCoverage = null;
+          feature.vertical.heightSpreadM = null;
+          feature.vertical.heightSurveyedAt = null;
+        }
+      }
+      const structureHeightStats = applyLidarBuildingHeights(map.features, sources.elevation);
+      if (structureHeightStats) sources.elevation.structureHeightStats = structureHeightStats;
+    }
+    refreshMapDerivedData(map);
+  }
   progress("Repairing source-relative path gaps and area geometry");
   const pathGeometryEvidence = enhancePathGeometry(map, options);
   progress("Measuring image-visible path edges and surface appearance");
@@ -59,10 +93,64 @@ export async function buildPark(options = {}, progress = () => {}) {
   progress("Materializing winning current-planning attributes");
   const planningAuthorityResolution = applyPlanningAuthorityWinners(map);
   if (planningAuthorityResolution.appliedAttributes > 0) refreshMapDerivedData(map);
+
+  // Standalone planning objects are reconstructed directly from the certified
+  // authority artifact. They need registered geometry, verified-current state
+  // and an exact non-conflicting current schedule before a 3D model can exist.
+  progress("Reconstructing verified-current schedule-linked trees, lighting, and barriers");
+  const planningObjects3d = await reconstructPlanningObjects3d(map, options);
+
+  // Full ride structure is reconstructed only after all planning/current-state
+  // and Evidence Graph gates have run. Drawn supports/enclosures therefore win
+  // over inference only when their plan geometry is truly current/authoritative.
+  progress("Tracing current 3D ride supports, enclosures, sound tunnels, and access structures");
+  const rideStructures3d = reconstructRideStructures3d(map, options);
   const accuracy = assessAccuracy(map, sources, options);
 
-  progress("Compiling 1 m raster and chunked Bedrock operations");
-  const compilation = compileMap({ parkName, map, sources, accuracy, options });
+  // Terrain elevation is immutable after source sampling. Legacy conform mode is
+  // deliberately reduced to evidence-only here; planning/path overlays may
+  // repaint the top block but cannot cut/fill/flatten the terrain raster.
+  const compilationOptions = {
+    ...options,
+    pathTerrainMode: options.pathTerrainMode === "off" ? "off" : "evidence"
+  };
+  progress("Compiling immutable-terrain 1 m raster and chunked Bedrock operations");
+  const compilation = compileMap({ parkName, map, sources, accuracy, options: compilationOptions });
+  progress("Painting current-planning materials over immutable terrain");
+  const planningSurfaceRender = renderPlanningSurfacePaint({
+    compilation,
+    changeSet: planningTopologyReconciliation.changeSet,
+    options: compilationOptions
+  });
+  planningTopologyReconciliation.paint ||= {};
+  planningTopologyReconciliation.paint.render = planningSurfaceRender;
+
+  // This is a post-terrain structural overlay. The renderer indexes the exact
+  // compiled phase-1 terrain top and rejects support/enclosure/portal writes at
+  // or below it. Sound tunnels are therefore built shells with track openings,
+  // not a second terrain-excavation path.
+  progress("Rendering evidence-linked 3D ride structure without deforming terrain");
+  const rideStructureRender = renderRideStructures3d({
+    compilation,
+    rideStructures: rideStructures3d,
+    map,
+    options: compilationOptions
+  });
+  rideStructures3d.render = rideStructureRender;
+
+  // Planning object adapters run at a later structural phase than generic OSM
+  // vegetation/barriers and ride structures. They may overwrite lower-authority
+  // representation above ground, but the shared writer has no terrain mutation
+  // or air-clearing path and rejects every write at/below phase-1 terrain.
+  progress("Rendering current planning trees, lighting, and barriers without deforming terrain");
+  const planningObjectRender = renderPlanningObjects3d({
+    compilation,
+    planningObjects: planningObjects3d,
+    map,
+    options: compilationOptions
+  });
+  planningObjects3d.render = planningObjectRender;
+
   const compilationPath = options.compilationOut
     ? await writeJson(path.resolve(options.compilationOut), {
         schemaVersion: 1,
@@ -82,14 +170,28 @@ export async function buildPark(options = {}, progress = () => {}) {
   const planningDocumentQueuePath = await writeJson(
     path.join(outputDir, "planning-document-queue.json"), planningDocumentQueue
   );
+  const planningChangeSetPath = await writeJson(
+    path.join(outputDir, "planning-change-set.json"), planningTopologyReconciliation.changeSet
+  );
+  const planningSurfacePaintPath = await writeJson(
+    path.join(outputDir, "planning-surface-paint.json"), planningTopologyReconciliation.paint
+  );
+  const planningTopologyReconciliationPath = await writeJson(
+    path.join(outputDir, "planning-topology-reconciliation.json"), planningTopologyReconciliation
+  );
   const planningAuthorityFusionPath = await writeJson(path.join(outputDir, "planning-authority-fusion.json"), {
     schemaVersion: 1,
+    changeSet: planningTopologyReconciliation.changeSet,
+    surfacePaint: planningTopologyReconciliation.paint,
+    topology: planningTopologyReconciliation,
     association: planningAuthorityFusion,
     evidenceGraph: planningAuthorityGraph,
     resolution: planningAuthorityResolution
   });
+  const rideStructures3dPath = await writeJson(path.join(outputDir, "ride-structures-3d.json"), rideStructures3d);
+  const planningObjects3dPath = await writeJson(path.join(outputDir, "planning-objects-3d.json"), planningObjects3d);
   const evidencePath = await writeJson(path.join(outputDir, "evidence.json"), {
-    schemaVersion: 2,
+    schemaVersion: 3,
     parkName,
     generatedAt: new Date().toISOString(),
     bbox: sources.bbox,
@@ -106,7 +208,19 @@ export async function buildPark(options = {}, progress = () => {}) {
         status: planningAuthorityFusion.status,
         matchedFeatures: planningAuthorityFusion.matchedFeatures,
         winningAttributes: planningAuthorityGraph.winningAttributes,
-        appliedAttributes: planningAuthorityResolution.appliedAttributes
+        appliedAttributes: planningAuthorityResolution.appliedAttributes,
+        topologyAdded: planningTopologyReconciliation.added,
+        topologyReplaced: planningTopologyReconciliation.replaced,
+        topologyDeleted: planningTopologyReconciliation.deleted,
+        surfacePaintApplied: planningTopologyReconciliation.paint?.applied || 0,
+        surfacePaintDeferred: planningTopologyReconciliation.paint?.deferred || 0,
+        surfacePaintRenderedFeatures: planningSurfaceRender.renderedFeatures,
+        surfacePaintRenderedCells: planningSurfaceRender.renderedCellWrites,
+        surfacePaintRenderDeferred: planningSurfaceRender.deferredFeatures,
+        changeSetCounts: planningTopologyReconciliation.changeSet?.counts || null,
+        terrainPolicy: planningTopologyReconciliation.changeSet?.terrainPolicy || null,
+        rideStructureTemplates: options.planningAuthorityEvidenceData?.rideStructureTemplates?.length || 0,
+        reconstructedPlanningObjects: planningObjects3d.summary?.reconstructedObjects || 0
       },
       orthophoto: withoutLargeData(sources.orthophoto),
       mapFusion: sources.mapFusion,
@@ -118,11 +232,26 @@ export async function buildPark(options = {}, progress = () => {}) {
     pathTopology: pathTopologyEvidence.summary,
     terrainDetails,
     rideProfiles: compactRideEvidence(rideProfiles),
+    rideStructures3d: compactRideStructureEvidence(rideStructures3d),
+    planningObjects3d: compactPlanningObjectEvidence(planningObjects3d),
     evidenceGraph,
     planningAuthority: {
+      changeSet: planningTopologyReconciliation.changeSet,
+      surfacePaint: planningTopologyReconciliation.paint,
+      topology: planningTopologyReconciliation,
       association: planningAuthorityFusion,
       graph: planningAuthorityGraph,
       resolution: planningAuthorityResolution
+    },
+    terrainPolicy: {
+      sourceElevationImmutable: true,
+      planningDeformationAllowed: false,
+      pathCutFillAllowed: false,
+      surfacePaintAllowed: true,
+      builtRideEnclosureExcavationAllowed: false,
+      planningObjectTerrainDeformationAllowed: false,
+      planningObjectAirClearingAllowed: false,
+      rideTerrainTunnelEngineSeparate: true
     },
     accuracy,
     compilation: { meta: compilation.meta, stats: compilation.stats }
@@ -225,7 +354,12 @@ export async function buildPark(options = {}, progress = () => {}) {
       sourcePlan: sourcePlanPath,
       planningAcquisition: planningAcquisitionPath,
       planningDocumentQueue: planningDocumentQueuePath,
+      planningChangeSet: planningChangeSetPath,
+      planningSurfacePaint: planningSurfacePaintPath,
+      planningTopologyReconciliation: planningTopologyReconciliationPath,
       planningAuthorityFusion: planningAuthorityFusionPath,
+      rideStructures3d: rideStructures3dPath,
+      planningObjects3d: planningObjects3dPath,
       compilation: compilationPath,
       fidelity: fidelityPath,
       evidenceGraph: evidenceGraphPath,
@@ -256,9 +390,40 @@ export async function buildPark(options = {}, progress = () => {}) {
       planningJurisdictions: sources.planning?.jurisdictionCount || 0,
       planningDocumentQueueItems: planningDocumentQueue.itemCount,
       planningDocumentQueueApplications: planningDocumentQueue.applicationsQueued,
+      planningChangeSetAdds: planningTopologyReconciliation.changeSet?.counts?.add || 0,
+      planningChangeSetReplaces: planningTopologyReconciliation.changeSet?.counts?.replace || 0,
+      planningChangeSetDeletes: planningTopologyReconciliation.changeSet?.counts?.delete || 0,
+      planningChangeSetPaints: planningTopologyReconciliation.changeSet?.counts?.paint || 0,
+      planningChangeSetReviews: planningTopologyReconciliation.changeSet?.counts?.review || 0,
+      planningSurfacePaintApplied: planningTopologyReconciliation.paint?.applied || 0,
+      planningSurfacePaintDeferred: planningTopologyReconciliation.paint?.deferred || 0,
+      planningSurfacePaintRenderedFeatures: planningSurfaceRender.renderedFeatures,
+      planningSurfacePaintRenderedCells: planningSurfaceRender.renderedCellWrites,
+      planningSurfacePaintRenderDeferred: planningSurfaceRender.deferredFeatures,
+      planningTopologyAdded: planningTopologyReconciliation.added,
+      planningTopologyReplaced: planningTopologyReconciliation.replaced,
+      planningTopologyDeleted: planningTopologyReconciliation.deleted,
       planningAuthorityMatchedFeatures: planningAuthorityFusion.matchedFeatures,
       planningAuthorityWinningAttributes: planningAuthorityGraph.winningAttributes,
       planningAuthorityAppliedAttributes: planningAuthorityResolution.appliedAttributes,
+      planningObject3dReconstructed: planningObjects3d.summary?.reconstructedObjects || 0,
+      planningObject3dTrees: planningObjects3d.summary?.trees || 0,
+      planningObject3dLightingColumns: planningObjects3d.summary?.lightingColumns || 0,
+      planningObject3dBarriers: planningObjects3d.summary?.barriers || 0,
+      planningObject3dRendered: planningObjectRender.objects || 0,
+      planningObject3dTreeVoxels: (planningObjectRender.treeTrunkVoxels || 0) + (planningObjectRender.treeLeafVoxels || 0),
+      planningObject3dLightingVoxels: (planningObjectRender.lightingPoleVoxels || 0) + (planningObjectRender.lightingHeadVoxels || 0),
+      planningObject3dBarrierVoxels: planningObjectRender.barrierVoxels || 0,
+      rideStructure3dReconstructed: rideStructures3d.summary?.reconstructedStructures || 0,
+      rideStructure3dTracedSupports: rideStructures3d.summary?.tracedSupportStructures || 0,
+      rideStructure3dTemplateLinkedSupports: rideStructures3d.summary?.templateLinkedSupports || 0,
+      rideStructure3dSoundTunnels: rideStructures3d.summary?.soundTunnels || 0,
+      rideStructure3dCatwalks: rideStructures3d.summary?.catwalks || 0,
+      rideStructure3dPlatforms: rideStructures3d.summary?.platforms || 0,
+      rideStructure3dRendered: rideStructureRender.structures || 0,
+      rideStructure3dSupportVoxels: rideStructureRender.supportVoxels || 0,
+      rideStructure3dEnclosureVoxels: (rideStructureRender.enclosureShellVoxels || 0) + (rideStructureRender.enclosureRoofVoxels || 0),
+      rideStructure3dPortalClearanceVoxels: rideStructureRender.portalClearanceVoxels || 0,
       worldChunks: world?.chunkCount || 0,
       worldValidation: world?.validation?.status || null
     },
@@ -322,5 +487,61 @@ function compactRideEvidence(value) {
         validation: profile.validation
       }
     }))
+  };
+}
+
+function compactRideStructureEvidence(value) {
+  if (!value) return value;
+  return {
+    schemaVersion: value.schemaVersion,
+    status: value.status,
+    policy: value.policy,
+    summary: value.summary,
+    designFamilies: (value.designFamilies || []).map((family) => ({
+      id: family.id,
+      subtype: family.subtype,
+      material: family.material,
+      templateId: family.templateId,
+      instanceCount: family.instanceCount
+    })),
+    render: value.render ? {
+      status: value.render.status,
+      structures: value.render.structures,
+      supportStructures: value.render.supportStructures,
+      supportVoxels: value.render.supportVoxels,
+      enclosureStructures: value.render.enclosureStructures,
+      enclosureShellVoxels: value.render.enclosureShellVoxels,
+      enclosureRoofVoxels: value.render.enclosureRoofVoxels,
+      portalClearanceVoxels: value.render.portalClearanceVoxels,
+      accessStructures: value.render.accessStructures,
+      accessVoxels: value.render.accessVoxels,
+      terrainGeometryChanged: value.render.terrainGeometryChanged,
+      terrainElevationChanged: value.render.terrainElevationChanged
+    } : null
+  };
+}
+
+function compactPlanningObjectEvidence(value) {
+  if (!value) return value;
+  return {
+    schemaVersion: value.schemaVersion,
+    status: value.status,
+    policy: value.policy,
+    summary: value.summary,
+    render: value.render ? {
+      status: value.render.status,
+      objects: value.render.objects,
+      trees: value.render.trees,
+      treeTrunkVoxels: value.render.treeTrunkVoxels,
+      treeLeafVoxels: value.render.treeLeafVoxels,
+      lightingColumns: value.render.lightingColumns,
+      lightingPoleVoxels: value.render.lightingPoleVoxels,
+      lightingHeadVoxels: value.render.lightingHeadVoxels,
+      barriers: value.render.barriers,
+      barrierVoxels: value.render.barrierVoxels,
+      skippedBelowTerrainWrites: value.render.skippedBelowTerrainWrites,
+      terrainGeometryChanged: value.render.terrainGeometryChanged,
+      terrainElevationChanged: value.render.terrainElevationChanged
+    } : null
   };
 }
