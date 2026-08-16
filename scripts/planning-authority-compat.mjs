@@ -118,6 +118,10 @@ async function collectImplementedSchemeAuthority(authorityPointerPath) {
     path.resolve(cwd, "planning-georegistration-download/planning-georeg-reference.json"),
     path.resolve(cwd, "planning-georeg-reference.json")
   ]);
+  const georegistration = await firstJson([
+    path.resolve(cwd, "planning-georegistration-download/planning-georegistration.json"),
+    path.resolve(cwd, "planning-georegistration.json")
+  ]);
   const catalog = await readJsonIfExists(path.resolve(cwd, "planning-document-catalog.json"));
   const queue = await readJsonIfExists(path.resolve(cwd, "planning-document-queue.json"));
   if (!resolvedPointer || !reference?.features?.length || !catalog) return empty;
@@ -127,6 +131,7 @@ async function collectImplementedSchemeAuthority(authorityPointerPath) {
   const resolvedBundle = await loadBundleManifest(resolvedRoot, RESOLVED_BUNDLE_FORMAT);
   const applications = mergeApplicationSnapshots(catalog.applications || {}, queue?.planningApplicationSnapshot || {});
   const documentIndex = new Map((catalog.documents || []).map((document) => [document.contentHash, document]));
+  const registrationIndex = new Map((georegistration?.registrations || []).map((entry) => [pageKey(entry.contentHash, entry.pageNumber), entry]));
   const pageRecords = [];
 
   for (const page of resolvedBundle.manifest.pages || []) {
@@ -135,14 +140,16 @@ async function collectImplementedSchemeAuthority(authorityPointerPath) {
     const applicationKeys = page.applicationKeys?.length ? page.applicationKeys : document?.applicationKeys || [];
     const applicationTemporal = applicationKeys.map((key) => applications[key]?.temporal).filter(Boolean);
     const drawingIssueDate = (evidence.drawingMetadata || []).find((entry) => entry.issueDate)?.issueDate || null;
+    const registration = registrationIndex.get(pageKey(page.contentHash, page.pageNumber)) || null;
     const evaluation = evaluateImplementedPlanningPage({
       page,
       evidence,
       referenceFeatures: reference.features,
       applicationTemporal,
-      drawingIssueDate
+      drawingIssueDate,
+      registration
     });
-    pageRecords.push({ page, evidence, applicationKeys, applicationTemporal, evaluation });
+    pageRecords.push({ page, evidence, applicationKeys, applicationTemporal, registration, evaluation });
   }
 
   const applicationRecords = new Map();
@@ -194,6 +201,11 @@ async function collectImplementedSchemeAuthority(authorityPointerPath) {
         uniqueCurrentFeatures: record.evaluation.uniqueFeatureCount,
         uniqueFeatureKinds: record.evaluation.uniqueFeatureKinds,
         medianMatchScore: record.evaluation.medianMatchScore,
+        registrationAnchors: record.evaluation.registrationAnchorCount,
+        registrationUniqueFeatures: record.evaluation.registrationUniqueFeatureCount,
+        registrationRmseM: record.evaluation.registrationRmseM,
+        candidateProofChecks: record.evaluation.candidateProofChecks,
+        proofBoundReached: record.evaluation.proofBoundReached,
         applicationKeys: record.applicationKeys
       });
     }
@@ -209,6 +221,8 @@ async function collectImplementedSchemeAuthority(authorityPointerPath) {
     summary: {
       status: applicationProofs.size || promoted.geometryCandidates.length ? "applied" : "no-implemented-scheme-proof",
       evaluatedPages: pageRecords.length,
+      georegistrationProofAvailable: registrationIndex.size > 0,
+      georegistrationRecords: registrationIndex.size,
       certifiedSpatialPages: pageRecords.filter((record) => record.evaluation.certifiedSpatialAuthority).length,
       certifiedContextPages: pageRecords.filter((record) => record.evaluation.certifiedContext).length,
       implementedApplications: applicationProofs.size,
@@ -248,6 +262,7 @@ function dedupeTemplates(values) {
   }
   return result.sort((a, b) => String(a.contentHash || "").localeCompare(String(b.contentHash || "")) || Number(a.pageNumber || 0) - Number(b.pageNumber || 0) || String(a.id || "").localeCompare(String(b.id || "")));
 }
+function pageKey(contentHash, pageNumber) { return `${contentHash || ""}:p${Number(pageNumber || 1)}`; }
 async function readJsonIfExists(file) {
   try { return JSON.parse(await readFile(file, "utf8")); }
   catch (error) { if (error?.code === "ENOENT") return null; throw error; }
