@@ -1,20 +1,7 @@
 export const PLANNING_OBJECT_TYPES = Object.freeze([
-  "ride_component",
-  "structure",
-  "roof_element",
-  "facade_element",
-  "tree",
-  "landscape",
-  "barrier",
-  "lighting",
-  "drainage",
-  "water",
-  "signage",
-  "street_furniture",
-  "path_detail",
-  "utility",
-  "accessibility",
-  "transport_detail"
+  "ride_component", "structure", "roof_element", "facade_element", "tree", "landscape",
+  "barrier", "lighting", "drainage", "water", "signage", "street_furniture", "path_detail",
+  "utility", "accessibility", "transport_detail"
 ]);
 
 const DEFAULT_LABEL_RADIUS_PT = 80;
@@ -128,15 +115,6 @@ const RULES = [
   rule("transport_detail", "road_marking", /\b(?:road|carriageway|parking)\s+markings?\b/, 0.94)
 ];
 
-/**
- * Adds a universal semantic object description to planning geometry without
- * changing the geometry candidate's kind, topology authority or terrain policy.
- * Existing map/ride compilers remain in control; this layer is evidence only.
- *
- * Text-only schedule rows are preserved inside drawingMetadata as linkage-only
- * observations. This allows later exact-code association (for example T01 tree
- * schedule -> T01 plan symbol) without pretending a schedule row has map space.
- */
 export function enrichPlanningObjectEvidence(extraction, options = {}) {
   if (!extraction?.normalizedEvidence || !Array.isArray(extraction.pages)) return emptySummary("no-normalized-evidence");
   const candidates = extraction.normalizedEvidence.geometryCandidates || [];
@@ -262,18 +240,34 @@ export function enrichPlanningObjectEvidence(extraction, options = {}) {
 export function classifyPlanningObjectText(value, context = {}) {
   const text = normalizeText(value);
   if (!text) return null;
-  for (const entry of RULES) {
-    if (!entry.pattern.test(text)) continue;
-    return {
-      objectType: entry.objectType,
-      subtype: entry.subtype,
-      semantic: `${entry.objectType}-${entry.subtype}`,
-      confidence: entry.confidence,
-      classification: normalizeClass(context.classification),
-      closed: Boolean(context.closed)
-    };
+
+  // A drawing label can legitimately contain both a generic structural word
+  // and a more specific domain phrase: e.g. "lighting column", "accessible
+  // ramp" or "acoustic wall". First-match ordering made those brittle. Rank
+  // every matching rule by evidence confidence, then by matched phrase length;
+  // only use declaration order as the final deterministic tie-break.
+  const matches = [];
+  for (let index = 0; index < RULES.length; index += 1) {
+    const entry = RULES[index];
+    const match = text.match(entry.pattern);
+    if (!match) continue;
+    matches.push({ entry, index, matchLength: String(match[0] || "").trim().length });
   }
-  return null;
+  if (!matches.length) return null;
+  matches.sort((a, b) =>
+    Number(b.entry.confidence || 0) - Number(a.entry.confidence || 0) ||
+    b.matchLength - a.matchLength ||
+    a.index - b.index
+  );
+  const winner = matches[0].entry;
+  return {
+    objectType: winner.objectType,
+    subtype: winner.subtype,
+    semantic: `${winner.objectType}-${winner.subtype}`,
+    confidence: winner.confidence,
+    classification: normalizeClass(context.classification),
+    closed: Boolean(context.closed)
+  };
 }
 
 export function extractPlanningObjectAttributes(value, classification = null) {
@@ -294,7 +288,6 @@ export function extractPlanningObjectAttributes(value, classification = null) {
 
   const pipeMm = firstNumber(text, /\b(?:dia(?:meter)?\.?\s*)?([0-9]{2,4})\s*mm\s+(?:dia(?:meter)?\.?\s*)?(?:pipe|sewer|drain|culvert)\b|\b(?:pipe|sewer|drain|culvert)\s+(?:dia(?:meter)?\.?\s*)?([0-9]{2,4})\s*mm\b/, true);
   if (validRange(pipeMm, 20, 5000)) attributes.pipeDiameterMm = pipeMm;
-
   const diameterMm = firstNumber(text, /\b(?:stem|trunk|post|column)?\s*(?:diameter|dia\.?|Ø)\s*[:=]?\s*([0-9]{2,4})\s*mm\b/);
   if (validRange(diameterMm, 10, 5000)) attributes.diameterMm = diameterMm;
   const crown = firstNumber(text, /\b(?:crown\s+spread|canopy\s+spread|spread)\s*[:=]?\s*([0-9]{1,3}(?:\.[0-9]{1,2})?)\s*m\b/);
@@ -375,16 +368,7 @@ function preserveTextOnlyInDrawingMetadata(extraction, observations) {
   for (const [pageNumber, values] of byPage) {
     let target = metadata.find((entry) => Number(entry.pageNumber || 1) === pageNumber && (!entry.contentHash || entry.contentHash === extraction.contentHash));
     if (!target) {
-      target = {
-        contentHash: extraction.contentHash || null,
-        pageNumber,
-        scaleDenominator: null,
-        drawingNumber: null,
-        revision: null,
-        status: null,
-        issueDate: null,
-        source: "pdf-object-schedule-metadata"
-      };
+      target = { contentHash: extraction.contentHash || null, pageNumber, scaleDenominator: null, drawingNumber: null, revision: null, status: null, issueDate: null, source: "pdf-object-schedule-metadata" };
       metadata.push(target);
     }
     target.planningObjectTextObservations = values;
@@ -400,12 +384,7 @@ function preserveTextOnlyInDrawingMetadata(extraction, observations) {
 
 function ridePlanningObject(evidence) {
   const subtype = evidence?.subtype || "ride_component";
-  return {
-    objectType: "ride_component",
-    subtype,
-    semantic: `ride-component-${subtype}`,
-    confidence: Number(evidence?.confidence ?? 0.96)
-  };
+  return { objectType: "ride_component", subtype, semantic: `ride-component-${subtype}`, confidence: Number(evidence?.confidence ?? 0.96) };
 }
 
 function nearbyTextForCandidate(candidate, items, options) {
@@ -422,11 +401,7 @@ function nearbyTextForCandidate(candidate, items, options) {
     const dy = y < bounds.minY ? bounds.minY - y : y > bounds.maxY ? y - bounds.maxY : 0;
     const edgeDistance = Math.hypot(dx, dy);
     if (edgeDistance > radius) continue;
-    ranked.push({
-      ...item,
-      edgeDistance,
-      centerDistance: center ? Math.hypot(x - center[0], y - center[1]) : edgeDistance
-    });
+    ranked.push({ ...item, edgeDistance, centerDistance: center ? Math.hypot(x - center[0], y - center[1]) : edgeDistance });
   }
   ranked.sort((a, b) => a.edgeDistance - b.edgeDistance || a.centerDistance - b.centerDistance || String(a.text || "").localeCompare(String(b.text || "")));
   return ranked.slice(0, max);
@@ -449,20 +424,12 @@ function logicalTextLines(items, tolerancePt) {
   for (const item of values) {
     const y = Number(item.yPt);
     let line = Number.isFinite(y) ? lines.find((entry) => Number.isFinite(entry.yPt) && Math.abs(entry.yPt - y) <= tolerancePt) : null;
-    if (!line) {
-      line = { yPt: Number.isFinite(y) ? y : null, items: [] };
-      lines.push(line);
-    }
+    if (!line) { line = { yPt: Number.isFinite(y) ? y : null, items: [] }; lines.push(line); }
     line.items.push(item);
   }
   return lines.map((line, index) => {
     line.items.sort((a, b) => Number(a.xPt || 0) - Number(b.xPt || 0));
-    return {
-      index,
-      xPt: finiteOrNull(line.items[0]?.xPt),
-      yPt: finiteOrNull(line.yPt),
-      text: line.items.map((item) => String(item.text || "").trim()).filter(Boolean).join(" ").replace(/\s+/g, " ")
-    };
+    return { index, xPt: finiteOrNull(line.items[0]?.xPt), yPt: finiteOrNull(line.yPt), text: line.items.map((item) => String(item.text || "").trim()).filter(Boolean).join(" ").replace(/\s+/g, " ") };
   }).filter((line) => line.text);
 }
 
@@ -500,28 +467,11 @@ function detectObjectStatus(text) {
 }
 
 function compactMaterialObservation(entry) {
-  return {
-    material: entry.material || null,
-    raw: entry.raw || null,
-    confidence: round(Number(entry.confidence ?? 0.7)),
-    source: entry.source || null,
-    xPt: finiteOrNull(entry.xPt),
-    yPt: finiteOrNull(entry.yPt)
-  };
+  return { material: entry.material || null, raw: entry.raw || null, confidence: round(Number(entry.confidence ?? 0.7)), source: entry.source || null, xPt: finiteOrNull(entry.xPt), yPt: finiteOrNull(entry.yPt) };
 }
-
 function compactVerticalObservation(entry) {
-  return {
-    label: entry.label || null,
-    valueM: finiteOrNull(entry.valueM),
-    datum: entry.datum || null,
-    confidence: round(Number(entry.confidence ?? 0.7)),
-    source: entry.source || null,
-    xPt: finiteOrNull(entry.xPt),
-    yPt: finiteOrNull(entry.yPt)
-  };
+  return { label: entry.label || null, valueM: finiteOrNull(entry.valueM), datum: entry.datum || null, confidence: round(Number(entry.confidence ?? 0.7)), source: entry.source || null, xPt: finiteOrNull(entry.xPt), yPt: finiteOrNull(entry.yPt) };
 }
-
 function dedupeTextObservations(values) {
   const map = new Map();
   for (const value of values || []) {
@@ -545,10 +495,7 @@ function firstNumber(text, pattern, alternatives = false) {
   const match = String(text || "").match(pattern);
   if (!match) return null;
   const values = alternatives ? match.slice(1) : [match[1]];
-  for (const value of values) {
-    const number = Number(value);
-    if (Number.isFinite(number)) return number;
-  }
+  for (const value of values) { const number = Number(value); if (Number.isFinite(number)) return number; }
   return null;
 }
 function emptySummary(status) { return { schemaVersion: 1, status, objectCount: 0, textOnlyObservationCount: 0, byType: {} }; }
