@@ -4,6 +4,7 @@ import { RIDE_EVIDENCE_LEGEND } from "./ride-profile.mjs";
 import { blockForSurfaceStyle, isBridgeFeature } from "./fidelity.mjs";
 import { terrainStyleForAerialClass, vegetationPaletteForRgb } from "./aerial-appearance.mjs";
 import { primaryMaterialBlock } from "./material-palettes.mjs";
+import { buildNaturalTreeGeometry } from "./natural-tree-geometry.mjs";
 
 const SURFACES = [
   "minecraft:grass_block",
@@ -827,7 +828,11 @@ function compileAerialCanopyVegetation(context) {
         add, x, z, groundY: elevationY[index], heightM: resolvedHeight.heightM,
         crownDiameterM: null, leafType: null,
         leafPalette: vegetationPaletteForRgb(classification.rgb),
-        seed: seed ^ hashText(`aerial-tree:${x}:${z}`)
+        seed: seed ^ hashText(`aerial-tree:${x}:${z}`),
+        terrainYAt: (cellX, cellZ) => {
+          const terrainIndex = cellIndex(cellX, cellZ, minX, minZ, width, height);
+          return terrainIndex >= 0 && mask[terrainIndex] ? elevationY[terrainIndex] : null;
+        }
       });
       stats.models += 1;
       stats.trunkBlocks += model.trunkBlocks;
@@ -1113,8 +1118,6 @@ function compileBridgeFeature(context) {
         if (deck.has(`${x},${z}`)) continue;
         const index = cellIndex(x, z, minX, minZ, width, height);
         if (index < 0 || !mask[index]) continue;
-        // Avoid closing the approach at bridge endpoints: an outside cell that
-        // is also adjacent to the centreline is longitudinal, not a side rail.
         const centreNeighbours = [[1, 0], [-1, 0], [0, 1], [0, -1]]
           .filter(([cx, cz]) => centre.has(`${x + cx},${z + cz}`)).length;
         if (centreNeighbours > 1) continue;
@@ -1251,8 +1254,15 @@ function compileVegetationFeature(context) {
     );
     const model = compileTreeModel({
       add, x, z, groundY: elevationY[index], heightM: resolvedHeight.heightM,
-      crownDiameterM: evidence.crownDiameterM, leafType: evidence.leafType,
-      leafPalette, seed: seed ^ hashText(`${feature.id}:${x}:${z}`)
+      crownDiameterM: evidence.crownDiameterM,
+      trunkDiameterM: evidence.trunkDiameterM ?? evidence.diameterM ?? null,
+      species: evidence.species || feature.tags?.species || feature.tags?.taxon || feature.tags?.genus || feature.name,
+      leafType: evidence.leafType,
+      leafPalette, seed: seed ^ hashText(`${feature.id}:${x}:${z}`),
+      terrainYAt: (cellX, cellZ) => {
+        const terrainIndex = cellIndex(cellX, cellZ, minX, minZ, width, height);
+        return terrainIndex >= 0 && mask[terrainIndex] ? elevationY[terrainIndex] : null;
+      }
     });
     stats.models += 1;
     stats.trunkBlocks += model.trunkBlocks;
@@ -1393,32 +1403,53 @@ function compileShrubModel({ add, x, z, groundY, palette, seed }) {
   return { leafBlocks };
 }
 
-function compileTreeModel({ add, x, z, groundY, heightM, crownDiameterM, leafType, leafPalette, seed = 0 }) {
-  const treeHeight = Math.max(2, Math.min(40, Math.round(heightM)));
-  const trunkHeight = Math.max(2, Math.min(treeHeight - 1, Math.round(treeHeight * 0.68)));
-  const crownRadius = Math.max(1, Math.min(6, Math.round(
-    Number.isFinite(crownDiameterM) ? crownDiameterM / 2 : treeHeight * 0.22
-  )));
-  const needled = String(leafType || "").toLowerCase().includes("needle");
-  const log = needled ? "minecraft:spruce_log" : "minecraft:oak_log";
-  const palette = leafPalette?.length ? leafPalette : needled
-    ? ["minecraft:spruce_leaves", "minecraft:dark_oak_leaves"]
-    : ["minecraft:oak_leaves", "minecraft:birch_leaves"];
-  const crownBase = Math.max(2, trunkHeight - Math.max(1, Math.floor(crownRadius / 2)));
-  let leafBlocks = 0;
-  for (let relativeY = crownBase; relativeY <= treeHeight; relativeY += 1) {
-    const fraction = (relativeY - crownBase) / Math.max(1, treeHeight - crownBase);
-    const profile = needled ? 1 - fraction * 0.75 : Math.sin(Math.PI * Math.max(0.08, fraction));
-    const radius = Math.max(1, Math.round(crownRadius * Math.max(0.3, profile)));
-    for (let dz = -radius; dz <= radius; dz += 1) {
-      const span = Math.floor(Math.sqrt(Math.max(0, radius * radius - dz * dz)));
-      const leaves = palette[hash2d(x + relativeY, z + dz, seed) % palette.length];
-      add(4, x - span, groundY + relativeY, z + dz, x + span, groundY + relativeY, z + dz, leaves);
-      leafBlocks += span * 2 + 1;
+function compileTreeModel({
+  add, x, z, groundY, heightM, crownDiameterM, trunkDiameterM = null,
+  species = null, leafType, leafPalette, seed = 0, terrainYAt = null
+}) {
+  const geometry = buildNaturalTreeGeometry({
+    x, z, groundY, heightM, crownDiameterM, trunkDiameterM, species, leafType,
+    leafPalette, seed, terrainYAt,
+    maxHeightBlocks: 60,
+    maxCrownDiameterBlocks: 40
+  });
+  if (geometry.status !== "generated") return { trunkBlocks: 0, leafBlocks: 0 };
+  const aboveTerrain = (voxel) => {
+    if (typeof terrainYAt !== "function") return voxel.y > groundY;
+    const sampled = terrainYAt(voxel.x, voxel.z);
+    return sampled == null || !Number.isFinite(Number(sampled)) || voxel.y > Number(sampled);
+  };
+  const leaves = geometry.leafVoxels.filter(aboveTerrain);
+  const wood = geometry.woodVoxels.filter(aboveTerrain);
+  emitTreeVoxelRuns(add, 4, leaves);
+  emitTreeVoxelRuns(add, 4, wood);
+  return {
+    trunkBlocks: wood.length,
+    leafBlocks: leaves.length,
+    shapeModel: geometry.shapeModel,
+    archetype: geometry.archetype
+  };
+}
+
+function emitTreeVoxelRuns(add, phase, voxels) {
+  const rows = new Map();
+  for (const voxel of voxels || []) {
+    const key = `${voxel.block}|${voxel.y}|${voxel.z}`;
+    if (!rows.has(key)) rows.set(key, []);
+    rows.get(key).push(voxel.x);
+  }
+  for (const [key, values] of [...rows.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const [block, rawY, rawZ] = key.split("|");
+    const y = Number(rawY), z = Number(rawZ);
+    const sorted = [...new Set(values)].sort((a, b) => a - b);
+    let start = sorted[0], end = sorted[0];
+    for (let index = 1; index <= sorted.length; index += 1) {
+      if (sorted[index] === end + 1) { end = sorted[index]; continue; }
+      if (start !== undefined) add(phase, start, y, z, end, y, z, block);
+      start = sorted[index];
+      end = sorted[index];
     }
   }
-  add(4, x, groundY + 1, z, x, groundY + trunkHeight, z, log);
-  return { trunkBlocks: trunkHeight, leafBlocks };
 }
 
 function compileRideProfileTrack(context) {
@@ -2193,7 +2224,6 @@ function placeBuildingSign(context) {
     overlapsMappedPath: Boolean(signCell.overlapsMappedPath),
     role: "building"
   };
-  // A solid one-block plinth keeps labels valid even for footprints over water.
   add(5, sign.x, terrainY, sign.z, sign.x, terrainY, sign.z, "minecraft:yellow_concrete");
   add(5, sign.x, sign.y, sign.z, sign.x, sign.y, sign.z, "minecraft:standing_sign");
   signs.push(sign);
@@ -2401,8 +2431,6 @@ function paintFeatureSurface(
           }
         }
       }
-      // Preserve mapped topology through image gaps or canopy occlusion without
-      // silently applying a class-prior width to those unsupported spans.
       for (const line of lineStrings(feature.localGeometry)) {
         for (const [x, z] of lineCells(line, 1)) {
           const index = cellIndex(x, z, raster.minX, raster.minZ, raster.width, raster.height);
