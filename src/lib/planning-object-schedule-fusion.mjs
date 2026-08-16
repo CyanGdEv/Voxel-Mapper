@@ -132,8 +132,8 @@ export function collectPlanningObjectScheduleRecords(normalizedEvidence, options
 export function canonicalObjectCode(value) {
   const text = String(value || "").trim().toUpperCase();
   if (!text) return null;
-  const compact = text.replace(/[^A-Z0-9]+/g, "");
-  return /^[A-Z]{1,8}\d{1,5}[A-Z]?$/.test(compact) ? compact : null;
+  const match = text.match(/^([A-Z]{1,8})\s*[-_:#./]?\s*(\d{1,5}[A-Z]?)$/);
+  return match ? `${match[1]}${match[2]}` : null;
 }
 
 function collectScheduleRecords(metadataValues, options) {
