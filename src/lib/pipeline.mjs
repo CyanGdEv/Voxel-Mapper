@@ -9,6 +9,8 @@ import { enrichTerrainDetails } from "./terrain-detail.mjs";
 import { integrateRideProfiles } from "./ride-profile.mjs";
 import { reconstructRideStructures3d } from "./ride-structure-reconstruction.mjs";
 import { renderRideStructures3d } from "./ride-structure-renderer.mjs";
+import { reconstructPlanningObjects3d } from "./planning-object-reconstruction.mjs";
+import { renderPlanningObjects3d } from "./planning-object-renderer.mjs";
 import { assessAccuracy, enforceAccuracy } from "./confidence.mjs";
 import { buildEvidenceGraph } from "./evidence-graph.mjs";
 import {
@@ -92,6 +94,12 @@ export async function buildPark(options = {}, progress = () => {}) {
   const planningAuthorityResolution = applyPlanningAuthorityWinners(map);
   if (planningAuthorityResolution.appliedAttributes > 0) refreshMapDerivedData(map);
 
+  // Standalone planning objects are reconstructed directly from the certified
+  // authority artifact. They need registered geometry, verified-current state
+  // and an exact non-conflicting current schedule before a 3D model can exist.
+  progress("Reconstructing verified-current schedule-linked trees, lighting, and barriers");
+  const planningObjects3d = await reconstructPlanningObjects3d(map, options);
+
   // Full ride structure is reconstructed only after all planning/current-state
   // and Evidence Graph gates have run. Drawn supports/enclosures therefore win
   // over inference only when their plan geometry is truly current/authoritative.
@@ -129,6 +137,19 @@ export async function buildPark(options = {}, progress = () => {}) {
     options: compilationOptions
   });
   rideStructures3d.render = rideStructureRender;
+
+  // Planning object adapters run at a later structural phase than generic OSM
+  // vegetation/barriers and ride structures. They may overwrite lower-authority
+  // representation above ground, but the shared writer has no terrain mutation
+  // or air-clearing path and rejects every write at/below phase-1 terrain.
+  progress("Rendering current planning trees, lighting, and barriers without deforming terrain");
+  const planningObjectRender = renderPlanningObjects3d({
+    compilation,
+    planningObjects: planningObjects3d,
+    map,
+    options: compilationOptions
+  });
+  planningObjects3d.render = planningObjectRender;
 
   const compilationPath = options.compilationOut
     ? await writeJson(path.resolve(options.compilationOut), {
@@ -168,6 +189,7 @@ export async function buildPark(options = {}, progress = () => {}) {
     resolution: planningAuthorityResolution
   });
   const rideStructures3dPath = await writeJson(path.join(outputDir, "ride-structures-3d.json"), rideStructures3d);
+  const planningObjects3dPath = await writeJson(path.join(outputDir, "planning-objects-3d.json"), planningObjects3d);
   const evidencePath = await writeJson(path.join(outputDir, "evidence.json"), {
     schemaVersion: 3,
     parkName,
@@ -197,7 +219,8 @@ export async function buildPark(options = {}, progress = () => {}) {
         surfacePaintRenderDeferred: planningSurfaceRender.deferredFeatures,
         changeSetCounts: planningTopologyReconciliation.changeSet?.counts || null,
         terrainPolicy: planningTopologyReconciliation.changeSet?.terrainPolicy || null,
-        rideStructureTemplates: options.planningAuthorityEvidenceData?.rideStructureTemplates?.length || 0
+        rideStructureTemplates: options.planningAuthorityEvidenceData?.rideStructureTemplates?.length || 0,
+        reconstructedPlanningObjects: planningObjects3d.summary?.reconstructedObjects || 0
       },
       orthophoto: withoutLargeData(sources.orthophoto),
       mapFusion: sources.mapFusion,
@@ -210,6 +233,7 @@ export async function buildPark(options = {}, progress = () => {}) {
     terrainDetails,
     rideProfiles: compactRideEvidence(rideProfiles),
     rideStructures3d: compactRideStructureEvidence(rideStructures3d),
+    planningObjects3d: compactPlanningObjectEvidence(planningObjects3d),
     evidenceGraph,
     planningAuthority: {
       changeSet: planningTopologyReconciliation.changeSet,
@@ -225,6 +249,8 @@ export async function buildPark(options = {}, progress = () => {}) {
       pathCutFillAllowed: false,
       surfacePaintAllowed: true,
       builtRideEnclosureExcavationAllowed: false,
+      planningObjectTerrainDeformationAllowed: false,
+      planningObjectAirClearingAllowed: false,
       rideTerrainTunnelEngineSeparate: true
     },
     accuracy,
@@ -333,6 +359,7 @@ export async function buildPark(options = {}, progress = () => {}) {
       planningTopologyReconciliation: planningTopologyReconciliationPath,
       planningAuthorityFusion: planningAuthorityFusionPath,
       rideStructures3d: rideStructures3dPath,
+      planningObjects3d: planningObjects3dPath,
       compilation: compilationPath,
       fidelity: fidelityPath,
       evidenceGraph: evidenceGraphPath,
@@ -379,6 +406,14 @@ export async function buildPark(options = {}, progress = () => {}) {
       planningAuthorityMatchedFeatures: planningAuthorityFusion.matchedFeatures,
       planningAuthorityWinningAttributes: planningAuthorityGraph.winningAttributes,
       planningAuthorityAppliedAttributes: planningAuthorityResolution.appliedAttributes,
+      planningObject3dReconstructed: planningObjects3d.summary?.reconstructedObjects || 0,
+      planningObject3dTrees: planningObjects3d.summary?.trees || 0,
+      planningObject3dLightingColumns: planningObjects3d.summary?.lightingColumns || 0,
+      planningObject3dBarriers: planningObjects3d.summary?.barriers || 0,
+      planningObject3dRendered: planningObjectRender.objects || 0,
+      planningObject3dTreeVoxels: (planningObjectRender.treeTrunkVoxels || 0) + (planningObjectRender.treeLeafVoxels || 0),
+      planningObject3dLightingVoxels: (planningObjectRender.lightingPoleVoxels || 0) + (planningObjectRender.lightingHeadVoxels || 0),
+      planningObject3dBarrierVoxels: planningObjectRender.barrierVoxels || 0,
       rideStructure3dReconstructed: rideStructures3d.summary?.reconstructedStructures || 0,
       rideStructure3dTracedSupports: rideStructures3d.summary?.tracedSupportStructures || 0,
       rideStructure3dTemplateLinkedSupports: rideStructures3d.summary?.templateLinkedSupports || 0,
@@ -480,6 +515,31 @@ function compactRideStructureEvidence(value) {
       portalClearanceVoxels: value.render.portalClearanceVoxels,
       accessStructures: value.render.accessStructures,
       accessVoxels: value.render.accessVoxels,
+      terrainGeometryChanged: value.render.terrainGeometryChanged,
+      terrainElevationChanged: value.render.terrainElevationChanged
+    } : null
+  };
+}
+
+function compactPlanningObjectEvidence(value) {
+  if (!value) return value;
+  return {
+    schemaVersion: value.schemaVersion,
+    status: value.status,
+    policy: value.policy,
+    summary: value.summary,
+    render: value.render ? {
+      status: value.render.status,
+      objects: value.render.objects,
+      trees: value.render.trees,
+      treeTrunkVoxels: value.render.treeTrunkVoxels,
+      treeLeafVoxels: value.render.treeLeafVoxels,
+      lightingColumns: value.render.lightingColumns,
+      lightingPoleVoxels: value.render.lightingPoleVoxels,
+      lightingHeadVoxels: value.render.lightingHeadVoxels,
+      barriers: value.render.barriers,
+      barrierVoxels: value.render.barrierVoxels,
+      skippedBelowTerrainWrites: value.render.skippedBelowTerrainWrites,
       terrainGeometryChanged: value.render.terrainGeometryChanged,
       terrainElevationChanged: value.render.terrainElevationChanged
     } : null
