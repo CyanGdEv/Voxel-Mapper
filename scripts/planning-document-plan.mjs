@@ -37,6 +37,21 @@ const sources = await acquireSources({
   contact: process.env.TPMAP_CONTACT || undefined
 });
 const planning = sources.planning;
+
+// A genuine successful zero-result planning search is valid. A zero-result
+// caused by provider/portal failure is not: silently proceeding here creates an
+// apparently successful but effectively OSM-only world, which is materially
+// misleading for the planning-authority reconstruction pipeline.
+if (!(planning.applicationCount > 0) && (
+  planning.status === "failed" ||
+  planning.status === "local-portal-source-failed" ||
+  planning.localPortalFallback?.sourceFailure
+)) {
+  throw new Error(
+    `Planning application discovery failed for ${bbox}; refusing to generate an OSM-only world while a required planning source is unavailable`
+  );
+}
+
 const queue = buildPlanningDocumentQueue(planning, {
   planningDocumentShards: Number(value("--shards") || DEFAULT_SHARDS)
 });
