@@ -352,9 +352,9 @@ jobs:
             planning-registered-evidence-shard-${{ matrix.shard }}
           retention-days: 7
 
-  merge_georegistration:
-    needs: [georegister, georeg_reference]
-    if: always() && needs.georegister.result == 'success' && needs.georeg_reference.outputs.reference_status == 'success'
+  finalize-current-state:
+    needs: [georegister, georeg_reference, catalog]
+    if: always() && needs.georegister.result == 'success' && needs.georeg_reference.outputs.reference_status == 'success' && needs.catalog.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -373,33 +373,72 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: planning-georeg-reference
-      - name: Merge parallel page registrations deterministically
+      - name: Download planning document catalog
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-document-acquisition-catalog
+      - name: Download immutable planning application snapshot
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-document-queue
+      - name: Merge parallel page registrations in-process for authority resolution
         run: >-
           node scripts/planning-georeg-merge.mjs
           --shards planning-georegistration-shards
           --reference planning-georeg-reference.json
           --out planning-georegistration.json
           --registered-out planning-registered-evidence
-      - name: Upload planning spatial registration evidence
+      - name: Resolve revisions, current state and post-decision implementation evidence without an intermediate artifact round trip
+        run: >-
+          node scripts/planning-resolve-revisions.mjs
+          --registered planning-registered-evidence
+          --reference planning-georeg-reference.json
+          --catalog planning-document-catalog.json
+          --queue planning-document-queue.json
+          --out planning-revision-resolution.json
+          --resolved-out planning-current-state-evidence.json
+          --authority-out planning-current-authority-pointer.json
+      - name: Materialize only the strict authority subset for world fusion
+        run: node scripts/planning-authority-compat.mjs --manifest planning-current-authority-pointer.json --out planning-current-authority-evidence.json
+      - name: Upload current-state authority and compact georegistration audit
         uses: actions/upload-artifact@v4
         with:
-          name: planning-georegistration-evidence
+          name: planning-current-state-evidence
           path: |
             planning-georegistration.json
-            planning-registered-evidence
             planning-georeg-reference.json
+            planning-registered-evidence/manifest.json
+            planning-revision-resolution.json
+            planning-current-state-evidence.json
+            planning-current-state-evidence-bundle
+            planning-current-authority-pointer.json
+            planning-current-authority-pointer-bundle
+            planning-current-authority-evidence.json
           retention-days: 7
 
-  georegister_degraded:
-    needs: [merge-extraction, georeg_reference]
-    if: always() && needs.merge-extraction.result == 'success' && needs.georeg_reference.outputs.reference_status != 'success'
+  finalize-current-state-degraded:
+    needs: [merge-extraction, georeg_reference, catalog]
+    if: always() && needs.merge-extraction.result == 'success' && needs.georeg_reference.outputs.reference_status != 'success' && needs.catalog.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
       - name: Download fail-closed OSM georegistration reference
         uses: actions/download-artifact@v4
         with:
           name: planning-georeg-reference
+      - name: Download planning document catalog
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-document-acquisition-catalog
+      - name: Download immutable planning application snapshot
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-document-queue
       - name: Record degraded registration when the reference is unavailable
         shell: bash
         run: |
@@ -407,13 +446,15 @@ jobs:
           node - <<'NODE'
           const fs = require('fs');
           const report = {
-            schemaVersion: 4,
+            schemaVersion: 3,
             status: 'unregistered',
             mode: 'reference-unavailable',
             reason: 'bbox-osm-reference-unavailable',
             worldGeometryReady: false,
             worldGeometryAuthority: false,
             temporalResolutionRequired: true,
+            registrations: [],
+            unregisteredPages: [],
             note: 'Planning extraction remains valid document-space evidence; generation should fall back to lower-authority spatial evidence rather than fail.'
           };
           const manifest = {
@@ -439,57 +480,26 @@ jobs:
           fs.writeFileSync('planning-georegistration.json', JSON.stringify(report, null, 2) + '\n');
           fs.writeFileSync('planning-registered-evidence/manifest.json', JSON.stringify(manifest, null, 2) + '\n');
           NODE
-      - name: Upload degraded planning spatial registration evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: planning-georegistration-evidence
-          path: |
-            planning-georegistration.json
-            planning-registered-evidence
-            planning-georeg-reference.json
-          retention-days: 7
-
-  resolve-revisions:
-    needs: [catalog, merge_georegistration, georegister_degraded]
-    if: always() && needs.catalog.result == 'success' && (needs.merge_georegistration.result == 'success' || needs.georegister_degraded.result == 'success')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-      - run: npm ci
-      - name: Download planning spatial registration evidence
-        uses: actions/download-artifact@v4
-        with:
-          name: planning-georegistration-evidence
-          path: planning-georegistration-download
-      - name: Download planning document catalog
-        uses: actions/download-artifact@v4
-        with:
-          name: planning-document-acquisition-catalog
-      - name: Download immutable planning application snapshot
-        uses: actions/download-artifact@v4
-        with:
-          name: planning-document-queue
-      - name: Resolve revisions, current state and post-decision implementation evidence
+      - name: Resolve the empty spatial authority fail-closed while preserving application/revision diagnostics
         run: >-
           node scripts/planning-resolve-revisions.mjs
-          --registered planning-georegistration-download/planning-registered-evidence
-          --reference planning-georegistration-download/planning-georeg-reference.json
+          --registered planning-registered-evidence
+          --reference planning-georeg-reference.json
           --catalog planning-document-catalog.json
           --queue planning-document-queue.json
           --out planning-revision-resolution.json
           --resolved-out planning-current-state-evidence.json
           --authority-out planning-current-authority-pointer.json
-      - name: Materialize only the strict authority subset for world fusion
+      - name: Materialize fail-closed authority compatibility output
         run: node scripts/planning-authority-compat.mjs --manifest planning-current-authority-pointer.json --out planning-current-authority-evidence.json
-      - name: Upload planning current-state authority evidence
+      - name: Upload degraded current-state authority and audit
         uses: actions/upload-artifact@v4
         with:
           name: planning-current-state-evidence
           path: |
+            planning-georegistration.json
+            planning-georeg-reference.json
+            planning-registered-evidence/manifest.json
             planning-revision-resolution.json
             planning-current-state-evidence.json
             planning-current-state-evidence-bundle
