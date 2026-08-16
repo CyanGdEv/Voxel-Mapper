@@ -89,6 +89,8 @@ The current weighted ground palettes include:
 
 Weighted palettes retain all configured Minecraft blocks. Five-entry resin and paving palettes are not truncated to three blocks. Deterministic coordinate hashing preserves repeatable speckled/mixed/organic material variation across runs.
 
+Material aliases are normalized through the same canonical key function as the palette registry, so labels such as `red tarmac`, `resin-bound beige`, `paving slabs`, and `block paving` resolve consistently.
+
 If a current planning material is not in the ground-safe palette registry, it remains explicit QA evidence and is deferred instead of being substituted with an inaccurate block.
 
 ## Semantic inference
@@ -108,3 +110,7 @@ Weak or conflicting signals emit `review` rather than guessing.
 Each emitted change records the planning document hash/page, semantic evidence, temporal authority, match score, target feature (if any), operation confidence and decision reason. The resulting change-set is written as a standalone QA artifact before world reconstruction.
 
 `planning-surface-paint.json` also records the final render result, material palette, block weights, painted cell count, operation count and explicit `terrainGeometryChanged: false` / `terrainElevationChanged: false` evidence for every rendered planning area.
+
+## Validation
+
+The production regression suite covers the terrain lock at both semantic and compiled-world boundaries. It verifies that planning paint reuses the exact existing terrain Y, cannot create terrain outside an already-compiled top-surface cell, preserves every block in five-entry weighted palettes, materializes red-tarmac paint evidence consistently, and rejects roof/glass palettes as ground materials.
