@@ -114,5 +114,3 @@ Each emitted change records the planning document hash/page, semantic evidence, 
 ## Validation
 
 The production regression suite covers the terrain lock at both semantic and compiled-world boundaries. It verifies that planning paint reuses the exact existing terrain Y, cannot create terrain outside an already-compiled top-surface cell, preserves every block in five-entry weighted palettes, materializes red-tarmac paint evidence consistently, and rejects roof/glass palettes as ground materials.
-
-The latest behavior-bearing test head passed 180/180 tests, `npm run doctor`, PDF.js installation, and the real planning PDF extraction smoke test. Subsequent documentation/test-comment-only commits retain the same implementation and are required to pass the identical CI workflow before the PR is considered ready.
