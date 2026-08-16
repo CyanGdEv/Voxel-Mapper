@@ -11,11 +11,13 @@ const PORTAL_ADAPTERS = Object.freeze([
   Object.freeze({
     id: "staffordshire-moorlands-publicaccess",
     jurisdiction: /staffordshire\s+moorlands/i,
-    // The council currently publishes this legacy PublicAccess register over
-    // HTTP. Its HTTPS endpoint intermittently fails TLS/edge negotiation from
-    // GitHub-hosted runners, while the council's own accessibility statement
-    // still identifies the HTTP URL as the supported application register.
-    listingUrl: "http://publicaccess.staffsmoorlands.gov.uk/portal/servlets/MajorContentiousDevelopmentservlet",
+    // PublicAccess is reachable over HTTPS on the current council register,
+    // but the legacy HTTP transport is retained as a bounded fallback because
+    // council edge/TLS behaviour has varied from hosted CI runners.
+    listingUrls: Object.freeze([
+      "https://publicaccess.staffsmoorlands.gov.uk/portal/servlets/MajorContentiousDevelopmentservlet",
+      "http://publicaccess.staffsmoorlands.gov.uk/portal/servlets/MajorContentiousDevelopmentservlet"
+    ]),
     parse: parsePublicAccessMajorApplications
   })
 ]);
@@ -43,7 +45,14 @@ export async function augmentPlanningFromLocalPortals(options, planning, osmData
       applicationCount: bounded.length,
       coverageStatus: planning?.coverageStatus || "partial-or-unknown",
       osmPlanningDiscovery: compactDiscovery(osmDiscovery),
-      localPortalFallback: { attempted: false, hints, attempts, addedApplications: 0 }
+      localPortalFallback: {
+        attempted: false,
+        successfulAdapters: 0,
+        sourceFailure: false,
+        hints,
+        attempts,
+        addedApplications: 0
+      }
     };
   }
 
@@ -58,7 +67,9 @@ export async function augmentPlanningFromLocalPortals(options, planning, osmData
         jurisdiction: name,
         status: "success",
         candidates: discovery.applications.length,
-        cacheHit: discovery.cacheHit
+        cacheHit: discovery.cacheHit,
+        sourceUrl: discovery.sourceUrl,
+        transportAttempts: discovery.transportAttempts
       });
       applications.push(...discovery.applications.map((application) => ({
         ...application,
@@ -79,15 +90,25 @@ export async function augmentPlanningFromLocalPortals(options, planning, osmData
   const merged = dedupeApplications(applications);
   const addedApplications = Math.max(0, merged.length - (planning?.applications?.length || 0));
   const ranked = rankPlanningApplicationsByOsm(merged, osmDiscovery, options).slice(0, maxApplications);
+  const successfulAttempts = attempts.filter((attempt) => attempt.status === "success");
+  const sourceFailure = attempts.length > 0 && successfulAttempts.length === 0;
   return {
     ...planning,
     applications: ranked,
     applicationCount: ranked.length,
-    coverageStatus: attempts.length ? "national-plus-local-portal" : (planning?.coverageStatus || "partial-or-unknown"),
-    status: addedApplications > 0 ? "acquired-with-local-portal-fallback" : planning?.status,
+    coverageStatus: successfulAttempts.length
+      ? "national-plus-local-portal"
+      : (planning?.coverageStatus || "partial-or-unknown"),
+    status: addedApplications > 0
+      ? "acquired-with-local-portal-fallback"
+      : sourceFailure && !ranked.length
+        ? "local-portal-source-failed"
+        : planning?.status,
     osmPlanningDiscovery: compactDiscovery(osmDiscovery),
     localPortalFallback: {
       attempted: attempts.length > 0,
+      successfulAdapters: successfulAttempts.length,
+      sourceFailure,
       hints,
       attempts,
       addedApplications
@@ -154,35 +175,78 @@ export function parsePublicAccessMajorApplications(html, listingUrl, hints = [])
 }
 
 async function discoverPortalApplications(adapter, options, hints) {
-  // Keep local-register HTML beside the national planning index cache so the
-  // existing Actions cache restores both on normal repeat generations. A
-  // refresh/no-cache run still bypasses it through cachedJson exactly as before.
+  // Never turn a failed transport into a successful empty planning result.
+  // Try every declared public transport and retain transport diagnostics. A
+  // fetched page with zero relevant rows is valid only after all transports
+  // have been attempted, so a stale/partial endpoint cannot hide a working one.
   const cacheDir = path.join(options.cacheDir || ".tpmap-cache", "planning-data-england", "lpa-fallback");
-  const cacheKey = `${adapter.id}\n${adapter.listingUrl}`;
-  const { data, cacheHit } = await cachedJson({
-    cacheDir,
-    key: cacheKey,
-    noCache: options.noCache,
-    fetcher: async () => ({ html: await fetchText(adapter.listingUrl, options) })
-  });
-  return {
-    applications: adapter.parse(data.html, adapter.listingUrl, hints),
-    cacheHit
-  };
+  const urls = adapter.listingUrls || [adapter.listingUrl].filter(Boolean);
+  const transportAttempts = [];
+  let emptySuccess = null;
+
+  for (const listingUrl of urls) {
+    try {
+      const cacheKey = `${adapter.id}\n${listingUrl}`;
+      const { data, cacheHit } = await cachedJson({
+        cacheDir,
+        key: cacheKey,
+        noCache: options.noCache,
+        fetcher: async () => ({ html: await fetchText(listingUrl, options) })
+      });
+      const applications = adapter.parse(data.html, listingUrl, hints);
+      transportAttempts.push({
+        url: listingUrl,
+        status: "success",
+        cacheHit,
+        candidates: applications.length
+      });
+      const result = { applications, cacheHit, sourceUrl: listingUrl, transportAttempts };
+      if (applications.length) return result;
+      emptySuccess ||= result;
+    } catch (error) {
+      transportAttempts.push({
+        url: listingUrl,
+        status: "failed",
+        message: error?.message || String(error)
+      });
+    }
+  }
+
+  if (emptySuccess) return { ...emptySuccess, transportAttempts };
+  throw new Error(
+    `All local planning portal transports failed: ${transportAttempts.map((entry) => `${entry.url}: ${entry.message || entry.status}`).join("; ")}`
+  );
 }
 
 async function fetchText(url, options) {
   const implementation = options.fetchPlanningPortalImpl || globalThis.fetch;
-  if (typeof implementation !== "function") throw new Error("No fetch implementation is available for local planning portal discovery");
-  const response = await implementation(url, {
-    redirect: "follow",
-    headers: {
-      "User-Agent": options.userAgent || "VoxelMapper/0.12",
-      Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"
+  if (typeof implementation !== "function") {
+    throw new Error("No fetch implementation is available for local planning portal discovery");
+  }
+
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const response = await implementation(url, {
+        redirect: "follow",
+        signal: controller.signal,
+        headers: {
+          "User-Agent": options.userAgent || "VoxelMapper/0.12",
+          Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"
+        }
+      });
+      if (!response?.ok) throw new Error(`HTTP ${response?.status ?? "?"} fetching local planning portal`);
+      return await response.text();
+    } catch (error) {
+      lastError = error;
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 500));
+    } finally {
+      clearTimeout(timer);
     }
-  });
-  if (!response?.ok) throw new Error(`HTTP ${response?.status ?? "?"} fetching local planning portal`);
-  return response.text();
+  }
+  throw lastError || new Error("Local planning portal fetch failed");
 }
 
 function dedupeApplications(applications) {
