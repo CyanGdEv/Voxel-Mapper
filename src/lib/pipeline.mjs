@@ -15,6 +15,7 @@ import {
   applyPlanningAuthorityWinners
 } from "./planning-authority-fusion.mjs";
 import { reconcileCompiledPlanningChanges } from "./planning-change-reconciliation.mjs";
+import { renderPlanningSurfacePaint } from "./planning-surface-renderer.mjs";
 import { buildPlanningDocumentQueue } from "./planning-documents.mjs";
 import { compileMap } from "./raster.mjs";
 import { buildBedrockAddon } from "./bedrock.mjs";
@@ -99,6 +100,14 @@ export async function buildPark(options = {}, progress = () => {}) {
   };
   progress("Compiling immutable-terrain 1 m raster and chunked Bedrock operations");
   const compilation = compileMap({ parkName, map, sources, accuracy, options: compilationOptions });
+  progress("Painting current-planning materials over immutable terrain");
+  const planningSurfaceRender = renderPlanningSurfacePaint({
+    compilation,
+    changeSet: planningTopologyReconciliation.changeSet,
+    options: compilationOptions
+  });
+  planningTopologyReconciliation.paint ||= {};
+  planningTopologyReconciliation.paint.render = planningSurfaceRender;
   const compilationPath = options.compilationOut
     ? await writeJson(path.resolve(options.compilationOut), {
         schemaVersion: 1,
@@ -160,6 +169,9 @@ export async function buildPark(options = {}, progress = () => {}) {
         topologyDeleted: planningTopologyReconciliation.deleted,
         surfacePaintApplied: planningTopologyReconciliation.paint?.applied || 0,
         surfacePaintDeferred: planningTopologyReconciliation.paint?.deferred || 0,
+        surfacePaintRenderedFeatures: planningSurfaceRender.renderedFeatures,
+        surfacePaintRenderedCells: planningSurfaceRender.renderedCellWrites,
+        surfacePaintRenderDeferred: planningSurfaceRender.deferredFeatures,
         changeSetCounts: planningTopologyReconciliation.changeSet?.counts || null,
         terrainPolicy: planningTopologyReconciliation.changeSet?.terrainPolicy || null
       },
@@ -330,6 +342,9 @@ export async function buildPark(options = {}, progress = () => {}) {
       planningChangeSetReviews: planningTopologyReconciliation.changeSet?.counts?.review || 0,
       planningSurfacePaintApplied: planningTopologyReconciliation.paint?.applied || 0,
       planningSurfacePaintDeferred: planningTopologyReconciliation.paint?.deferred || 0,
+      planningSurfacePaintRenderedFeatures: planningSurfaceRender.renderedFeatures,
+      planningSurfacePaintRenderedCells: planningSurfaceRender.renderedCellWrites,
+      planningSurfacePaintRenderDeferred: planningSurfaceRender.deferredFeatures,
       planningTopologyAdded: planningTopologyReconciliation.added,
       planningTopologyReplaced: planningTopologyReconciliation.replaced,
       planningTopologyDeleted: planningTopologyReconciliation.deleted,
