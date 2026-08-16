@@ -1,4 +1,5 @@
 import { buildPhaseOneTerrainTopIndex, createAboveTerrainCompilationWriter } from "./compilation-overlay-writer.mjs";
+import { buildNaturalTreeGeometry } from "./natural-tree-geometry.mjs";
 
 const PHASE_TREE_LEAVES = 9.10;
 const PHASE_TREE_TRUNK = 9.11;
@@ -13,7 +14,10 @@ export function renderPlanningObjects3d({ compilation, planningObjects, options 
     objects: 0,
     trees: 0,
     treeTrunkVoxels: 0,
+    treeBranchVoxels: 0,
+    treeRootVoxels: 0,
     treeLeafVoxels: 0,
+    treeNaturalGeometryModels: 0,
     lightingColumns: 0,
     lightingPoleVoxels: 0,
     lightingHeadVoxels: 0,
@@ -38,7 +42,7 @@ export function renderPlanningObjects3d({ compilation, planningObjects, options 
   for (const object of planningObjects.objects) {
     let written = 0;
     if (object.kind === "tree") {
-      written = renderTree(object, writer, result);
+      written = renderTree(object, writer, result, options);
       if (written) result.trees += 1;
     } else if (object.kind === "lighting_column") {
       written = renderLightingColumn(object, writer, result);
@@ -54,12 +58,17 @@ export function renderPlanningObjects3d({ compilation, planningObjects, options 
   writer.finish();
   compilation.stats.planningObject3dObjects = result.objects;
   compilation.stats.planningObject3dTreeVoxels = result.treeTrunkVoxels + result.treeLeafVoxels;
+  compilation.stats.planningObject3dNaturalTreeModels = result.treeNaturalGeometryModels;
+  compilation.stats.planningObject3dTreeBranchVoxels = result.treeBranchVoxels;
+  compilation.stats.planningObject3dTreeRootVoxels = result.treeRootVoxels;
   compilation.stats.planningObject3dLightingVoxels = result.lightingPoleVoxels + result.lightingHeadVoxels;
   compilation.stats.planningObject3dBarrierVoxels = result.barrierVoxels;
   compilation.meta.planningObject3d = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     objects: result.objects,
     trees: result.trees,
+    naturalTreeGeometryModels: result.treeNaturalGeometryModels,
+    treeShapeModel: "deterministic-natural-tree-v1",
     lightingColumns: result.lightingColumns,
     barriers: result.barriers,
     source: "verified-current registered planning geometry plus exact current schedule",
@@ -72,7 +81,7 @@ export function renderPlanningObjects3d({ compilation, planningObjects, options 
   return result;
 }
 
-function renderTree(object, writer, result) {
+function renderTree(object, writer, result, options = {}) {
   const x = Math.round(Number(object.anchor?.x));
   const z = Math.round(Number(object.anchor?.z));
   const groundY = writer.terrainY(x, z);
@@ -82,48 +91,38 @@ function renderTree(object, writer, result) {
   if (!Number.isFinite(totalHeight) || !Number.isFinite(crownDiameter)) return 0;
 
   const blocks = treeBlocks(object.species);
-  const radiusX = Math.max(0.75, crownDiameter / 2);
-  const radiusZ = radiusX;
-  // The vertical canopy profile is a deterministic voxel abstraction bounded by
-  // the two measured schedule dimensions; it never changes measured total height
-  // or horizontal crown spread.
-  const crownHeight = Math.max(2, Math.min(totalHeight - 1, Math.round(Math.min(object.crownSpreadM, object.heightM * 0.55))));
-  const crownBottom = totalHeight - crownHeight + 1;
-  const crownCenterY = groundY + crownBottom + (crownHeight - 1) / 2;
-  const radiusY = Math.max(0.75, crownHeight / 2);
+  const geometry = buildNaturalTreeGeometry({
+    x,
+    z,
+    groundY,
+    heightM: totalHeight,
+    crownDiameterM: crownDiameter,
+    trunkDiameterM: object.trunkDiameterM,
+    species: object.species,
+    logBlock: blocks.log,
+    leafPalette: blocks.leaves,
+    seed: naturalTreeSeed(object, options),
+    terrainYAt: (cellX, cellZ) => writer.terrainY(cellX, cellZ)
+  });
+  if (geometry.status !== "generated") return 0;
+
   let written = 0;
-
-  const extent = Math.max(1, Math.ceil(radiusX));
-  for (let dz = -extent; dz <= extent; dz += 1) {
-    for (let dx = -extent; dx <= extent; dx += 1) {
-      for (let dy = -Math.ceil(radiusY); dy <= Math.ceil(radiusY); dy += 1) {
-        const nx = dx / radiusX;
-        const nz = dz / radiusZ;
-        const ny = dy / radiusY;
-        if (nx * nx + nz * nz + ny * ny > 1.08) continue;
-        const y = Math.round(crownCenterY + dy);
-        if (y > groundY + totalHeight) continue;
-        if (writer.cell(PHASE_TREE_LEAVES, x + dx, y, z + dz, blocks.leaves)) {
-          result.treeLeafVoxels += 1;
-          written += 1;
-        }
-      }
+  for (const voxel of geometry.leafVoxels) {
+    if (writer.cell(PHASE_TREE_LEAVES, voxel.x, voxel.y, voxel.z, voxel.block)) {
+      result.treeLeafVoxels += 1;
+      written += 1;
     }
   }
-
-  const diameterBlocks = object.trunkDiameterM == null ? 1 : Math.max(1, Math.round(Number(object.trunkDiameterM)));
-  const trunkRadius = Math.max(0, Math.floor((diameterBlocks - 1) / 2));
-  const trunkTop = Math.max(1, Math.min(totalHeight, crownBottom + Math.max(0, Math.floor(crownHeight / 2))));
-  for (let dy = 1; dy <= trunkTop; dy += 1) {
-    for (let dz = -trunkRadius; dz <= trunkRadius; dz += 1) {
-      for (let dx = -trunkRadius; dx <= trunkRadius; dx += 1) {
-        if (writer.cell(PHASE_TREE_TRUNK, x + dx, groundY + dy, z + dz, blocks.log)) {
-          result.treeTrunkVoxels += 1;
-          written += 1;
-        }
-      }
+  for (const voxel of geometry.woodVoxels) {
+    if (!writer.cell(PHASE_TREE_TRUNK, voxel.x, voxel.y, voxel.z, voxel.block)) continue;
+    result.treeTrunkVoxels += 1;
+    if (voxel.role === "root") result.treeRootVoxels += 1;
+    else if (voxel.x !== x || voxel.z !== z || voxel.y > groundY + Math.round(totalHeight * 0.35)) {
+      result.treeBranchVoxels += 1;
     }
+    written += 1;
   }
+  if (written) result.treeNaturalGeometryModels += 1;
   return written;
 }
 
@@ -198,11 +197,30 @@ function geometryLineCells(geometry) {
 
 function treeBlocks(species) {
   const value = String(species || "").toLowerCase();
-  if (/birch/.test(value)) return { log: "minecraft:birch_log", leaves: "minecraft:birch_leaves" };
-  if (/cherry/.test(value)) return { log: "minecraft:cherry_log", leaves: "minecraft:cherry_leaves" };
-  if (/pine|spruce|fir|cedar|yew/.test(value)) return { log: "minecraft:spruce_log", leaves: "minecraft:spruce_leaves" };
-  if (/acacia/.test(value)) return { log: "minecraft:acacia_log", leaves: "minecraft:acacia_leaves" };
-  return { log: "minecraft:oak_log", leaves: "minecraft:oak_leaves" };
+  if (/birch|betula|alder/.test(value)) {
+    return { log: "minecraft:birch_log", leaves: ["minecraft:birch_leaves", "minecraft:oak_leaves"] };
+  }
+  if (/cherry|prunus/.test(value)) {
+    return { log: "minecraft:cherry_log", leaves: ["minecraft:cherry_leaves"] };
+  }
+  if (/pine|spruce|fir|cedar|yew|larch|redwood|sequoia/.test(value)) {
+    return { log: "minecraft:spruce_log", leaves: ["minecraft:spruce_leaves", "minecraft:dark_oak_leaves"] };
+  }
+  if (/acacia/.test(value)) {
+    return { log: "minecraft:acacia_log", leaves: ["minecraft:acacia_leaves", "minecraft:oak_leaves"] };
+  }
+  return { log: "minecraft:oak_log", leaves: ["minecraft:oak_leaves", "minecraft:dark_oak_leaves"] };
+}
+
+function naturalTreeSeed(object, options) {
+  const base = Number(options.seed || 0) | 0;
+  const text = `${object.id || ""}:${object.canonicalObjectCode || ""}:${object.species || ""}:${object.anchor?.x || 0}:${object.anchor?.z || 0}`;
+  let hash = 2166136261;
+  for (const character of text) {
+    hash ^= character.codePointAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash ^ base) | 0;
 }
 
 function lightingPoleBlock(object) {
