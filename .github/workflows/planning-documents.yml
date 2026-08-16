@@ -82,6 +82,59 @@ jobs:
           path: planning-document-queue.json
           retention-days: 7
 
+  georeg_reference:
+    needs: prepare
+    runs-on: ubuntu-latest
+    outputs:
+      reference_status: ${{ steps.reference.outcome }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Restore bbox OSM georegistration cache
+        uses: actions/cache@v4
+        with:
+          path: .tpmap-cache/planning-georeg-osm
+          key: planning-georeg-osm-v4-${{ github.run_id }}
+          restore-keys: |
+            planning-georeg-osm-v4-
+            planning-georeg-osm-v3-
+            planning-georeg-osm-v2-
+      - id: reference
+        name: Build current OSM spatial reference while planning documents are acquired
+        continue-on-error: true
+        shell: bash
+        run: |
+          args=(--bbox "${{ inputs.bbox }}" --cache .tpmap-cache --out planning-georeg-reference.json)
+          if [[ "${{ inputs.refresh }}" == "true" ]]; then args+=(--refresh); fi
+          node scripts/planning-osm-reference.mjs "${args[@]}"
+      - name: Materialize fail-closed empty reference when OSM reference is unavailable
+        if: steps.reference.outcome != 'success'
+        shell: bash
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          fs.writeFileSync('planning-georeg-reference.json', JSON.stringify({
+            schemaVersion: 1,
+            status: 'unavailable',
+            bbox: process.env.BBOX,
+            provider: null,
+            featureCount: 0,
+            features: []
+          }, null, 2) + '\n');
+          NODE
+        env:
+          BBOX: ${{ inputs.bbox }}
+      - name: Upload shared OSM georegistration reference
+        uses: actions/upload-artifact@v4
+        with:
+          name: planning-georeg-reference
+          path: planning-georeg-reference.json
+          retention-days: 7
+
   acquire:
     needs: prepare
     runs-on: ubuntu-latest
@@ -111,7 +164,7 @@ jobs:
       - name: Discover and acquire shard
         shell: bash
         run: |
-          args=(--queue planning-document-queue.json --shard "${{ matrix.shard }}" --cache .tpmap-cache --out "planning-documents-shard-${{ matrix.shard }}.json" --concurrency 6)
+          args=(--queue planning-document-queue.json --shard "${{ matrix.shard }}" --cache .tpmap-cache --out "planning-documents-shard-${{ matrix.shard }}.json" --concurrency 12)
           if [[ "${{ inputs.refresh }}" == "true" ]]; then args+=(--refresh); fi
           node scripts/planning-document-worker.mjs "${args[@]}"
       - name: Upload shard manifest
@@ -221,6 +274,10 @@ jobs:
     needs: [catalog, extract-vector]
     if: always() && needs.catalog.outputs.extraction_queue_items != '0' && needs.extract-vector.result != 'cancelled'
     runs-on: ubuntu-latest
+    outputs:
+      active_georeg_shards: ${{ steps.georeg_plan.outputs.active_georeg_shards }}
+      georeg_page_count: ${{ steps.georeg_plan.outputs.georeg_page_count }}
+      georeg_shard_count: ${{ steps.georeg_plan.outputs.georeg_shard_count }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -234,18 +291,70 @@ jobs:
           merge-multiple: false
       - name: Merge normalized planning evidence without global geometry materialization
         run: node scripts/planning-vector-merge.mjs --manifests extraction-manifests --out planning-vector-evidence --raster-fallback-out planning-raster-fallback-queue.json
-      - name: Upload normalized planning extraction evidence
+      - id: georeg_plan
+        name: Balance planning pages across parallel georegistration runners
+        run: node scripts/planning-georeg-plan.mjs --evidence planning-vector-evidence --shards 20 --out planning-georeg-shard-plan.json
+      - name: Upload normalized planning extraction evidence and georegistration plan
         uses: actions/upload-artifact@v4
         with:
           name: planning-vector-extraction-evidence
           path: |
             planning-vector-evidence
             planning-raster-fallback-queue.json
+            planning-georeg-shard-plan.json
           retention-days: 7
 
   georegister:
-    needs: [prepare, merge-extraction]
-    if: always() && needs.merge-extraction.result == 'success'
+    needs: [merge-extraction, georeg_reference]
+    if: always() && needs.merge-extraction.result == 'success' && needs.georeg_reference.outputs.reference_status == 'success'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: ${{ fromJSON(needs.merge-extraction.outputs.active_georeg_shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download normalized planning evidence bundle and shard plan
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-vector-extraction-evidence
+          path: planning-extraction-download
+      - name: Download shared OSM georegistration reference
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-georeg-reference
+      - name: Materialize this balanced planning page shard
+        run: >-
+          node scripts/planning-georeg-shard.mjs
+          --evidence planning-extraction-download/planning-vector-evidence
+          --plan planning-extraction-download/planning-georeg-shard-plan.json
+          --shard "${{ matrix.shard }}"
+          --out "planning-georeg-input-shard-${{ matrix.shard }}"
+      - name: Register only this shard against the shared current spatial reference
+        run: >-
+          node scripts/planning-georegister.mjs
+          --evidence "planning-georeg-input-shard-${{ matrix.shard }}"
+          --reference planning-georeg-reference.json
+          --out "planning-georegistration-shard-${{ matrix.shard }}.json"
+          --registered-out "planning-registered-evidence-shard-${{ matrix.shard }}"
+      - name: Upload registered planning page shard
+        uses: actions/upload-artifact@v4
+        with:
+          name: planning-georegistration-shard-${{ matrix.shard }}
+          path: |
+            planning-georegistration-shard-${{ matrix.shard }}.json
+            planning-registered-evidence-shard-${{ matrix.shard }}
+          retention-days: 7
+
+  merge_georegistration:
+    needs: [georegister, georeg_reference]
+    if: always() && needs.georegister.result == 'success' && needs.georeg_reference.outputs.reference_status == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -254,40 +363,53 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - name: Download normalized planning evidence bundle
+      - name: Download every registered planning page shard
         uses: actions/download-artifact@v4
         with:
-          name: planning-vector-extraction-evidence
-          path: planning-extraction-download
-      - name: Restore bbox OSM georegistration cache
-        uses: actions/cache@v4
+          pattern: planning-georegistration-shard-*
+          path: planning-georegistration-shards
+          merge-multiple: false
+      - name: Download shared OSM georegistration reference
+        uses: actions/download-artifact@v4
         with:
-          path: .tpmap-cache/planning-georeg-osm
-          key: planning-georeg-osm-v3-${{ github.run_id }}
-          restore-keys: |
-            planning-georeg-osm-v3-
-            planning-georeg-osm-v2-
-      - id: reference
-        name: Build current OSM spatial reference
-        continue-on-error: true
-        shell: bash
-        run: |
-          args=(--bbox "${{ inputs.bbox }}" --cache .tpmap-cache --out planning-georeg-reference.json)
-          if [[ "${{ inputs.refresh }}" == "true" ]]; then args+=(--refresh); fi
-          node scripts/planning-osm-reference.mjs "${args[@]}"
-      - name: Register planning pages against current spatial evidence
-        if: steps.reference.outcome == 'success'
-        run: node scripts/planning-georegister.mjs --evidence planning-extraction-download/planning-vector-evidence --reference planning-georeg-reference.json --out planning-georegistration.json --registered-out planning-registered-evidence
+          name: planning-georeg-reference
+      - name: Merge parallel page registrations deterministically
+        run: >-
+          node scripts/planning-georeg-merge.mjs
+          --shards planning-georegistration-shards
+          --reference planning-georeg-reference.json
+          --out planning-georegistration.json
+          --registered-out planning-registered-evidence
+      - name: Upload planning spatial registration evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: planning-georegistration-evidence
+          path: |
+            planning-georegistration.json
+            planning-registered-evidence
+            planning-georeg-reference.json
+          retention-days: 7
+
+  georegister_degraded:
+    needs: [merge-extraction, georeg_reference]
+    if: always() && needs.merge-extraction.result == 'success' && needs.georeg_reference.outputs.reference_status != 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download fail-closed OSM georegistration reference
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-georeg-reference
       - name: Record degraded registration when the reference is unavailable
-        if: steps.reference.outcome != 'success'
         shell: bash
         run: |
           mkdir -p planning-registered-evidence
           node - <<'NODE'
           const fs = require('fs');
           const report = {
-            schemaVersion: 2,
+            schemaVersion: 4,
             status: 'unregistered',
+            mode: 'reference-unavailable',
             reason: 'bbox-osm-reference-unavailable',
             worldGeometryReady: false,
             worldGeometryAuthority: false,
@@ -305,17 +427,19 @@ jobs:
             temporalResolutionRequired: true,
             pageCount: 0,
             registeredPageCount: 0,
+            templateOnlyPageCount: 0,
             unregisteredPageCount: 0,
             geometryCandidateCount: 0,
             verticalObservationCount: 0,
             materialObservationCount: 0,
+            rideStructureTemplateCount: 0,
             pages: [],
             unregisteredPages: []
           };
           fs.writeFileSync('planning-georegistration.json', JSON.stringify(report, null, 2) + '\n');
           fs.writeFileSync('planning-registered-evidence/manifest.json', JSON.stringify(manifest, null, 2) + '\n');
           NODE
-      - name: Upload planning spatial registration evidence
+      - name: Upload degraded planning spatial registration evidence
         uses: actions/upload-artifact@v4
         with:
           name: planning-georegistration-evidence
@@ -323,12 +447,11 @@ jobs:
             planning-georegistration.json
             planning-registered-evidence
             planning-georeg-reference.json
-          if-no-files-found: ignore
           retention-days: 7
 
   resolve-revisions:
-    needs: [catalog, georegister]
-    if: always() && needs.georegister.result == 'success'
+    needs: [catalog, merge_georegistration, georegister_degraded]
+    if: always() && needs.catalog.result == 'success' && (needs.merge_georegistration.result == 'success' || needs.georegister_degraded.result == 'success')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
