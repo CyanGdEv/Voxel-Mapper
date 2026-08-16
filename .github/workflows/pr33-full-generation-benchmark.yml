@@ -1,4 +1,4 @@
-name: PR33 full generation benchmark
+name: PR34 full generation benchmark
 
 on:
   pull_request:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: pr33-full-generation-benchmark
+  group: pr34-full-generation-benchmark
   cancel-in-progress: true
 
 jobs:
@@ -38,7 +38,7 @@ jobs:
         with:
           name: voxel-mapper-generation-evidence
           path: full-generation-evidence
-      - name: Require a validated non-empty full park world
+      - name: Require validated world and meaningful planning reconstruction
         shell: bash
         run: |
           shopt -s nullglob
@@ -48,13 +48,26 @@ jobs:
           node - <<'NODE'
           const fs = require('fs');
           const path = require('path');
-          const resultPath = path.join('full-generation-evidence', 'bbox-generation-result.json');
+          const resultPath = path.join('full-generation-evidence', 'world-download', 'bbox-generation-result.json');
+          const buildPath = path.join('full-generation-evidence', 'preparation', 'out', 'bbox-world', 'build-result.json');
+          const fusionPath = path.join('full-generation-evidence', 'preparation', 'out', 'bbox-world', 'planning-authority-fusion.json');
           const result = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
+          const build = JSON.parse(fs.readFileSync(buildPath, 'utf8'));
+          const fusion = JSON.parse(fs.readFileSync(fusionPath, 'utf8'));
+          const stats = build.stats || {};
+          const counts = fusion.changeSet?.counts || {};
+          const topologyOrSurfaceChanges = Number(counts.add || 0) + Number(counts.replace || 0) + Number(counts.delete || 0) + Number(counts.paint || 0);
+          const planning3d = Number(stats.planningObject3dRendered || 0) + Number(stats.rideStructure3dRendered || 0);
+          const meaningfulPlanningWorldChanges = topologyOrSurfaceChanges + planning3d;
           console.log(JSON.stringify({
             bbox: result.bbox,
             worldChunks: result.worldChunks,
             worldValidation: result.worldValidation,
             planningAuthorityAppliedAttributes: result.planningAuthorityAppliedAttributes,
+            planningChangeSet: counts,
+            planningObject3dRendered: stats.planningObject3dRendered || 0,
+            rideStructure3dRendered: stats.rideStructure3dRendered || 0,
+            meaningfulPlanningWorldChanges,
             shardCount: result.parallelWorldBuild?.shards,
             grade: result.grade,
             confidence: result.confidence
@@ -62,4 +75,5 @@ jobs:
           if (result.worldValidation !== 'passed') throw new Error(`World validation failed: ${result.worldValidation}`);
           if (Number(result.worldChunks || 0) < 1000) throw new Error(`Unexpectedly small world: ${result.worldChunks || 0} chunks`);
           if (Number(result.planningAuthorityAppliedAttributes || 0) <= 0) throw new Error('No verified planning authority attributes reached the generated world');
+          if (meaningfulPlanningWorldChanges <= 0) throw new Error('Verified planning evidence produced no visible topology, surface, or 3D reconstruction changes');
           NODE
