@@ -1,0 +1,105 @@
+name: PR33 Bedrock catalog fix
+
+on:
+  push:
+    branches:
+      - agent/sub15-generation-critical-path
+
+permissions:
+  contents: write
+
+jobs:
+  apply-fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: agent/sub15-generation-critical-path
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Harden direct-world Bedrock block compatibility
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          world_path = Path('src/lib/mcworld.mjs')
+          world = world_path.read_text()
+          old_tail = '"minecraft:red_terracotta", "minecraft:smooth_sandstone", "minecraft:yellow_terracotta"\n]);'
+          new_tail = '''"minecraft:red_terracotta", "minecraft:smooth_sandstone", "minecraft:yellow_terracotta",
+  "minecraft:gray_wool", "minecraft:black_wool", "minecraft:smooth_basalt", "minecraft:birch_planks",
+  "minecraft:stripped_spruce_wood", "minecraft:deepslate_bricks", "minecraft:polished_deepslate",
+  "minecraft:birch_log", "minecraft:cherry_log", "minecraft:cherry_leaves", "minecraft:acacia_log", "minecraft:acacia_leaves",
+  "minecraft:sea_lantern", "minecraft:polished_blackstone_wall", "minecraft:cobbled_deepslate_wall",
+  "minecraft:brick_wall", "minecraft:stone_brick_wall", "minecraft:stripped_spruce_log", "minecraft:iron_trapdoor"
+]);'''
+          if old_tail not in world:
+              raise SystemExit('BEDROCK_BLOCKS tail changed; refusing unsafe patch')
+          world = world.replace(old_tail, new_tail, 1)
+          old_states = '''  if (name === "minecraft:water") return { liquid_depth: { type: "int", value: 0 } };
+  if (name === "minecraft:standing_sign") return { ground_sign_direction: { type: "int", value: 8 } };
+  if (name.endsWith("_log")) return { pillar_axis: { type: "string", value: "y" } };'''
+          new_states = '''  if (name === "minecraft:water") return { liquid_depth: { type: "int", value: 0 } };
+  if (name === "minecraft:standing_sign") return { ground_sign_direction: { type: "int", value: 8 } };
+  if (name === "minecraft:iron_trapdoor") {
+    return {
+      direction: { type: "int", value: 0 },
+      open_bit: { type: "byte", value: 0 },
+      upside_down_bit: { type: "byte", value: 0 }
+    };
+  }
+  if (name.endsWith("_log") || name.endsWith("_wood")) return { pillar_axis: { type: "string", value: "y" } };'''
+          if old_states not in world:
+              raise SystemExit('defaultStates changed; refusing unsafe patch')
+          world = world.replace(old_states, new_states, 1)
+          world_path.write_text(world)
+
+          ride_path = Path('src/lib/ride-structure-renderer.mjs')
+          ride = ride_path.read_text()
+          if 'return "minecraft:bricks";' not in ride:
+              raise SystemExit('ride brick identifier changed; refusing unsafe patch')
+          ride_path.write_text(ride.replace('return "minecraft:bricks";', 'return "minecraft:brick_block";', 1))
+
+          test_path = Path('test/direct-world-palette-compatibility.test.mjs')
+          test = test_path.read_text()
+          old_test = '''  const [world, fidelity, aerial, raster] = await Promise.all([
+    readFile(new URL("../src/lib/mcworld.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/fidelity.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/aerial-appearance.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/raster.mjs", import.meta.url), "utf8")
+  ]);
+  const section = world.slice(world.indexOf("const BEDROCK_BLOCKS"), world.indexOf("export const WORLD_PALETTES"));
+  const allowed = blocks(section);
+  const emitted = new Set([...blocks(fidelity), ...blocks(aerial), ...blocks(raster)]);'''
+          new_test = '''  const [world, ...emitters] = await Promise.all([
+    readFile(new URL("../src/lib/mcworld.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/fidelity.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/aerial-appearance.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/raster.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/material-palettes.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/planning-object-renderer.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/ride-structure-renderer.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../src/lib/natural-tree-geometry.mjs", import.meta.url), "utf8")
+  ]);
+  const section = world.slice(world.indexOf("const BEDROCK_BLOCKS"), world.indexOf("export const WORLD_PALETTES"));
+  const allowed = blocks(section);
+  const emitted = new Set(emitters.flatMap((text) => [...blocks(text)]));'''
+          if old_test not in test:
+              raise SystemExit('compatibility test changed; refusing unsafe patch')
+          test_path.write_text(test.replace(old_test, new_test, 1))
+          PY
+      - name: Verify the compatibility regression before committing
+        run: node --test test/direct-world-palette-compatibility.test.mjs
+      - name: Commit production fix and remove one-shot workflow
+        shell: bash
+        run: |
+          git config user.name "Voxel Mapper CI"
+          git config user.email "actions@users.noreply.github.com"
+          git rm .github/workflows/pr33-bedrock-catalog-fix.yml
+          git add src/lib/mcworld.mjs src/lib/ride-structure-renderer.mjs test/direct-world-palette-compatibility.test.mjs
+          git commit -m "Harden Bedrock block palette compatibility"
+          git push origin HEAD:agent/sub15-generation-critical-path
