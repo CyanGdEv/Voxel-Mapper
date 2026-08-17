@@ -55,6 +55,7 @@ test("automatic terrain acquisition falls back when the best executable provider
       osm: osmPath,
       cache: path.join(root, "cache"),
       acceptOpenMeteoTerms: true,
+      disablePlanItDiscovery: true,
       acquireElevationImpl: async ({ elevation }) => {
         attempts.push(elevation);
         if (elevation === "ea-lidar") throw new Error("mock EA coverage miss");
@@ -80,6 +81,7 @@ test("planning provider failure degrades fidelity instead of aborting the bbox b
       osm: osmPath,
       elevation: "none",
       cache: path.join(root, "cache"),
+      disablePlanItDiscovery: true,
       planningAcquirerImpl: async () => { throw new Error("mock planning API outage"); }
     });
 
@@ -108,6 +110,7 @@ test("terrain and planning acquisition start concurrently once bbox/source selec
         osm: osmPath,
         elevation: "none",
         cache: path.join(root, "cache"),
+        disablePlanItDiscovery: true,
         acquireElevationImpl: async () => {
           terrainStartedResolve();
           await terrainGate;

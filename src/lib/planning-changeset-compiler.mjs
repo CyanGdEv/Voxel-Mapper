@@ -107,6 +107,18 @@ export function inferPlanningFeatureKind(candidate, map = null, options = {}) {
     return hit("vegetation", 0.86, "vegetation-area-label", "vegetation-label");
   }
 
+  const corroboratedTarget = implementationCorroboratedTarget(candidate, map);
+  if (corroboratedTarget) {
+    return {
+      kind: corroboratedTarget.kind,
+      confidence: 0.96,
+      reason: "implementation-corroborated-existing-feature-kind",
+      matchOnly: false,
+      targetFeatureId: corroboratedTarget.id,
+      signals: ["post-decision-current-feature-corroboration"]
+    };
+  }
+
   const material = candidate?.compiledMaterial || null;
   if (areaGeometry && (material || classification === "landscape_plan") && !/building|roof/.test(semantic)) {
     return hit(PAINT_ONLY_KIND, material ? 0.93 : 0.72, material ? "material-defined-surface-area" : "landscape-area-needs-material", material ? "surface-material" : "landscape-area");
@@ -290,6 +302,16 @@ function associateMaterial(candidate, observations) {
   const competing = samePage.find((entry) => entry.material !== best.material && Number(best.confidence || 0) - Number(entry.confidence || 0) < 0.08);
   if (competing) return { accepted: false, reason: "ambiguous-material-labels" };
   return { accepted: true, material: best.material, confidence: Number(best.confidence || 0), sourceRef: candidateRef(best) };
+}
+
+function implementationCorroboratedTarget(candidate, map) {
+  const featureId = candidate?.implementationCorroboration?.featureId ||
+    candidate?.planningTemporal?.implementationCorroboration?.featureId ||
+    null;
+  if (!featureId) return null;
+  const feature = (map?.features || []).find((entry) => entry?.id === featureId);
+  if (!feature?.localGeometry || !TOPOLOGY_KINDS.has(feature.kind)) return null;
+  return feature;
 }
 
 function inferKindFromExistingGeometry(candidate, features, options) {

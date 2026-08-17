@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 import path from "node:path";
-import { readJson, writeJson } from "../src/lib/io.mjs";
+import { readdir } from "node:fs/promises";
+import { exists, readJson, sha256, writeJson } from "../src/lib/io.mjs";
+import { classifyPlanningDocument } from "../src/lib/planning-documents.mjs";
 import { processPlanningDocumentShard } from "../src/lib/planning-document-worker.mjs";
 
+const DISCOVERY_PARSER_VERSION = 3;
 const args = process.argv.slice(2);
 const value = (name) => {
   const index = args.indexOf(name);
@@ -17,13 +20,21 @@ if (args.includes("--help") || !value("--queue") || value("--shard") == null) {
 const queuePath = path.resolve(value("--queue"));
 const shardIndex = Number(value("--shard"));
 const queue = await readJson(queuePath);
+const cacheDir = value("--cache") || ".tpmap-cache";
+const refreshPlanningDocuments = args.includes("--refresh");
 const out = path.resolve(value("--out") || path.join(path.dirname(queuePath), `planning-documents-shard-${shardIndex}.json`));
+
+if (!refreshPlanningDocuments) {
+  const recovered = await recoverPreviousDiscoveryCache(queue, shardIndex, cacheDir);
+  if (recovered > 0) console.log(`Recovered ${recovered} planning discovery cache entr${recovered === 1 ? "y" : "ies"} across parser upgrade.`);
+}
+
 const result = await processPlanningDocumentShard(queue, {
   shardIndex,
-  cacheDir: value("--cache") || ".tpmap-cache",
+  cacheDir,
   concurrency: Number(value("--concurrency") || 6),
   maxPlanningDocumentMb: Number(value("--max-document-mb") || 120),
-  refreshPlanningDocuments: args.includes("--refresh"),
+  refreshPlanningDocuments,
   downloadDiscovered: !args.includes("--discover-only"),
   strictPlanningDocuments: args.includes("--strict")
 });
@@ -36,3 +47,59 @@ console.log(`Discovered links: ${result.discoveredLinks}`);
 console.log(`Failures: ${result.failures.length}`);
 console.log(`Manifest: ${out}`);
 if (result.failures.length && args.includes("--strict")) process.exitCode = 1;
+
+async function recoverPreviousDiscoveryCache(queueValue, selectedShard, cacheRoot) {
+  const discoveryDir = path.join(path.resolve(cacheRoot), "planning-documents", "discovery");
+  let filenames;
+  try {
+    filenames = await readdir(discoveryDir);
+  } catch {
+    return 0;
+  }
+
+  const requested = new Map();
+  for (const item of queueValue.items || []) {
+    if (item.action !== "discover" || Number(item.shard) !== selectedShard || !item.url) continue;
+    const url = String(item.url);
+    requested.set(url, path.join(discoveryDir, `${sha256(`${DISCOVERY_PARSER_VERSION}\n${url}`)}.json`));
+  }
+  if (!requested.size) return 0;
+
+  const candidates = new Map();
+  for (const filename of filenames) {
+    if (!filename.endsWith(".json")) continue;
+    const source = path.join(discoveryDir, filename);
+    let cached;
+    try {
+      cached = await readJson(source);
+    } catch {
+      continue;
+    }
+    const url = String(cached?.url || "");
+    if (!requested.has(url) || !Array.isArray(cached?.links) || cached.links.length === 0) continue;
+    const version = Number(cached.parserVersion || 0);
+    const current = candidates.get(url);
+    if (!current || version > current.version) candidates.set(url, { cached, version });
+  }
+
+  let recovered = 0;
+  for (const [url, target] of requested) {
+    if (await exists(target)) continue;
+    const candidate = candidates.get(url);
+    if (!candidate) continue;
+    const upgradedLinks = candidate.cached.links.map((link) => ({
+      ...link,
+      classification: classifyPlanningDocument(link?.label || "", link?.url || "")
+    }));
+    await writeJson(target, {
+      ...candidate.cached,
+      parserVersion: DISCOVERY_PARSER_VERSION,
+      migratedFromParserVersion: candidate.version || null,
+      cacheRecovery: "previous-parser-discovery",
+      linkCount: upgradedLinks.length,
+      links: upgradedLinks
+    });
+    recovered += 1;
+  }
+  return recovered;
+}

@@ -102,6 +102,7 @@ test("local portal supplementation respects the configured application cap", asy
     assert.equal(result.applicationCount, 2);
     assert.equal(result.applications.length, 2);
     assert.equal(result.localPortalFallback.addedApplications, 1);
+    assert.equal(result.localPortalFallback.sourceFailure, false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -159,9 +160,74 @@ test("bbox acquisition supplements a zero-result national planning feed from the
     assert.equal(sources.planning.status, "acquired-with-local-portal-fallback");
     assert.equal(sources.planning.coverageStatus, "national-plus-local-portal");
     assert.equal(sources.planning.localPortalFallback.addedApplications, 1);
+    assert.equal(sources.planning.localPortalFallback.successfulAdapters, 1);
+    assert.equal(sources.planning.localPortalFallback.sourceFailure, false);
     assert.equal(sources.planning.applications[0].organisationEntity, 999);
     assert.equal(sources.planning.applications[0].decision, "Planning Permission - Approved");
     assert.ok(sources.planning.osmPlanningDiscovery.anchorCount >= 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("local portal transport falls back from HTTPS failure to legacy HTTP", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "voxel-planning-lpa-transport-"));
+  try {
+    const planning = {
+      providerId: "planning-data-england",
+      status: "acquired",
+      applications: [],
+      applicationCount: 0,
+      jurisdictions: [{ entity: 999, name: "Staffordshire Moorlands District Council" }]
+    };
+    const osmData = { elements: [{ type: "way", id: 1, tags: { tourism: "theme_park", name: "Fixture Park" } }] };
+    const urls = [];
+    const result = await augmentPlanningFromLocalPortals({
+      cacheDir: path.join(root, "cache"),
+      noCache: true,
+      fetchPlanningPortalImpl: async (url) => {
+        urls.push(String(url));
+        if (String(url).startsWith("https://")) throw new Error("fixture TLS failure");
+        return { ok: true, status: 200, text: async () => portalHtml() };
+      }
+    }, planning, osmData);
+
+    assert.equal(result.applicationCount, 1);
+    assert.equal(urls.length, 3, "HTTPS receives its bounded retry budget before HTTP fallback");
+    assert.ok(result.localPortalFallback.attempts[0].sourceUrl.startsWith("http://"));
+    assert.equal(result.localPortalFallback.sourceFailure, false);
+    assert.equal(result.localPortalFallback.successfulAdapters, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("failed local portal does not claim national-plus-local coverage", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "voxel-planning-lpa-failure-"));
+  try {
+    const planning = {
+      providerId: "planning-data-england",
+      status: "acquired",
+      applications: [],
+      applicationCount: 0,
+      coverageStatus: "partial-or-unknown",
+      jurisdictions: [{ entity: 999, name: "Staffordshire Moorlands District Council" }]
+    };
+    const osmData = { elements: [{ type: "way", id: 1, tags: { tourism: "theme_park", name: "Fixture Park" } }] };
+    const result = await augmentPlanningFromLocalPortals({
+      cacheDir: path.join(root, "cache"),
+      noCache: true,
+      disablePlanItDiscovery: true,
+      fetchPlanningPortalImpl: async () => { throw new Error("fixture outage"); }
+    }, planning, osmData);
+
+    assert.equal(result.applicationCount, 0);
+    assert.equal(result.coverageStatus, "partial-or-unknown");
+    assert.equal(result.status, "planning-discovery-source-failed");
+    assert.equal(result.planningDiscoveryFailure, true);
+    assert.equal(result.localPortalFallback.sourceFailure, true);
+    assert.equal(result.localPortalFallback.successfulAdapters, 0);
+    assert.equal(result.discoveryIndexFallback.status, "not-needed");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

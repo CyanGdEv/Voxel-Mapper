@@ -68,7 +68,7 @@ export function renderPlanningObjects3d({ compilation, planningObjects, options 
     objects: result.objects,
     trees: result.trees,
     naturalTreeGeometryModels: result.treeNaturalGeometryModels,
-    treeShapeModel: "deterministic-natural-tree-v1",
+    treeShapeModel: "user-schematic-tall-tree-v1",
     lightingColumns: result.lightingColumns,
     barriers: result.barriers,
     source: "verified-current registered planning geometry plus exact current schedule",
@@ -87,8 +87,11 @@ function renderTree(object, writer, result, options = {}) {
   const groundY = writer.terrainY(x, z);
   if (![x, z, groundY].every(Number.isFinite)) return 0;
   const totalHeight = Math.max(2, Math.round(Number(object.heightM)));
-  const crownDiameter = Math.max(1, Math.round(Number(object.crownSpreadM)));
-  if (!Number.isFinite(totalHeight) || !Number.isFinite(crownDiameter)) return 0;
+  const rawCrownDiameter = Number(object.crownSpreadM);
+  const crownDiameter = Number.isFinite(rawCrownDiameter) && rawCrownDiameter > 0
+    ? Math.round(rawCrownDiameter)
+    : null;
+  if (!Number.isFinite(totalHeight)) return 0;
 
   const blocks = treeBlocks(object.species);
   const geometry = buildNaturalTreeGeometry({

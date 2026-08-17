@@ -32,6 +32,19 @@ const TITLE_STATUS_PATTERNS = [
   ["withdrawn", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*(?:withdrawn|cancelled|canceled)\b/i]
 ];
 
+// PDF text extraction frequently flattens title-block columns into reading
+// order rather than preserving field/value adjacency. In that form a header
+// sequence such as "DRAWING STATUS ... REV CHECKED" can be misread by a broad
+// regex as drawingNumber=STATUS and revision=CHECKED. These are field labels,
+// never useful revision-lineage identifiers, so reject them before authority
+// resolution. When a genuine value appears later in the flattened text, scan
+// forward and recover that value instead.
+const TITLE_BLOCK_HEADER_VALUES = new Set([
+  "APPROVED", "CHECK", "CHECKED", "CLIENT", "DATE", "DRAWING", "DRAWN",
+  "DWG", "NO", "NUMBER", "PROJECT", "PURPOSE", "REV", "REVISION", "SCALE",
+  "SHEET", "STATUS", "TITLE"
+]);
+
 export function enrichPlanningTextEvidence(extraction, options = {}) {
   if (!extraction?.pages?.length || !extraction?.normalizedEvidence) return extraction;
   const additions = [];
@@ -65,12 +78,16 @@ export function enrichPlanningTextEvidence(extraction, options = {}) {
 export function enrichDrawingLifecycleMetadata(existing, textItems, pageNumber = 1) {
   const text = (textItems || []).map((item) => String(item?.text || "").trim()).filter(Boolean).join(" ").replace(/\s+/g, " ");
   if (!text && !existing) return null;
+  const drawingNumber = sanitizeTitleBlockIdentifier(existing?.drawingNumber) || detectDrawingNumber(text);
+  const revision = sanitizeTitleBlockIdentifier(existing?.revision) || detectDrawingRevision(text);
   const status = existing?.status || detectTitleStatus(text);
   const issueDate = existing?.issueDate || detectIssueDate(text);
-  if (!existing && !status && !issueDate) return null;
+  if (!existing && !drawingNumber && !revision && !status && !issueDate) return null;
   return {
     ...(existing || { pageNumber, scaleDenominator: null, drawingNumber: null, revision: null, source: "pdf-text-title-block" }),
     pageNumber,
+    drawingNumber: drawingNumber || null,
+    revision: revision || null,
     status: status || null,
     issueDate: issueDate || null,
     lifecycleSource: status || issueDate ? "pdf-text-title-block-enrichment" : existing?.lifecycleSource || null
@@ -110,6 +127,36 @@ export function extractMaterialObservationsAcrossRuns(textItems, pageNumber = 1,
     }
   }
   return dedupeMaterials(observations);
+}
+
+function detectDrawingNumber(text) {
+  return firstUsableTitleBlockMatch(
+    text,
+    /\b(?:drawing|dwg)\s*(?:no\.?|number|ref\.?)?\s*[:#-]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/ig
+  );
+}
+
+function detectDrawingRevision(text) {
+  return firstUsableTitleBlockMatch(
+    text,
+    /\b(?:rev(?:ision)?\.?)\s*[:#-]?\s*([A-Z0-9]{1,8})\b/ig
+  );
+}
+
+function firstUsableTitleBlockMatch(text, pattern) {
+  for (const match of String(text || "").matchAll(pattern)) {
+    const value = sanitizeTitleBlockIdentifier(match[1]);
+    if (value) return value;
+  }
+  return null;
+}
+
+function sanitizeTitleBlockIdentifier(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const canonical = text.toUpperCase().replace(/^[^A-Z0-9]+|[^A-Z0-9]+$/g, "");
+  if (!canonical || TITLE_BLOCK_HEADER_VALUES.has(canonical)) return null;
+  return text;
 }
 
 function detectTitleStatus(text) {

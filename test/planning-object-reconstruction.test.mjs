@@ -20,12 +20,15 @@ test("verified-current registered tree reconstructs only with resolved schedule 
   assert.equal(result.objects[0].authority.terrainElevationAuthority, false);
 });
 
-test("tree with missing crown spread is deferred instead of receiving an inferred size", () => {
+test("height-only tree uses the fixed supplied schematic without inventing crown dimensions", () => {
   const tree = candidate({ objectType: "tree", subtype: "tree", code: "T-1", scheduleAttributes: { heightM: 11 } });
   const result = reconstructPlanningObjects3dFromEvidence({ geometryCandidates: [tree] });
-  assert.equal(result.summary.reconstructedObjects, 0);
-  assert.equal(result.summary.deferredMissingDimensions, 1);
-  assert.equal(result.deferred[0].reason, "tree-schedule-crown-spread-missing-or-invalid");
+  assert.equal(result.summary.reconstructedObjects, 1);
+  assert.equal(result.summary.trees, 1);
+  assert.equal(result.objects[0].heightM, 11);
+  assert.equal(result.objects[0].crownSpreadM, null);
+  assert.equal(result.objects[0].shapeModel, "user-schematic-tall-tree-v1");
+  assert.equal(result.objects[0].geometryPolicy.fixedSchematicFootprint, true);
 });
 
 test("proposed or non-authoritative geometry cannot enter object reconstruction", () => {

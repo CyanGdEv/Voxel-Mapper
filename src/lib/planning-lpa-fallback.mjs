@@ -1,5 +1,6 @@
 import path from "node:path";
 import { cachedJson } from "./io.mjs";
+import { discoverPlanningApplicationsFromPlanIt } from "./planning-planit-discovery.mjs";
 import {
   buildOsmPlanningSearchIndex,
   rankPlanningApplicationsByOsm
@@ -11,11 +12,13 @@ const PORTAL_ADAPTERS = Object.freeze([
   Object.freeze({
     id: "staffordshire-moorlands-publicaccess",
     jurisdiction: /staffordshire\s+moorlands/i,
-    // The council currently publishes this legacy PublicAccess register over
-    // HTTP. Its HTTPS endpoint intermittently fails TLS/edge negotiation from
-    // GitHub-hosted runners, while the council's own accessibility statement
-    // still identifies the HTTP URL as the supported application register.
-    listingUrl: "http://publicaccess.staffsmoorlands.gov.uk/portal/servlets/MajorContentiousDevelopmentservlet",
+    // PublicAccess is reachable over HTTPS on the current council register,
+    // but the legacy HTTP transport is retained as a bounded fallback because
+    // council edge/TLS behaviour has varied from hosted CI runners.
+    listingUrls: Object.freeze([
+      "https://publicaccess.staffsmoorlands.gov.uk/portal/servlets/MajorContentiousDevelopmentservlet",
+      "http://publicaccess.staffsmoorlands.gov.uk/portal/servlets/MajorContentiousDevelopmentservlet"
+    ]),
     parse: parsePublicAccessMajorApplications
   })
 ]);
@@ -28,70 +31,133 @@ export async function augmentPlanningFromLocalPortals(options, planning, osmData
     MAX_PLANNING_APPLICATIONS,
     Number(options.maxPlanningApplications ?? options.maxPlanningApplicationsPerBuild ?? MAX_PLANNING_APPLICATIONS)
   ));
-  const applications = rankPlanningApplicationsByOsm(
-    Array.isArray(planning?.applications) ? [...planning.applications] : [],
-    osmDiscovery,
-    options
-  );
+  const primaryApplications = Array.isArray(planning?.applications) ? [...planning.applications] : [];
+  const applications = rankPlanningApplicationsByOsm(primaryApplications, osmDiscovery, options);
   const attempts = [];
 
-  if (!jurisdictions.length || !hints.length) {
-    const bounded = applications.slice(0, maxApplications);
-    return {
-      ...planning,
-      applications: bounded,
-      applicationCount: bounded.length,
-      coverageStatus: planning?.coverageStatus || "partial-or-unknown",
-      osmPlanningDiscovery: compactDiscovery(osmDiscovery),
-      localPortalFallback: { attempted: false, hints, attempts, addedApplications: 0 }
-    };
+  // First try first-party LPA registers whenever an adapter exists. These are
+  // still preferred for discovery because they point directly at the authority.
+  if (hints.length) {
+    for (const jurisdiction of jurisdictions) {
+      const name = String(jurisdiction.name || jurisdiction.reference || "");
+      const adapter = PORTAL_ADAPTERS.find((entry) => entry.jurisdiction.test(name));
+      if (!adapter) continue;
+      try {
+        const discovery = await discoverPortalApplications(adapter, options, hints);
+        attempts.push({
+          adapterId: adapter.id,
+          jurisdiction: name,
+          status: "success",
+          candidates: discovery.applications.length,
+          cacheHit: discovery.cacheHit,
+          sourceUrl: discovery.sourceUrl,
+          transportAttempts: discovery.transportAttempts
+        });
+        applications.push(...discovery.applications.map((application) => ({
+          ...application,
+          "organisation-entity": jurisdiction.entity ?? jurisdiction.reference ?? null,
+          organisationEntity: jurisdiction.entity ?? jurisdiction.reference ?? null
+        })));
+      } catch (error) {
+        attempts.push({
+          adapterId: adapter.id,
+          jurisdiction: name,
+          status: "failed",
+          message: error?.message || String(error)
+        });
+        if (options.strictSourceAcquisition) throw error;
+      }
+    }
   }
 
-  for (const jurisdiction of jurisdictions) {
-    const name = String(jurisdiction.name || jurisdiction.reference || "");
-    const adapter = PORTAL_ADAPTERS.find((entry) => entry.jurisdiction.test(name));
-    if (!adapter) continue;
+  const localMerged = dedupeApplications(applications);
+  const localAddedApplications = Math.max(0, localMerged.length - primaryApplications.length);
+  const successfulAttempts = attempts.filter((attempt) => attempt.status === "success");
+  const localSourceFailure = attempts.length > 0 && successfulAttempts.length === 0;
+
+  // If all first-party discovery routes produced no application identifiers,
+  // use PlanIt as a navigation index. PlanIt metadata never grants authority:
+  // normalized records carry no decision/status/date evidence and only point
+  // the document acquisition stage toward the authority's application URL.
+  let discoveryIndexFallback = {
+    attempted: false,
+    status: "not-needed",
+    providerId: "planit-discovery-index",
+    discoveryOnly: true,
+    authoritativePlanningMetadata: false,
+    addedApplications: 0,
+    pagesFetched: 0,
+    reportedTotal: null,
+    truncated: false
+  };
+  let merged = localMerged;
+  if (!merged.length && maxApplications > 0 && !options.disablePlanItDiscovery) {
     try {
-      const discovery = await discoverPortalApplications(adapter, options, hints);
-      attempts.push({
-        adapterId: adapter.id,
-        jurisdiction: name,
-        status: "success",
-        candidates: discovery.applications.length,
-        cacheHit: discovery.cacheHit
+      const planIt = await discoverPlanningApplicationsFromPlanIt({
+        bbox: options.bbox,
+        cacheDir: options.cacheDir,
+        noCache: options.noCache,
+        userAgent: options.userAgent,
+        maxResults: maxApplications,
+        planItUrl: options.planItUrl,
+        fetchPlanItImpl: options.fetchPlanItImpl
       });
-      applications.push(...discovery.applications.map((application) => ({
-        ...application,
-        "organisation-entity": jurisdiction.entity ?? jurisdiction.reference ?? null,
-        organisationEntity: jurisdiction.entity ?? jurisdiction.reference ?? null
-      })));
+      merged = dedupeApplications([...merged, ...(planIt.applications || [])]);
+      discoveryIndexFallback = {
+        attempted: true,
+        status: planIt.status,
+        providerId: planIt.providerId,
+        discoveryOnly: true,
+        authoritativePlanningMetadata: false,
+        addedApplications: merged.length - localMerged.length,
+        pagesFetched: planIt.pagesFetched,
+        reportedTotal: planIt.reportedTotal,
+        truncated: planIt.truncated,
+        pages: planIt.pages
+      };
     } catch (error) {
-      attempts.push({
-        adapterId: adapter.id,
-        jurisdiction: name,
+      discoveryIndexFallback = {
+        ...discoveryIndexFallback,
+        attempted: true,
         status: "failed",
         message: error?.message || String(error)
-      });
+      };
       if (options.strictSourceAcquisition) throw error;
     }
   }
 
-  const merged = dedupeApplications(applications);
-  const addedApplications = Math.max(0, merged.length - (planning?.applications?.length || 0));
   const ranked = rankPlanningApplicationsByOsm(merged, osmDiscovery, options).slice(0, maxApplications);
+  const planItAdded = Number(discoveryIndexFallback.addedApplications || 0);
+  const planningDiscoveryFailure = !ranked.length && (
+    localSourceFailure || discoveryIndexFallback.status === "failed"
+  );
+  let coverageStatus = planning?.coverageStatus || "partial-or-unknown";
+  if (successfulAttempts.length && planItAdded) coverageStatus = "national-plus-local-plus-discovery-index";
+  else if (successfulAttempts.length) coverageStatus = "national-plus-local-portal";
+  else if (planItAdded) coverageStatus = "national-plus-discovery-index";
+
+  let status = planning?.status;
+  if (localAddedApplications > 0) status = "acquired-with-local-portal-fallback";
+  else if (planItAdded > 0) status = "acquired-with-discovery-index-fallback";
+  else if (planningDiscoveryFailure) status = "planning-discovery-source-failed";
+
   return {
     ...planning,
     applications: ranked,
     applicationCount: ranked.length,
-    coverageStatus: attempts.length ? "national-plus-local-portal" : (planning?.coverageStatus || "partial-or-unknown"),
-    status: addedApplications > 0 ? "acquired-with-local-portal-fallback" : planning?.status,
+    coverageStatus,
+    status,
+    planningDiscoveryFailure,
     osmPlanningDiscovery: compactDiscovery(osmDiscovery),
     localPortalFallback: {
       attempted: attempts.length > 0,
+      successfulAdapters: successfulAttempts.length,
+      sourceFailure: localSourceFailure,
       hints,
       attempts,
-      addedApplications
-    }
+      addedApplications: localAddedApplications
+    },
+    discoveryIndexFallback
   };
 }
 
@@ -119,10 +185,6 @@ export function parsePublicAccessMajorApplications(html, listingUrl, hints = [])
       .map((match) => stripHtml(match[1]).replace(/\s+/g, " ").trim());
     const rowText = cells.filter(Boolean).join(" | ") || stripHtml(rowHtml).replace(/\s+/g, " ").trim();
     const normalizedRow = normalizeText(rowText);
-    // Match normalized token sequences, not arbitrary substrings. The previous
-    // includes() check treated ride names such as "Rita" as a match inside
-    // unrelated words such as "heritage", which could enqueue hundreds of
-    // irrelevant portal attachments and dominate generation wall-clock time.
     if (normalizedHints.length && !normalizedHints.some((hint) => containsNormalizedPhrase(normalizedRow, hint))) continue;
     const documentationUrl = new URL(htmlDecode(anchor[1]), listingUrl).toString();
     const receivedDate = cells[1] || null;
@@ -154,35 +216,74 @@ export function parsePublicAccessMajorApplications(html, listingUrl, hints = [])
 }
 
 async function discoverPortalApplications(adapter, options, hints) {
-  // Keep local-register HTML beside the national planning index cache so the
-  // existing Actions cache restores both on normal repeat generations. A
-  // refresh/no-cache run still bypasses it through cachedJson exactly as before.
   const cacheDir = path.join(options.cacheDir || ".tpmap-cache", "planning-data-england", "lpa-fallback");
-  const cacheKey = `${adapter.id}\n${adapter.listingUrl}`;
-  const { data, cacheHit } = await cachedJson({
-    cacheDir,
-    key: cacheKey,
-    noCache: options.noCache,
-    fetcher: async () => ({ html: await fetchText(adapter.listingUrl, options) })
-  });
-  return {
-    applications: adapter.parse(data.html, adapter.listingUrl, hints),
-    cacheHit
-  };
+  const urls = adapter.listingUrls || [adapter.listingUrl].filter(Boolean);
+  const transportAttempts = [];
+  let emptySuccess = null;
+
+  for (const listingUrl of urls) {
+    try {
+      const cacheKey = `${adapter.id}\n${listingUrl}`;
+      const { data, cacheHit } = await cachedJson({
+        cacheDir,
+        key: cacheKey,
+        noCache: options.noCache,
+        fetcher: async () => ({ html: await fetchText(listingUrl, options) })
+      });
+      const applications = adapter.parse(data.html, listingUrl, hints);
+      transportAttempts.push({
+        url: listingUrl,
+        status: "success",
+        cacheHit,
+        candidates: applications.length
+      });
+      const result = { applications, cacheHit, sourceUrl: listingUrl, transportAttempts };
+      if (applications.length) return result;
+      emptySuccess ||= result;
+    } catch (error) {
+      transportAttempts.push({
+        url: listingUrl,
+        status: "failed",
+        message: error?.message || String(error)
+      });
+    }
+  }
+
+  if (emptySuccess) return { ...emptySuccess, transportAttempts };
+  throw new Error(
+    `All local planning portal transports failed: ${transportAttempts.map((entry) => `${entry.url}: ${entry.message || entry.status}`).join("; ")}`
+  );
 }
 
 async function fetchText(url, options) {
   const implementation = options.fetchPlanningPortalImpl || globalThis.fetch;
-  if (typeof implementation !== "function") throw new Error("No fetch implementation is available for local planning portal discovery");
-  const response = await implementation(url, {
-    redirect: "follow",
-    headers: {
-      "User-Agent": options.userAgent || "VoxelMapper/0.12",
-      Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"
+  if (typeof implementation !== "function") {
+    throw new Error("No fetch implementation is available for local planning portal discovery");
+  }
+
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const response = await implementation(url, {
+        redirect: "follow",
+        signal: controller.signal,
+        headers: {
+          "User-Agent": options.userAgent || "VoxelMapper/0.12",
+          Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"
+        }
+      });
+      if (!response?.ok) throw new Error(`HTTP ${response?.status ?? "?"} fetching local planning portal`);
+      return await response.text();
+    } catch (error) {
+      lastError = error;
+      if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 500));
+    } finally {
+      clearTimeout(timer);
     }
-  });
-  if (!response?.ok) throw new Error(`HTTP ${response?.status ?? "?"} fetching local planning portal`);
-  return response.text();
+  }
+  throw lastError || new Error("Local planning portal fetch failed");
 }
 
 function dedupeApplications(applications) {

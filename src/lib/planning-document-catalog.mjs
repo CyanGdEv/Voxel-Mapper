@@ -6,7 +6,6 @@ const EXTRACTABLE_CONTENT_TYPES = new Set([
   "image/png",
   "image/tiff"
 ]);
-const LOW_VALUE_CLASSES = new Set(["decision", "supporting", "unknown"]);
 
 export function buildPlanningDocumentCatalog(manifests, options = {}) {
   const values = Array.isArray(manifests) ? manifests : [manifests].filter(Boolean);
@@ -87,9 +86,7 @@ export function isExtractablePlanningDocument(document, options = {}) {
   if (!document?.contentHash || !document?.objectPath) return false;
   const type = String(document.contentType || "").toLowerCase();
   const supported = EXTRACTABLE_CONTENT_TYPES.has(type) || /\.(pdf|png|jpe?g|tiff?)$/i.test(document.objectPath);
-  if (!supported) return false;
-  if (options.includeLowValuePlanningDocuments) return true;
-  return !LOW_VALUE_CLASSES.has(document.classification);
+  return supported;
 }
 
 export function extractionShardForContent(contentHash, shardCount = 256) {

@@ -3,6 +3,7 @@ import path from "node:path";
 import { appendFile } from "node:fs/promises";
 import { ensureDir, sha256, writeJson } from "../src/lib/io.mjs";
 import { acquireSources } from "../src/lib/sources.mjs";
+import { collapsePlanningAcquisitionAliases } from "../src/lib/planning-acquisition-aliases.mjs";
 import { buildPlanningDocumentQueue } from "../src/lib/planning-documents.mjs";
 
 const args = process.argv.slice(2);
@@ -23,11 +24,6 @@ const bbox = value("--bbox");
 const cacheDir = path.resolve(value("--cache") || ".tpmap-cache");
 await ensureDir(cacheDir);
 
-// Planning Data's national planning-application feed is not complete for every
-// LPA. Use the same bbox source acquisition path as world generation so OSM
-// theme-park identity + the discovered jurisdiction can supplement the
-// national index from a supported public local register. Terrain is disabled
-// here because this job only needs application/document discovery.
 const sources = await acquireSources({
   bbox,
   elevation: "none",
@@ -37,13 +33,39 @@ const sources = await acquireSources({
   contact: process.env.TPMAP_CONTACT || undefined
 });
 const planning = sources.planning;
-const queue = buildPlanningDocumentQueue(planning, {
+
+// A genuine successful zero-result planning search is valid. A zero-result
+// caused by all usable discovery sources failing is not: silently proceeding
+// here creates an apparently successful but effectively OSM-only world.
+if (!(planning.applicationCount > 0) && (
+  planning.planningDiscoveryFailure ||
+  planning.status === "failed" ||
+  planning.status === "local-portal-source-failed" ||
+  planning.status === "planning-discovery-source-failed"
+)) {
+  throw new Error(
+    `Planning application discovery failed for ${bbox}; refusing to generate an OSM-only world while required planning discovery sources are unavailable`
+  );
+}
+
+// Keep every discovered application in the immutable lifecycle snapshot, but do
+// not spend acquisition shards refetching a weaker secondary/consultation page
+// when the same bbox already contains a high-confidence first-party register
+// counterpart. This is acquisition deduplication only; it grants no authority.
+const acquisition = collapsePlanningAcquisitionAliases(planning.applications || []);
+const queue = buildPlanningDocumentQueue({
+  ...planning,
+  applications: acquisition.applications
+}, {
   planningDocumentShards: Number(value("--shards") || DEFAULT_SHARDS)
 });
+queue.applicationCount = Array.isArray(planning.applications) ? planning.applications.length : Number(planning.applicationCount || 0);
+queue.acquisitionApplicationCount = acquisition.applications.length;
+queue.acquisitionAliases = acquisition.aliases;
 
-// Keep a compact, immutable lifecycle snapshot next to the queue. Downstream
-// revision resolution should not need to re-query a mutable planning API simply
-// to learn whether an application was refused, approved, withdrawn, etc.
+// Keep a compact, immutable lifecycle snapshot next to the queue. Discovery-
+// only indexes deliberately contribute no temporal authority; their role is to
+// locate the official application/document page for subsequent extraction.
 queue.planningApplicationSnapshot = Object.fromEntries((planning.applications || []).map((application) => {
   const key = applicationKey(application);
   return [key, compactPlanningApplication(application, key)];
@@ -52,7 +74,8 @@ queue.planningApplicationSnapshotAt = new Date().toISOString();
 queue.planningApplicationSnapshotProvider = planning.providerId || planning.provider || null;
 queue.planningCoverageStatus = planning.coverageStatus || null;
 queue.localPortalFallback = planning.localPortalFallback || null;
-queue.osmPlanningHints = planning.localPortalFallback?.hints || [];
+queue.discoveryIndexFallback = planning.discoveryIndexFallback || null;
+queue.osmPlanningHints = planning.localPortalFallback?.hints || planning.osmPlanningDiscovery?.searchTerms || [];
 
 const out = path.resolve(value("--out") || "planning-document-queue.json");
 await writeJson(out, queue);
@@ -64,7 +87,10 @@ const activeShards = Object.entries(queue.shardCounts || {})
 console.log(`Planning provider: ${planning.providerId || planning.provider || "none"}`);
 console.log(`Planning coverage: ${planning.coverageStatus || planning.status || "unknown"}`);
 console.log(`Local portal applications added: ${planning.localPortalFallback?.addedApplications || 0}`);
+console.log(`Discovery-index applications added: ${planning.discoveryIndexFallback?.addedApplications || 0}`);
 console.log(`Applications: ${planning.applicationCount || 0}`);
+console.log(`Acquisition applications: ${acquisition.applications.length}`);
+console.log(`Acquisition aliases collapsed: ${acquisition.aliases.length}`);
 console.log(`Queue items: ${queue.itemCount}`);
 console.log(`Active shards: ${activeShards.join(",") || "none"}`);
 console.log(`Queue: ${out}`);
@@ -76,6 +102,7 @@ if (process.env.GITHUB_OUTPUT) {
 }
 
 function compactPlanningApplication(application, key) {
+  const discoveryOnly = application.discoveryOnly === true || application.source === "planit-discovery-index";
   return {
     key,
     entity: application.entity ?? application.id ?? null,
@@ -85,7 +112,8 @@ function compactPlanningApplication(application, key) {
     documentationUrl: firstValue(application["documentation-url"] ?? application.documentationUrl),
     source: application.source ?? null,
     dataset: application.dataset ?? null,
-    temporal: {
+    discoveryOnly,
+    temporal: discoveryOnly ? { statusEvidence: [], dateEvidence: [] } : {
       statusEvidence: unique([
         application["planning-status"],
         application.planningStatus,

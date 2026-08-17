@@ -54,6 +54,9 @@ test("classification prioritizes reconstruction-relevant drawing types", () => {
   assert.equal(classifyPlanningDocument("North and South Elevations", "https://x.example/123.pdf"), "elevation");
   assert.equal(classifyPlanningDocument("Roller Coaster Track Layout", "https://x.example/track.pdf"), "ride-layout");
   assert.equal(classifyPlanningDocument("Hard Landscape Materials Schedule", "https://x.example/materials.pdf"), "landscape");
+  assert.equal(classifyPlanningDocument("Proposed Soft Landscape Plan", "https://x.example/soft-landscape.pdf"), "landscape");
+  assert.equal(classifyPlanningDocument("Landscape and Visual Impact Assessment", "https://x.example/lvia.pdf"), "supporting");
+  assert.equal(classifyPlanningDocument("LVIA Environmental Statement", "https://x.example/report.pdf"), "supporting");
   assert.equal(classifyPlanningDocument("Supporting note", "https://x.example/note.pdf"), "supporting");
 });
 
