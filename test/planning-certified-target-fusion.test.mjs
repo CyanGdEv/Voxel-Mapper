@@ -12,6 +12,7 @@ const polygon = (x0, z0, x1, z1) => ({
   type: "Polygon",
   coordinates: [[[x0, z0], [x1, z0], [x1, z1], [x0, z1], [x0, z0]]]
 });
+const line = (...coordinates) => ({ type: "LineString", coordinates });
 
 function feature(id, localGeometry, kind = "building") {
   return {
@@ -141,4 +142,54 @@ test("uncertified targetFeatureId does not bypass ordinary ambiguity protection"
   const result = resolveGeometryCandidateMatch(candidate, [a, b], { planningAuthorityAmbiguityGap: 0.08 });
   assert.equal(result.accepted, false);
   assert.equal(result.reason, "ambiguous");
+});
+
+test("generic site route cannot match ride track in final authority fusion", () => {
+  const rideGeometry = line([0, 0], [10, 5], [20, 0]);
+  const ride = feature("osm:ride:generic-guard", rideGeometry, "ride_track");
+  const candidate = current({
+    id: "plan:site-route",
+    classification: "site_plan",
+    semantic: "site-edge-or-route",
+    localGeometry: rideGeometry
+  });
+  const result = resolveGeometryCandidateMatch(candidate, [ride]);
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, "no-compatible-feature");
+});
+
+test("even a certified generic site route cannot target ride track", () => {
+  const rideGeometry = line([0, 0], [10, 5], [20, 0]);
+  const ride = feature("osm:ride:certified-guard", rideGeometry, "ride_track");
+  const candidate = current({
+    id: "plan:site-route-certified",
+    classification: "site_plan",
+    semantic: "site-edge-or-route",
+    localGeometry: rideGeometry,
+    associationContract: {
+      schemaVersion: 1,
+      certifiedCurrentTarget: true,
+      featureId: ride.id,
+      featureKind: "ride_track",
+      method: "compiled-current-planning-target",
+      matchScore: 0.95
+    }
+  });
+  const result = resolveGeometryCandidateMatch(candidate, [ride]);
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, "certified-target-kind-mismatch");
+});
+
+test("ride layout centerline remains eligible for ride track", () => {
+  const rideGeometry = line([0, 0], [10, 5], [20, 0]);
+  const ride = feature("osm:ride:valid", rideGeometry, "ride_track");
+  const candidate = current({
+    id: "plan:ride-layout",
+    classification: "ride_layout",
+    semantic: "ride-centerline-or-edge",
+    localGeometry: rideGeometry
+  });
+  const result = resolveGeometryCandidateMatch(candidate, [ride]);
+  assert.equal(result.accepted, true);
+  assert.equal(result.feature.id, ride.id);
 });
