@@ -224,7 +224,7 @@ function relationOverlapsWay(way, features, key) {
     if (relation?.source?.elementType !== "relation" || namedPhysicalFeatureKey(relation) !== key) return false;
     const relationBounds = geometryBounds(relation.localGeometry);
     if (!relationBounds) return false;
-    return bboxIntersectionArea(wayBounds, relationBounds) / Math.max(EPSILON, bboxArea(wayBounds)) >= 0.9;
+    return bboxCoverageRatio(wayBounds, relationBounds) >= 0.9;
   });
 }
 
@@ -241,10 +241,16 @@ function geometryPoints(geometry) {
   if (geometry?.type === "MultiPolygon") return (geometry.coordinates || []).flat(2);
   return [];
 }
-function bboxArea(box) { return Math.max(0, box.maxX - box.minX) * Math.max(0, box.maxZ - box.minZ); }
-function bboxIntersectionArea(a, b) {
-  return Math.max(0, Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX)) *
-    Math.max(0, Math.min(a.maxZ, b.maxZ) - Math.max(a.minZ, b.minZ));
+function bboxCoverageRatio(inner, outer) {
+  const xCoverage = axisCoverage(inner.minX, inner.maxX, outer.minX, outer.maxX);
+  const zCoverage = axisCoverage(inner.minZ, inner.maxZ, outer.minZ, outer.maxZ);
+  return Math.min(xCoverage, zCoverage);
+}
+function axisCoverage(innerMin, innerMax, outerMin, outerMax) {
+  const span = innerMax - innerMin;
+  if (span <= EPSILON) return innerMin >= outerMin - EPSILON && innerMin <= outerMax + EPSILON ? 1 : 0;
+  const overlap = Math.max(0, Math.min(innerMax, outerMax) - Math.max(innerMin, outerMin));
+  return Math.max(0, Math.min(1, overlap / span));
 }
 
 function sameGeometry(a, b) { return JSON.stringify(roundGeometry(a)) === JSON.stringify(roundGeometry(b)); }
