@@ -196,7 +196,6 @@ export function extractVectorOperations(operatorList, OPS, options = {}) {
   const paths = [];
   let imagePaintOps = 0;
   let truncated = false;
-
   const paint = (kind, close = false) => {
     for (const pathEntry of pending) {
       if (paths.length >= maxPaths) { truncated = true; break; }
@@ -245,14 +244,20 @@ export function extractVectorOperations(operatorList, OPS, options = {}) {
 export function extractDrawingMetadata(text, pageNumber = 1) {
   const value = String(text || "").replace(/\s+/g, " ").trim();
   if (!value) return null;
-  const scale = value.match(/\bscale\s*(?:at\s*)?1\s*[:/]\s*(\d{1,6})\b/i) || value.match(/\b1\s*[:/]\s*(\d{2,6})\b/);
+  const scaleCandidates = [...value.matchAll(/\bscale\s*(?:at\s*)?1\s*[:/]\s*(\d{1,6})\b/ig)]
+    .map((match) => Number(match[1]))
+    .filter((number) => Number.isFinite(number) && number > 0);
+  const uniqueScaleCandidates = [...new Set(scaleCandidates)];
+  const scale = uniqueScaleCandidates.length === 1 ? uniqueScaleCandidates[0] : null;
   const drawing = value.match(/\b(?:drawing|dwg)\s*(?:no\.?|number|ref\.?)?\s*[:#-]?\s*([A-Z0-9][A-Z0-9._/-]{2,})/i);
   const revision = value.match(/\b(?:rev(?:ision)?\.?)\s*[:#-]?\s*([A-Z0-9]{1,8})\b/i);
   const status = value.match(/\b(?:status)\s*[:#-]?\s*(planning|construction|tender|as[- ]built|preliminary|approved|proposed)\b/i);
-  if (!scale && !drawing && !revision && !status) return null;
+  if (!uniqueScaleCandidates.length && !drawing && !revision && !status) return null;
   return {
     pageNumber,
-    scaleDenominator: scale ? Number(scale[1]) : null,
+    scaleDenominator: scale,
+    scaleAmbiguous: uniqueScaleCandidates.length > 1,
+    scaleCandidates: uniqueScaleCandidates,
     drawingNumber: drawing?.[1] || null,
     revision: revision?.[1] || null,
     status: status?.[1]?.toLowerCase() || null,
@@ -395,11 +400,9 @@ function parseConstructPath(args, matrix, OPS, options) {
       const a = point(), b = point(), c = point();
       ensure().commands.push({ op: "C", x1: a[0], y1: a[1], x2: b[0], y2: b[1], x: c[0], y: c[1] });
     } else if (op === OPS.curveTo2) {
-      const b = point(), c = point();
-      ensure().commands.push({ op: "C2", x2: b[0], y2: b[1], x: c[0], y: c[1] });
+      const b = point(), c = point(); ensure().commands.push({ op: "C2", x2: b[0], y2: b[1], x: c[0], y: c[1] });
     } else if (op === OPS.curveTo3) {
-      const a = point(), c = point();
-      ensure().commands.push({ op: "C3", x1: a[0], y1: a[1], x: c[0], y: c[1] });
+      const a = point(), c = point(); ensure().commands.push({ op: "C3", x1: a[0], y1: a[1], x: c[0], y: c[1] });
     } else if (op === OPS.closePath) {
       ensure().commands.push({ op: "Z" });
       ensure().closed = true;
