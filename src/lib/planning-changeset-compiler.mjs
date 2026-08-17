@@ -141,6 +141,22 @@ export function inferPlanningFeatureKind(candidate, map = null, options = {}) {
     return { kind: explicit, confidence: 0.99, reason: "explicit-feature-kind", signals: ["explicit-kind"] };
   }
 
+  // A semantically compatible target that was already certified against a
+  // post-decision current feature is stronger evidence than a generic label or
+  // shape heuristic. Preserve that identity before any fallback inference so
+  // the compiler never discards a verified target and re-enters ambiguity.
+  const corroboratedTarget = implementationCorroboratedTarget(candidate, map);
+  if (corroboratedTarget) {
+    return {
+      kind: corroboratedTarget.kind,
+      confidence: 0.96,
+      reason: "implementation-corroborated-existing-feature-kind",
+      matchOnly: false,
+      targetFeatureId: corroboratedTarget.id,
+      signals: ["post-decision-current-feature-corroboration"]
+    };
+  }
+
   const semantic = normalize(candidate?.semantic);
   const classification = normalize(candidate?.classification);
   const text = normalize([
@@ -189,18 +205,6 @@ export function inferPlanningFeatureKind(candidate, map = null, options = {}) {
   }
   if (/\b(tree|trees|planting|hedge|shrub|woodland)\b/.test(text) && areaGeometry) {
     return hit("vegetation", 0.86, "vegetation-area-label", "vegetation-label");
-  }
-
-  const corroboratedTarget = implementationCorroboratedTarget(candidate, map);
-  if (corroboratedTarget) {
-    return {
-      kind: corroboratedTarget.kind,
-      confidence: 0.96,
-      reason: "implementation-corroborated-existing-feature-kind",
-      matchOnly: false,
-      targetFeatureId: corroboratedTarget.id,
-      signals: ["post-decision-current-feature-corroboration"]
-    };
   }
 
   const material = candidate?.compiledMaterial || null;
