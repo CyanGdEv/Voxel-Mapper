@@ -5,7 +5,7 @@ const ELIGIBLE_CLASSES = new Set([
   "landscape_plan", "landscape-plan"
 ]);
 const DEFAULT_MIN_SCORE = 0.78;
-const DEFAULT_AMBIGUITY_GAP = 0.08;
+export const DEFAULT_PLANNING_CORROBORATION_AMBIGUITY_GAP = 0.08;
 const REFERENCE_INDEX_CACHE = new WeakMap();
 
 /**
@@ -29,7 +29,7 @@ export function corroboratePlanningGeometryCandidate(candidate, referenceFeature
   // equivalent to the canonical authority matcher.
   const match = matchIndexedGeometryCandidate(candidate, referenceFeatures || [], {
     planningAuthorityMinMatchScore: Number(context.minMatchScore ?? DEFAULT_MIN_SCORE),
-    planningAuthorityAmbiguityGap: Number(context.ambiguityGap ?? DEFAULT_AMBIGUITY_GAP)
+    planningAuthorityAmbiguityGap: Number(context.ambiguityGap ?? DEFAULT_PLANNING_CORROBORATION_AMBIGUITY_GAP)
   });
   if (!match.accepted) return rejected(`geometry-${match.reason}`, { match });
   const observedAt = parsePlanningDate(match.feature?.source?.timestamp);
@@ -122,7 +122,13 @@ export function matchIndexedGeometryCandidate(candidate, referenceFeatures, opti
 
   const best = scored[0], second = scored[1] || null;
   const minimum = Number(options.planningAuthorityMinMatchScore ?? 0.66);
-  const gap = Number(options.planningAuthorityAmbiguityGap ?? 0.08);
+  const requestedGap = Number(options.planningAuthorityAmbiguityGap ?? DEFAULT_PLANNING_CORROBORATION_AMBIGUITY_GAP);
+  // Keep every production caller on the canonical authority-matcher semantics.
+  // Callers may opt for a smaller gap, but a stale/hard-coded larger value must
+  // not silently reject geometry that the canonical matcher considers unique.
+  const gap = Number.isFinite(requestedGap)
+    ? Math.min(Math.max(0, requestedGap), DEFAULT_PLANNING_CORROBORATION_AMBIGUITY_GAP)
+    : DEFAULT_PLANNING_CORROBORATION_AMBIGUITY_GAP;
   if (best.score < minimum) return { accepted: false, reason: "below-score-gate", score: round(best.score) };
   if (second && best.score - second.score < gap) {
     return { accepted: false, reason: "ambiguous", score: round(best.score), secondScore: round(second.score) };
