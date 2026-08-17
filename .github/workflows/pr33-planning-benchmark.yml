@@ -14,8 +14,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: planning-pr-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
+  group: planning-critical-path-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   planning-benchmark:
