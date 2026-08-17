@@ -1,4 +1,9 @@
-const ELIGIBLE_CLASSES = new Set(["site_plan", "location_plan", "ride_layout", "landscape_plan"]);
+const ELIGIBLE_CLASSES = new Set([
+  "site_plan", "site-plan",
+  "location_plan", "location-plan",
+  "ride_layout", "ride-layout",
+  "landscape_plan", "landscape-plan"
+]);
 const DEFAULT_MIN_SCORE = 0.78;
 const DEFAULT_AMBIGUITY_GAP = 0.12;
 const REFERENCE_INDEX_CACHE = new WeakMap();
