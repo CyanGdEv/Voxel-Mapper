@@ -5,7 +5,7 @@ const ELIGIBLE_CLASSES = new Set([
   "landscape_plan", "landscape-plan"
 ]);
 const DEFAULT_MIN_SCORE = 0.78;
-const DEFAULT_AMBIGUITY_GAP = 0.12;
+const DEFAULT_AMBIGUITY_GAP = 0.08;
 const REFERENCE_INDEX_CACHE = new WeakMap();
 
 /**
