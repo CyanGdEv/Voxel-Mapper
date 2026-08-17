@@ -5,8 +5,10 @@ on:
     branches: [main]
     paths:
       - 'src/lib/planning-*.mjs'
+      - 'src/lib/io.mjs'
       - 'scripts/planning-*.mjs'
       - 'test/planning-*.test.mjs'
+      - 'test/io-*.test.mjs'
       - '.github/workflows/planning-documents.yml'
       - '.github/workflows/pr33-planning-benchmark.yml'
 
@@ -36,6 +38,7 @@ jobs:
         run: |
           echo "Planning benchmark result: ${{ needs.planning-benchmark.result }}"
           [[ "${{ needs.planning-benchmark.result }}" == "success" ]]
+      - uses: actions/checkout@v4
       - name: Download planning authority benchmark output
         uses: actions/download-artifact@v4
         with:
@@ -44,11 +47,11 @@ jobs:
       - name: Require semantically valid verified planning authority
         shell: bash
         run: |
-          node - <<'NODE'
-          const fs = require('fs');
-          const path = require('path');
+          node --input-type=module - <<'NODE'
+          import path from 'node:path';
+          import { readJson } from './src/lib/io.mjs';
           const filename = path.join('planning-benchmark-output', 'planning-current-authority-evidence.json');
-          const authority = JSON.parse(fs.readFileSync(filename, 'utf8'));
+          const authority = await readJson(filename);
           const candidates = authority.geometryCandidates || [];
           const geometry = Number(authority?.counts?.geometryCandidates || candidates.length || 0);
           const materials = Number(authority?.counts?.materialObservations || authority?.materialObservations?.length || 0);
@@ -62,7 +65,7 @@ jobs:
           });
           const targets = candidates.map((candidate) => {
             const implementation = candidate.implementationCorroboration || candidate.planningTemporal?.implementationCorroboration || {};
-            return implementation.featureId || null;
+            return implementation.featureId || candidate.associationContract?.featureId || null;
           }).filter(Boolean);
           console.log(JSON.stringify({
             worldGeometryAuthority: authority.worldGeometryAuthority,
@@ -79,7 +82,7 @@ jobs:
               id: candidate.id,
               classification: candidate.classification,
               semantic: candidate.semantic,
-              target: candidate.implementationCorroboration?.featureId || candidate.planningTemporal?.implementationCorroboration?.featureId || null
+              target: candidate.implementationCorroboration?.featureId || candidate.planningTemporal?.implementationCorroboration?.featureId || candidate.associationContract?.featureId || null
             }));
             throw new Error(`Generic planning geometry incorrectly gained ride authority: ${JSON.stringify(sample)}`);
           }
