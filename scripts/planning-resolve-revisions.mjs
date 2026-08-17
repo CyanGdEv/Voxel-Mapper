@@ -2,7 +2,10 @@
 import path from "node:path";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { resolvePlanningRevisionAuthority } from "../src/lib/planning-revision-resolver.mjs";
-import { corroboratePlanningGeometryCandidate } from "../src/lib/planning-current-corroboration.mjs";
+import {
+  DEFAULT_PLANNING_CORROBORATION_AMBIGUITY_GAP,
+  corroboratePlanningGeometryCandidate
+} from "../src/lib/planning-current-corroboration.mjs";
 import {
   AUTHORITY_BUNDLE_FORMAT,
   REGISTERED_BUNDLE_FORMAT,
@@ -76,7 +79,7 @@ async function resolveBundle(bundle) {
           applicationTemporal,
           drawingIssueDate,
           minMatchScore: number(args.corroborationMinMatchScore, 0.78),
-          ambiguityGap: number(args.corroborationAmbiguityGap, 0.12)
+          ambiguityGap: number(args.corroborationAmbiguityGap, DEFAULT_PLANNING_CORROBORATION_AMBIGUITY_GAP)
         });
         if (proof.accepted) {
           temporal = {
