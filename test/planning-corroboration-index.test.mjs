@@ -25,14 +25,14 @@ const references = [
 ];
 
 const cases = [
-  { semantic: "building-footprint-or-room", localGeometry: poly(10.2, 10.1, 19.8, 11.9) },
-  { semantic: "site-feature-or-building-footprint", localGeometry: poly(68, 69, 20, 12) },
-  { semantic: "landscape-area-or-path", localGeometry: line([0, 0.2], [20, 0.1], [40, 3.2]) },
-  { semantic: "landscape-edge-or-route", localGeometry: line([0, 29.5], [20, 30.1], [40, 31.2]) },
-  { semantic: "site-edge-or-route", localGeometry: line([0, 49.5], [40, 50.5]) },
-  { semantic: "ride-centerline-or-edge", localGeometry: line([100, 100], [120, 105], [140, 100]) },
-  { semantic: "building-footprint-or-room", localGeometry: poly(300, 300, 5, 5) },
-  { semantic: "unknown", localGeometry: poly(10, 10, 20, 12) }
+  { classification: "site_plan", semantic: "building-footprint-or-room", localGeometry: poly(10.2, 10.1, 19.8, 11.9) },
+  { classification: "site_plan", semantic: "site-feature-or-building-footprint", localGeometry: poly(68, 69, 20, 12) },
+  { classification: "landscape_plan", semantic: "landscape-area-or-path", localGeometry: line([0, 0.2], [20, 0.1], [40, 3.2]) },
+  { classification: "landscape_plan", semantic: "landscape-edge-or-route", localGeometry: line([0, 29.5], [20, 30.1], [40, 31.2]) },
+  { classification: "site_plan", semantic: "site-edge-or-route", localGeometry: line([0, 49.5], [40, 50.5]) },
+  { classification: "ride_layout", semantic: "ride-centerline-or-edge", localGeometry: line([100, 100], [120, 105], [140, 100]) },
+  { classification: "site_plan", semantic: "building-footprint-or-room", localGeometry: poly(300, 300, 5, 5) },
+  { classification: "site_plan", semantic: "unknown", localGeometry: poly(10, 10, 20, 12) }
 ];
 
 test("cached corroboration matcher is result-equivalent to the authority geometry matcher", () => {
@@ -51,7 +51,7 @@ test("cached corroboration matcher is result-equivalent to the authority geometr
 
 test("cached corroboration matcher observes in-place reference feature arrays exactly like the original", () => {
   const mutable = [...references];
-  const candidate = { semantic: "ride-centerline-or-edge", localGeometry: line([200, 200], [220, 200]) };
+  const candidate = { classification: "ride_layout", semantic: "ride-centerline-or-edge", localGeometry: line([200, 200], [220, 200]) };
   matchIndexedGeometryCandidate(candidate, mutable, { planningAuthorityMinMatchScore: 0.78, planningAuthorityAmbiguityGap: 0.12 });
   mutable.push(feature("ride2", "ride_track", line([200, 200], [220, 200])));
   // Reference arrays used by production are immutable snapshots. This explicit

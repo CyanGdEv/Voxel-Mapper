@@ -1,10 +1,15 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { once } from "node:events";
+import { mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import readline from "node:readline";
+import { createGunzip, createGzip } from "node:zlib";
 import { UserError } from "./errors.mjs";
 
 let tempWriteSequence = 0;
+const CHUNKED_JSON_FORMAT = "voxel-chunked-json-gzip-v1";
+const DEFAULT_CHUNK_ARRAY_ITEMS = 50_000;
 
 export async function ensureDir(directory) {
   await mkdir(directory, { recursive: true });
@@ -13,6 +18,7 @@ export async function ensureDir(directory) {
 
 export async function readJson(filename) {
   try {
+    if (await isGzipFile(filename)) return await readChunkedJson(filename);
     return JSON.parse(await readFile(filename, "utf8"));
   } catch (error) {
     if (error instanceof SyntaxError) throw new UserError(`Invalid JSON in ${filename}: ${error.message}`);
@@ -21,7 +27,13 @@ export async function readJson(filename) {
 }
 
 export async function writeJson(filename, value, spaces = 2) {
-  return writeText(filename, `${JSON.stringify(value, null, spaces)}\n`);
+  if (shouldChunkJson(value)) return writeChunkedJson(filename, value);
+  try {
+    return await writeText(filename, `${JSON.stringify(value, null, spaces)}\n`);
+  } catch (error) {
+    if (!isInvalidStringLength(error)) throw error;
+    return writeChunkedJson(filename, value);
+  }
 }
 
 export async function writeText(filename, value) {
@@ -43,6 +55,120 @@ export async function writeBinary(filename, value) {
 function nextTempFilename(filename) {
   tempWriteSequence += 1;
   return `${filename}.tmp-${process.pid}-${tempWriteSequence}`;
+}
+
+function shouldChunkJson(value) {
+  if (!value || Array.isArray(value) || typeof value !== "object") return false;
+  const configured = Math.floor(Number(process.env.VOXEL_CHUNKED_JSON_ARRAY_ITEMS || DEFAULT_CHUNK_ARRAY_ITEMS));
+  const threshold = Number.isFinite(configured) ? Math.max(1, configured) : DEFAULT_CHUNK_ARRAY_ITEMS;
+  return Object.values(value).some((entry) => Array.isArray(entry) && entry.length >= threshold);
+}
+
+async function writeChunkedJson(filename, value) {
+  if (!value || Array.isArray(value) || typeof value !== "object") {
+    throw new RangeError(`JSON artifact ${filename} exceeds the runtime string limit and cannot be top-level chunked`);
+  }
+  const arrays = {};
+  const metadata = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (Array.isArray(entry)) arrays[key] = entry;
+    else metadata[key] = entry;
+  }
+  let header;
+  try {
+    header = JSON.stringify({
+      __chunkedJson: {
+        format: CHUNKED_JSON_FORMAT,
+        schemaVersion: 1,
+        arrays: Object.fromEntries(Object.entries(arrays).map(([key, entries]) => [key, entries.length]))
+      },
+      metadata
+    });
+  } catch (error) {
+    throw new RangeError(`JSON artifact ${filename} still exceeds the runtime string limit after top-level arrays were isolated: ${error?.message || error}`);
+  }
+
+  await ensureDir(path.dirname(filename));
+  const temp = nextTempFilename(filename);
+  const output = createWriteStream(temp);
+  const gzip = createGzip({ level: 6 });
+  gzip.pipe(output);
+  const completion = once(output, "finish");
+  const failure = Promise.race([
+    once(gzip, "error").then(([error]) => { throw error; }),
+    once(output, "error").then(([error]) => { throw error; })
+  ]);
+  try {
+    await writeGzipLine(gzip, header);
+    for (const [key, entries] of Object.entries(arrays)) {
+      for (const entry of entries) await writeGzipLine(gzip, JSON.stringify([key, entry]));
+    }
+    gzip.end();
+    await Promise.race([completion, failure]);
+    await rename(temp, filename);
+    return filename;
+  } catch (error) {
+    output.destroy();
+    gzip.destroy();
+    throw error;
+  }
+}
+
+async function writeGzipLine(stream, line) {
+  if (!stream.write(`${line}\n`)) await once(stream, "drain");
+}
+
+async function readChunkedJson(filename) {
+  const input = createReadStream(filename);
+  const gunzip = createGunzip();
+  input.pipe(gunzip);
+  const lines = readline.createInterface({ input: gunzip, crlfDelay: Infinity });
+  let header = null;
+  let values = null;
+  const counts = {};
+  for await (const line of lines) {
+    if (!line.trim()) continue;
+    if (!header) {
+      header = JSON.parse(line);
+      if (header?.__chunkedJson?.format !== CHUNKED_JSON_FORMAT || !header?.metadata || typeof header.metadata !== "object") {
+        throw new UserError(`Unsupported chunked JSON container in ${filename}`);
+      }
+      values = { ...header.metadata };
+      for (const key of Object.keys(header.__chunkedJson.arrays || {})) {
+        values[key] = [];
+        counts[key] = 0;
+      }
+      continue;
+    }
+    const record = JSON.parse(line);
+    if (!Array.isArray(record) || record.length !== 2 || !Object.hasOwn(values, record[0]) || !Array.isArray(values[record[0]])) {
+      throw new UserError(`Invalid chunked JSON record in ${filename}`);
+    }
+    values[record[0]].push(record[1]);
+    counts[record[0]] += 1;
+  }
+  if (!header || !values) throw new UserError(`Chunked JSON container ${filename} is empty`);
+  for (const [key, expected] of Object.entries(header.__chunkedJson.arrays || {})) {
+    if (counts[key] !== Number(expected)) {
+      throw new UserError(`Chunked JSON array ${key} count mismatch in ${filename}: expected ${expected}, got ${counts[key]}`);
+    }
+  }
+  return values;
+}
+
+async function isGzipFile(filename) {
+  const handle = await open(filename, "r");
+  try {
+    const bytes = Buffer.alloc(2);
+    const { bytesRead } = await handle.read(bytes, 0, 2, 0);
+    return bytesRead === 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+  } finally {
+    await handle.close();
+  }
+}
+
+function isInvalidStringLength(error) {
+  return error instanceof RangeError && /invalid string length/i.test(String(error.message || error));
 }
 
 export function slugify(value) {

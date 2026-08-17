@@ -3,6 +3,7 @@ import path from "node:path";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { georegisterPlanningEvidence } from "../src/lib/planning-georegistration.mjs";
 import { georegisterPlanningEvidenceBatch } from "../src/lib/planning-georegistration-batch.mjs";
+import { enforcePlanningPageRegistrationPolicy } from "../src/lib/planning-georegistration-policy.mjs";
 import {
   EXTRACTION_BUNDLE_FORMAT,
   REGISTERED_BUNDLE_FORMAT,
@@ -91,6 +92,9 @@ async function georegisterBundle(evidencePath, reference, controlPoints) {
         ...pageEntry,
         georegistrationStatus: "template-only",
         registration: null,
+        automaticMatches: [],
+        explicitControlPoints: 0,
+        automaticControlPoints: 0,
         geometryFile: null,
         verticalFile: null,
         materialFile: null,
@@ -113,6 +117,13 @@ async function georegisterBundle(evidencePath, reference, controlPoints) {
       schemaVersion: 1,
       contentHash: pageEntry.contentHash,
       pageCount: 1,
+      pages: [{
+        pageNumber: pageEntry.pageNumber,
+        widthPt: pageEntry.widthPt ?? null,
+        heightPt: pageEntry.heightPt ?? null,
+        rotation: pageEntry.rotation ?? null,
+        metadata: evidence.drawingMetadata?.[0] || null
+      }],
       normalizedEvidence: {
         schemaVersion: 1,
         coordinateSpace: "pdf-user-space-points",
@@ -125,7 +136,10 @@ async function georegisterBundle(evidencePath, reference, controlPoints) {
       }
     };
     const scopedControls = controlsForPage(controlPoints, pageEntry, bundle.manifest.pageCount || 1);
-    const result = georegisterPlanningEvidence(extraction, reference.features || [], registrationOptions(scopedControls));
+    const rawResult = georegisterPlanningEvidence(extraction, reference.features || [], registrationOptions(scopedControls));
+    const result = enforcePlanningPageRegistrationPolicy(rawResult, pageEntry.classification, {
+      minAutomaticWorldPlanMatches: number(args.minAutomaticWorldPlanMatches, 3)
+    });
     const compact = {
       contentHash: pageEntry.contentHash,
       pageNumber: pageEntry.pageNumber,
@@ -135,6 +149,7 @@ async function georegisterBundle(evidencePath, reference, controlPoints) {
       automaticMatches: result.automaticMatches || [],
       explicitControlPoints: result.explicitControlPoints || 0,
       automaticControlPoints: result.automaticControlPoints || 0,
+      policyRejection: result.policyRejection || null,
       rideStructureTemplateCount: templates.length
     };
     registrations.push(compact);
@@ -144,12 +159,18 @@ async function georegisterBundle(evidencePath, reference, controlPoints) {
       ...pageEntry,
       georegistrationStatus: "registered",
       registration: compact.solution,
+      automaticMatches: compact.automaticMatches,
+      explicitControlPoints: compact.explicitControlPoints,
+      automaticControlPoints: compact.automaticControlPoints,
       geometryFile: null,
       verticalFile: null,
       materialFile: null,
       templateFile: null
     }, result.registeredEvidence);
     registeredPage.registration = compact.solution;
+    registeredPage.automaticMatches = compact.automaticMatches;
+    registeredPage.explicitControlPoints = compact.explicitControlPoints;
+    registeredPage.automaticControlPoints = compact.automaticControlPoints;
     registeredPage.georegistrationStatus = "registered";
     evidencePages.push(registeredPage);
     spatialRegisteredPages += 1;
@@ -165,7 +186,8 @@ async function georegisterBundle(evidencePath, reference, controlPoints) {
     contentHash: entry.contentHash,
     pageNumber: entry.pageNumber,
     classification: entry.classification,
-    rejectionReasons: entry.solution?.rejectionReasons || ["registration-failed"]
+    rejectionReasons: entry.solution?.rejectionReasons || ["registration-failed"],
+    policyRejection: entry.policyRejection || null
   }));
   const status = !spatialRegistrations.length
     ? (templateOnlyPages ? "template-only" : "unregistered")
@@ -195,7 +217,7 @@ async function georegisterBundle(evidencePath, reference, controlPoints) {
   };
   await writeBundleManifest(registeredRoot, registeredManifest);
   const report = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     status,
     groupCount: registrations.length,
     registeredGroupCount: spatialRegisteredPages,

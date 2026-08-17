@@ -1,26 +1,34 @@
-name: PR34 full generation benchmark
+name: Planning full generation benchmark
 
 on:
   pull_request:
     branches: [main]
+    paths:
+      - 'src/lib/planning-*.mjs'
+      - 'src/lib/io.mjs'
+      - 'scripts/planning-*.mjs'
+      - 'test/planning-*.test.mjs'
+      - 'test/io-*.test.mjs'
+      - '.github/workflows/planning-documents.yml'
+      - '.github/workflows/generate-world.yml'
+      - '.github/workflows/pr33-full-generation-benchmark.yml'
 
 permissions:
   contents: read
 
 concurrency:
-  group: pr34-full-generation-benchmark
+  group: planning-full-generation-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   full-generation:
-    if: github.head_ref == 'agent/sub15-generation-critical-path'
     uses: ./.github/workflows/generate-world.yml
     with:
       bbox: "52.9820,-1.9000,52.9945,-1.8665"
 
   benchmark-complete:
     needs: full-generation
-    if: always() && github.head_ref == 'agent/sub15-generation-critical-path'
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Require successful complete generation
@@ -38,7 +46,7 @@ jobs:
         with:
           name: voxel-mapper-generation-evidence
           path: full-generation-evidence
-      - name: Require validated world and meaningful planning reconstruction
+      - name: Require validated world and non-pathological planning reconstruction
         shell: bash
         run: |
           shopt -s nullglob
@@ -56,6 +64,17 @@ jobs:
           const fusion = JSON.parse(fs.readFileSync(fusionPath, 'utf8'));
           const stats = build.stats || {};
           const counts = fusion.changeSet?.counts || {};
+          const association = fusion.association || {};
+          const certifiedTargets = Number(association.association?.certifiedGeometryTargets || 0);
+          const genericMatches = Number(association.association?.genericGeometryMatches || 0);
+          const acceptedGeometry = Number(association.accepted?.geometry || 0);
+          const ambiguousGeometry = Number(association.rejected?.['geometry-ambiguous'] || 0);
+          const changes = fusion.changeSet?.changes || [];
+          const replacements = changes.filter((entry) => entry.operation === 'replace');
+          const replacementTargets = replacements.map((entry) => entry.targetFeatureId).filter(Boolean);
+          const uniqueReplacementTargets = new Set(replacementTargets);
+          const collisions = fusion.changeSet?.targetCollisions || {};
+          const sanitization = fusion.authoritySanitization || {};
           const topologyOrSurfaceChanges = Number(counts.add || 0) + Number(counts.replace || 0) + Number(counts.delete || 0) + Number(counts.paint || 0);
           const planning3d = Number(stats.planningObject3dRendered || 0) + Number(stats.rideStructure3dRendered || 0);
           const meaningfulPlanningWorldChanges = topologyOrSurfaceChanges + planning3d;
@@ -68,6 +87,14 @@ jobs:
             planningObject3dRendered: stats.planningObject3dRendered || 0,
             rideStructure3dRendered: stats.rideStructure3dRendered || 0,
             meaningfulPlanningWorldChanges,
+            planningAssociation: { acceptedGeometry, certifiedTargets, genericMatches, ambiguousGeometry },
+            replacementTargetCount: replacementTargets.length,
+            uniqueReplacementTargetCount: uniqueReplacementTargets.size,
+            targetCollisions: collisions,
+            terrainAuthority: {
+              geometry: sanitization.terrainGeometryAuthority,
+              elevation: sanitization.terrainElevationAuthority
+            },
             shardCount: result.parallelWorldBuild?.shards,
             grade: result.grade,
             confidence: result.confidence
@@ -76,4 +103,13 @@ jobs:
           if (Number(result.worldChunks || 0) < 1000) throw new Error(`Unexpectedly small world: ${result.worldChunks || 0} chunks`);
           if (Number(result.planningAuthorityAppliedAttributes || 0) <= 0) throw new Error('No verified planning authority attributes reached the generated world');
           if (meaningfulPlanningWorldChanges <= 0) throw new Error('Verified planning evidence produced no visible topology, surface, or 3D reconstruction changes');
+          if (acceptedGeometry > 0 && certifiedTargets + genericMatches !== acceptedGeometry) {
+            throw new Error(`Planning geometry association accounting mismatch: accepted=${acceptedGeometry}, certified=${certifiedTargets}, generic=${genericMatches}`);
+          }
+          if (replacementTargets.length !== uniqueReplacementTargets.size) {
+            throw new Error(`Multiple replacement operations remain for the same canonical target: replacements=${replacementTargets.length}, uniqueTargets=${uniqueReplacementTargets.size}`);
+          }
+          if (sanitization.terrainGeometryAuthority === true || sanitization.terrainElevationAuthority === true) {
+            throw new Error('Planning authority attempted to gain terrain geometry/elevation authority');
+          }
           NODE

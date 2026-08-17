@@ -61,6 +61,8 @@ test("extractVectorOperations preserves transformed closed planning geometry", (
 test("planning text extraction finds drawing scale, vertical levels and materials", () => {
   const metadata = extractDrawingMetadata("Proposed Site Plan Drawing No AT-101 Rev C Scale 1:200");
   assert.equal(metadata.scaleDenominator, 200);
+  assert.equal(metadata.scaleAmbiguous, false);
+  assert.deepEqual(metadata.scaleCandidates, [200]);
   assert.equal(metadata.revision, "C");
   assert.equal(metadata.drawingNumber, "AT-101");
 
@@ -73,6 +75,20 @@ test("planning text extraction finds drawing scale, vertical levels and material
   const materials = extractMaterialObservations(items, 1, "abc");
   assert.ok(materials.some((entry) => entry.material === "red_tarmac"));
   assert.ok(materials.some((entry) => entry.material === "timber"));
+});
+
+test("naked ratio text is not accepted as the sheet drawing scale", () => {
+  const metadata = extractDrawingMetadata("Site Plan Drawing No AT-201 detail bubble 1:20");
+  assert.equal(metadata.scaleDenominator, null);
+  assert.deepEqual(metadata.scaleCandidates, []);
+  assert.equal(metadata.drawingNumber, "AT-201");
+});
+
+test("multiple explicit scales are marked ambiguous instead of choosing one silently", () => {
+  const metadata = extractDrawingMetadata("Site Plan Scale 1:500 Detail Scale 1:20 Drawing No AT-202");
+  assert.equal(metadata.scaleDenominator, null);
+  assert.equal(metadata.scaleAmbiguous, true);
+  assert.deepEqual(metadata.scaleCandidates, [500, 20]);
 });
 
 test("extractPdfPage creates non-authoritative geometry candidates and avoids raster fallback for vector plans", async () => {

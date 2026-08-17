@@ -4,11 +4,12 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { bboxCenter, parseBbox } from "../src/lib/geo.mjs";
 import { cachedJson, fetchJson, sha256 } from "../src/lib/io.mjs";
 import { normalizeMap } from "../src/lib/osm.mjs";
+import { normalizePlanningGeoregReferenceFeatures } from "../src/lib/planning-georeg-reference-normalizer.mjs";
 import { buildOverpassQuery } from "../src/lib/sources.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 if (!args.bbox || !args.out) {
-  console.error("Usage: planning-osm-reference.mjs --bbox south,west,north,east --out FILE [--cache DIR] [--overpass-url URL] [--refresh]");
+  console.error("Usage: planning-osm-reference.mjs --bbox south,west,north,east --out FILE [--cache DIR] [--overpass-url URL] [--buffer-m N] [--refresh]");
   process.exit(2);
 }
 
@@ -45,21 +46,24 @@ const sources = {
 const map = await normalizeMap(sources, { planning: [], override: [] });
 const supportedGeometry = new Set(["Polygon", "MultiPolygon", "LineString", "MultiLineString"]);
 const supportedKinds = new Set(["building", "structure", "path", "road", "ride_track", "barrier", "water", "terrain_detail"]);
-const features = map.features
+const referenceInput = map.features
   .filter((feature) => supportedGeometry.has(feature.localGeometry?.type))
-  .filter((feature) => supportedKinds.has(feature.kind))
-  .map((feature) => ({
-    id: feature.id,
-    name: feature.name || null,
-    kind: feature.kind,
-    subtype: feature.subtype || null,
-    localGeometry: feature.localGeometry,
-    source: feature.source || null,
-    authority: feature.authority || { layer: "osm", rank: 100 }
-  }));
+  .filter((feature) => supportedKinds.has(feature.kind));
+const normalized = normalizePlanningGeoregReferenceFeatures(referenceInput, map.projector, bbox, {
+  bufferM: args.bufferM == null ? 50 : Number(args.bufferM)
+});
+const features = normalized.features.map((feature) => ({
+  id: feature.id,
+  name: feature.name || null,
+  kind: feature.kind,
+  subtype: feature.subtype || null,
+  localGeometry: feature.localGeometry,
+  source: feature.source || null,
+  authority: feature.authority || { layer: "osm", rank: 100 }
+}));
 
 const output = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   bbox,
   center,
   provider: "OpenStreetMap Overpass",
@@ -71,12 +75,20 @@ const output = {
   byGeometryType: countBy(features, (feature) => feature.localGeometry?.type),
   coordinateSpace: "local-world-metres",
   temporalRole: "current-spatial-observation",
-  note: "Polygon features support georegistration control matching; current line and polygon features also support post-decision implementation corroboration. Overpass is requested with out meta geom so timestamps/versions remain available.",
+  normalization: normalized.summary,
+  note: "Current OSM line/polygon features are clipped to the requested bbox plus a small georegistration buffer, building=no objects are excluded, and overlapping named relation/way duplicates are collapsed before planning matching. Timestamps/versions remain element modification metadata from out meta geom.",
   features
 };
 await mkdir(path.dirname(path.resolve(args.out)), { recursive: true });
 await writeFile(path.resolve(args.out), JSON.stringify(output, null, 2) + "\n");
-console.log(JSON.stringify({ out: path.resolve(args.out), featureCount: features.length, cacheHit, byKind: output.byKind, byGeometryType: output.byGeometryType }, null, 2));
+console.log(JSON.stringify({
+  out: path.resolve(args.out),
+  featureCount: features.length,
+  cacheHit,
+  byKind: output.byKind,
+  byGeometryType: output.byGeometryType,
+  normalization: output.normalization
+}, null, 2));
 
 function parseArgs(values) {
   const result = {};

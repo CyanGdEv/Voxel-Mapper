@@ -28,7 +28,7 @@ const REQUIRED_ATTRIBUTES = {
 };
 
 /**
- * Converts PR #8's authority-only planning artifact into candidate records.
+ * Converts the authority-only planning artifact into candidate records.
  * Nothing is materialized into the world here; the existing Evidence Graph is
  * still allowed to compare planning against OSM, LiDAR and other evidence.
  */
@@ -45,6 +45,7 @@ export async function integratePlanningAuthorityEvidence(map, options = {}) {
       materialObservations: source?.materialObservations?.length || 0
     },
     accepted: { geometry: 0, groundElevation: 0, height: 0, material: 0, width: 0 },
+    association: { certifiedGeometryTargets: 0, genericGeometryMatches: 0 },
     rejected: {},
     matchedFeatures: 0,
     matches: []
@@ -58,8 +59,10 @@ export async function integratePlanningAuthorityEvidence(map, options = {}) {
   for (const candidate of source.geometryCandidates || []) {
     if (!materializableGeometryCandidate(candidate)) { reject(summary, "geometry-non-materializable-semantic"); continue; }
     if (!candidate.localGeometry || !map?.projector?.inverse) { reject(summary, "geometry-missing-local-shape"); continue; }
-    const match = matchGeometryCandidate(candidate, features, options);
+    const match = resolveGeometryCandidateMatch(candidate, features, options);
     if (!match.accepted) { reject(summary, `geometry-${match.reason}`); continue; }
+    if (match.method === "certified-current-target") summary.association.certifiedGeometryTargets += 1;
+    else summary.association.genericGeometryMatches += 1;
 
     const geographic = geometryMapCoordinates(candidate.localGeometry, map.projector.inverse);
     addPlanningCandidate(match.feature, {
@@ -219,10 +222,61 @@ export function applyPlanningAuthorityWinners(map) {
   return summary;
 }
 
+/**
+ * A planning geometry that has already been independently corroborated against
+ * a specific post-decision current feature must keep that identity. Re-running
+ * a park-wide nearest/overlap search after topology reconciliation can create a
+ * false ambiguity from duplicate or adjacent OSM representations and discard a
+ * target that was already proven upstream.
+ *
+ * Only internal certification is trusted. A raw targetFeatureId alone is never
+ * sufficient to bypass matching. If a certified target is declared but is no
+ * longer present or semantically compatible, fail closed rather than falling
+ * back to a different feature.
+ */
+export function resolveGeometryCandidateMatch(candidate, features, options = {}) {
+  if (!isAuthorityEntry(candidate)) return { accepted: false, reason: "candidate-not-current-authority" };
+  const certified = certifiedGeometryTarget(candidate);
+  if (!certified) return matchGeometryCandidate(candidate, features, options);
+
+  const feature = (features || []).find((entry) => entry?.id === certified.featureId);
+  if (!feature?.localGeometry) {
+    return { accepted: false, reason: "certified-target-not-found", targetFeatureId: certified.featureId };
+  }
+  if (!planningSemanticCompatible(candidate, feature)) {
+    return {
+      accepted: false,
+      reason: "certified-target-kind-mismatch",
+      targetFeatureId: certified.featureId,
+      featureKind: feature.kind
+    };
+  }
+
+  const minimum = Number(options.planningAuthorityMinMatchScore ?? DEFAULT_MIN_MATCH_SCORE);
+  const score = Number(certified.matchScore);
+  if (Number.isFinite(score) && score < minimum) {
+    return {
+      accepted: false,
+      reason: "certified-target-below-score-gate",
+      targetFeatureId: certified.featureId,
+      score: round(score)
+    };
+  }
+
+  return {
+    accepted: true,
+    feature,
+    score: Number.isFinite(score) ? round(score) : 1,
+    secondScore: Number.isFinite(Number(certified.secondScore)) ? round(certified.secondScore) : null,
+    method: "certified-current-target",
+    certification: certified.method
+  };
+}
+
 export function matchGeometryCandidate(candidate, features, options = {}) {
   const sourceGeometry = candidate?.localGeometry;
   if (!sourceGeometry) return { accepted: false, reason: "missing-geometry" };
-  const compatible = (features || []).filter((feature) => semanticCompatible(candidate.semantic, feature.kind));
+  const compatible = (features || []).filter((feature) => planningSemanticCompatible(candidate, feature));
   if (!compatible.length) return { accepted: false, reason: "no-compatible-feature" };
   const scored = compatible.map((feature) => ({ feature, score: geometryMatchScore(sourceGeometry, feature.localGeometry) }))
     .filter((entry) => Number.isFinite(entry.score))
@@ -234,7 +288,7 @@ export function matchGeometryCandidate(candidate, features, options = {}) {
   const gap = Number(options.planningAuthorityAmbiguityGap ?? DEFAULT_AMBIGUITY_GAP);
   if (best.score < minimum) return { accepted: false, reason: "below-score-gate", score: round(best.score) };
   if (second && best.score - second.score < gap) return { accepted: false, reason: "ambiguous", score: round(best.score), secondScore: round(second.score) };
-  return { accepted: true, feature: best.feature, score: round(best.score), secondScore: second ? round(second.score) : null };
+  return { accepted: true, feature: best.feature, score: round(best.score), secondScore: second ? round(second.score) : null, method: "geometry-search" };
 }
 
 export function matchPointObservation(observation, features, compatibleKind = () => true, options = {}) {
@@ -411,15 +465,56 @@ async function loadAuthorityEvidence(options) {
 function isAuthorityEntry(entry) {
   return entry?.worldGeometryAuthority === true && entry?.planningTemporal?.state === "current";
 }
+function certifiedGeometryTarget(entry) {
+  const contract = entry?.associationContract;
+  if (contract?.certifiedCurrentTarget === true && contract?.featureId) {
+    return {
+      featureId: String(contract.featureId),
+      matchScore: contract.matchScore,
+      secondScore: contract.secondScore,
+      method: contract.method || "compiler-certified-current-target"
+    };
+  }
+  const implementation = entry?.implementationCorroboration || entry?.planningTemporal?.implementationCorroboration;
+  if (implementation?.featureId) {
+    return {
+      featureId: String(implementation.featureId),
+      matchScore: implementation.matchScore,
+      secondScore: implementation.secondScore,
+      method: "post-decision-current-osm-corroboration"
+    };
+  }
+  return null;
+}
 function authorityConfidence(entry, spatialScore = 1) {
   const extraction = Number(entry?.confidence ?? 0.9), temporal = Number(entry?.planningTemporal?.confidence ?? 0.99);
   return clamp(extraction * 0.42 + temporal * 0.33 + Number(spatialScore ?? 1) * 0.25);
 }
 function compactPlanningProvenance(entry, match) {
-  return { contentHash: entry.contentHash || null, pageNumber: entry.pageNumber || null, classification: entry.classification || null, semantic: entry.semantic || null, planningTemporal: entry.planningTemporal || null, matchScore: match?.score ?? null, matchDistanceM: match?.distanceM ?? null };
+  return {
+    contentHash: entry.contentHash || null,
+    pageNumber: entry.pageNumber || null,
+    classification: entry.classification || null,
+    semantic: entry.semantic || null,
+    planningTemporal: entry.planningTemporal || null,
+    matchScore: match?.score ?? null,
+    matchDistanceM: match?.distanceM ?? null,
+    matchMethod: match?.method || null,
+    targetCertification: match?.certification || null
+  };
 }
 function matchRecord(type, entry, match, extra = {}) {
-  return { type, sourceRef: entry.id || pageRef(entry), featureId: match.feature.id, featureKind: match.feature.kind, score: match.score ?? null, distanceM: match.distanceM ?? null, ...extra };
+  return {
+    type,
+    sourceRef: entry.id || pageRef(entry),
+    featureId: match.feature.id,
+    featureKind: match.feature.kind,
+    score: match.score ?? null,
+    distanceM: match.distanceM ?? null,
+    method: match.method || null,
+    certification: match.certification || null,
+    ...extra
+  };
 }
 
 function materializableGeometryCandidate(candidate) {
@@ -502,16 +597,25 @@ function canonicalize(value) {
   return value;
 }
 
-function semanticCompatible(semantic, kind) {
-  const value = String(semantic || ""), target = String(kind || "");
-  if (/ride-centerline-or-edge/.test(value)) return target === "ride_track";
-  if (/ride-envelope-or-structure/.test(value)) return target === "structure";
-  if (/building-footprint-or-room/.test(value)) return ["building", "structure"].includes(target);
-  if (/landscape-area-or-path/.test(value)) return ["path", "road", "water", "terrain_detail"].includes(target);
-  if (/landscape-edge-or-route/.test(value)) return ["path", "road", "barrier"].includes(target);
-  if (/site-feature-or-building-footprint/.test(value)) return ["building", "structure", "path", "road", "water", "terrain_detail"].includes(target);
-  if (/site-edge-or-route/.test(value)) return ["path", "road", "barrier", "ride_track"].includes(target);
+function planningSemanticCompatible(candidate, feature) {
+  const semantic = String(candidate?.semantic || "");
+  const kind = String(feature?.kind || "");
+  const classification = normalizePlanningClass(candidate?.classification);
+
+  if (kind === "ride_track") {
+    return classification === "ride_layout" && /ride-centerline-or-edge/.test(semantic);
+  }
+  if (/ride-centerline-or-edge/.test(semantic)) return false;
+  if (/ride-envelope-or-structure/.test(semantic)) return classification === "ride_layout" && kind === "structure";
+  if (/building-footprint-or-room/.test(semantic)) return ["building", "structure"].includes(kind);
+  if (/landscape-area-or-path/.test(semantic)) return ["path", "road", "water", "terrain_detail"].includes(kind);
+  if (/landscape-edge-or-route/.test(semantic)) return ["path", "road", "barrier"].includes(kind);
+  if (/site-feature-or-building-footprint/.test(semantic)) return ["building", "structure", "path", "road", "water", "terrain_detail"].includes(kind);
+  if (/site-edge-or-route/.test(semantic)) return ["path", "road", "barrier"].includes(kind);
   return false;
+}
+function normalizePlanningClass(value) {
+  return String(value || "").toLowerCase().trim().replace(/[\s-]+/g, "_");
 }
 function materialCompatibleKind(kind, material) {
   const target = String(kind || "");

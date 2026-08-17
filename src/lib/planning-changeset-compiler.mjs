@@ -17,7 +17,7 @@ const DEFAULT_AMBIGUITY_GAP = 0.08;
  */
 export function compilePlanningChangeSet(map, evidence = {}, options = {}) {
   const output = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     status: "compiled",
     terrainPolicy: {
       geometryMutable: false,
@@ -31,7 +31,8 @@ export function compilePlanningChangeSet(map, evidence = {}, options = {}) {
     },
     counts: { add: 0, replace: 0, delete: 0, retain: 0, paint: 0, review: 0, ignored: 0 },
     changes: [],
-    candidates: []
+    candidates: [],
+    targetCollisions: null
   };
 
   for (const candidate of evidence?.geometryCandidates || []) {
@@ -41,9 +42,90 @@ export function compilePlanningChangeSet(map, evidence = {}, options = {}) {
     if (decision.candidate) output.candidates.push(decision.candidate);
   }
 
+  output.targetCollisions = resolvePlanningTargetCollisions(output, options);
   if (!output.changes.length) output.status = "no-planning-geometry";
   else if (output.counts.review) output.status = "compiled-with-review-items";
   return output;
+}
+
+/**
+ * A canonical feature may not be sequentially overwritten by several distinct
+ * raw vector fragments. If several planning records resolve to the same target
+ * with genuinely different geometries, automatic materialization stops and the
+ * whole target group is sent to review until a higher-level page/topology
+ * reconstruction can consolidate those fragments. Byte-equivalent geometry is
+ * treated as duplicated evidence and collapsed deterministically.
+ */
+export function resolvePlanningTargetCollisions(output, options = {}) {
+  const replaceCandidates = (output?.candidates || []).filter((candidate) =>
+    candidate?.planningOperation === "replace" && candidate?.targetFeatureId
+  );
+  const groups = new Map();
+  for (const candidate of replaceCandidates) {
+    const key = String(candidate.targetFeatureId);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(candidate);
+  }
+
+  const summary = {
+    schemaVersion: 1,
+    targetsWithMultipleReplacements: 0,
+    duplicateCandidatesCollapsed: 0,
+    conflictingTargetsDeferred: 0,
+    conflictingCandidatesDeferred: 0,
+    targets: []
+  };
+
+  for (const [targetFeatureId, candidates] of groups) {
+    if (candidates.length <= 1) continue;
+    summary.targetsWithMultipleReplacements += 1;
+    const byGeometry = new Map();
+    for (const candidate of candidates) {
+      const key = geometrySignature(candidate.localGeometry, options);
+      if (!byGeometry.has(key)) byGeometry.set(key, []);
+      byGeometry.get(key).push(candidate);
+    }
+
+    if (byGeometry.size === 1) {
+      const ranked = [...candidates].sort(compareReplacementEvidence);
+      const winner = ranked[0];
+      const duplicates = ranked.slice(1);
+      for (const duplicate of duplicates) {
+        transitionCompiledCandidate(output, duplicate, "replace", "ignored", "duplicate-current-planning-replacement");
+      }
+      summary.duplicateCandidatesCollapsed += duplicates.length;
+      summary.targets.push({
+        targetFeatureId,
+        status: "duplicate-evidence-collapsed",
+        inputCandidates: candidates.length,
+        retainedSourceRef: candidateRef(winner),
+        deferredCandidates: 0
+      });
+      continue;
+    }
+
+    for (const candidate of candidates) {
+      transitionCompiledCandidate(
+        output,
+        candidate,
+        "replace",
+        "review",
+        "multiple-current-planning-fragments-same-target-require-consolidation"
+      );
+    }
+    summary.conflictingTargetsDeferred += 1;
+    summary.conflictingCandidatesDeferred += candidates.length;
+    summary.targets.push({
+      targetFeatureId,
+      status: "conflicting-fragments-deferred",
+      inputCandidates: candidates.length,
+      distinctGeometryCount: byGeometry.size,
+      deferredCandidates: candidates.length
+    });
+  }
+
+  summary.targets.sort((a, b) => String(a.targetFeatureId).localeCompare(String(b.targetFeatureId)));
+  return summary;
 }
 
 export function inferPlanningFeatureKind(candidate, map = null, options = {}) {
@@ -52,7 +134,28 @@ export function inferPlanningFeatureKind(candidate, map = null, options = {}) {
     return { kind: null, confidence: 1, reason: "terrain-geometry-immutable", prohibitedTerrainGeometry: true, signals: ["explicit-terrain-kind"] };
   }
   if (explicit === PAINT_ONLY_KIND) return { kind: PAINT_ONLY_KIND, confidence: 0.99, reason: "explicit-surface-paint", signals: ["explicit-kind"] };
-  if (TOPOLOGY_KINDS.has(explicit)) return { kind: explicit, confidence: 0.99, reason: "explicit-feature-kind", signals: ["explicit-kind"] };
+  if (TOPOLOGY_KINDS.has(explicit)) {
+    if (!planningSemanticCompatibleKind(candidate, explicit)) {
+      return { kind: null, confidence: 1, reason: "explicit-kind-incompatible-with-planning-semantic", signals: ["explicit-kind-semantic-mismatch"] };
+    }
+    return { kind: explicit, confidence: 0.99, reason: "explicit-feature-kind", signals: ["explicit-kind"] };
+  }
+
+  // A semantically compatible target that was already certified against a
+  // post-decision current feature is stronger evidence than a generic label or
+  // shape heuristic. Preserve that identity before any fallback inference so
+  // the compiler never discards a verified target and re-enters ambiguity.
+  const corroboratedTarget = implementationCorroboratedTarget(candidate, map);
+  if (corroboratedTarget) {
+    return {
+      kind: corroboratedTarget.kind,
+      confidence: 0.96,
+      reason: "implementation-corroborated-existing-feature-kind",
+      matchOnly: false,
+      targetFeatureId: corroboratedTarget.id,
+      signals: ["post-decision-current-feature-corroboration"]
+    };
+  }
 
   const semantic = normalize(candidate?.semantic);
   const classification = normalize(candidate?.classification);
@@ -68,14 +171,11 @@ export function inferPlanningFeatureKind(candidate, map = null, options = {}) {
 
   const hit = (kind, confidence, reason, signal) => ({ kind, confidence, reason, signals: [...signals, signal] });
 
-  // A support/column label is more specific than the generic fact that it came
-  // from a ride-layout drawing. Check it first so support linework is never
-  // silently promoted to a ride centerline.
-  if (/ride[-_ ]?support|support[-_ ]?structure|column|support pier/.test(`${semantic} ${text}`)) {
+  if (/ride[-_ ]?support|support[-_ ]?structure|column|support pier/.test(`${semantic} ${text}`) && classification === "ride_layout") {
     return hit("ride_support", 0.94, "ride-support-label", "support-label");
   }
-  if (/ride[-_ ]?centerline|ride[-_ ]?track|track[-_ ]?layout/.test(`${semantic} ${text}`) ||
-      (classification === "ride_layout" && lineGeometry)) {
+  if ((/ride[-_ ]?centerline|ride[-_ ]?track|track[-_ ]?layout/.test(`${semantic} ${text}`) ||
+      (classification === "ride_layout" && lineGeometry)) && classification === "ride_layout") {
     return hit("ride_track", 0.98, "ride-layout-centerline", "ride-layout");
   }
   if (/demolition[-_ ]?footprint/.test(semantic)) {
@@ -105,18 +205,6 @@ export function inferPlanningFeatureKind(candidate, map = null, options = {}) {
   }
   if (/\b(tree|trees|planting|hedge|shrub|woodland)\b/.test(text) && areaGeometry) {
     return hit("vegetation", 0.86, "vegetation-area-label", "vegetation-label");
-  }
-
-  const corroboratedTarget = implementationCorroboratedTarget(candidate, map);
-  if (corroboratedTarget) {
-    return {
-      kind: corroboratedTarget.kind,
-      confidence: 0.96,
-      reason: "implementation-corroborated-existing-feature-kind",
-      matchOnly: false,
-      targetFeatureId: corroboratedTarget.id,
-      signals: ["post-decision-current-feature-corroboration"]
-    };
   }
 
   const material = candidate?.compiledMaterial || null;
@@ -287,6 +375,40 @@ function decision(operation, candidate, inference, match, reason, extra = {}) {
   };
 }
 
+function transitionCompiledCandidate(output, candidate, fromOperation, toOperation, reason) {
+  const sourceRef = candidateRef(candidate);
+  const record = (output.changes || []).find((entry) =>
+    entry.operation === fromOperation && entry.sourceRef === sourceRef && entry.targetFeatureId === candidate.targetFeatureId
+  );
+  if (!record) return false;
+  record.operation = toOperation;
+  record.reason = reason;
+  record.targetCollision = true;
+  output.counts[fromOperation] = Math.max(0, Number(output.counts[fromOperation] || 0) - 1);
+  output.counts[toOperation] = Number(output.counts[toOperation] || 0) + 1;
+  output.candidates = (output.candidates || []).filter((entry) => entry !== candidate);
+  return true;
+}
+
+function compareReplacementEvidence(a, b) {
+  const confidenceA = Number(a?.confidence ?? a?.planningTemporal?.confidence ?? 0);
+  const confidenceB = Number(b?.confidence ?? b?.planningTemporal?.confidence ?? 0);
+  if (confidenceA !== confidenceB) return confidenceB - confidenceA;
+  const matchA = Number(a?.compilerDecision?.matchScore ?? 0);
+  const matchB = Number(b?.compilerDecision?.matchScore ?? 0);
+  if (matchA !== matchB) return matchB - matchA;
+  return String(candidateRef(a) || "").localeCompare(String(candidateRef(b) || ""));
+}
+
+function geometrySignature(geometry, options = {}) {
+  const precision = Math.max(0, Math.min(6, Number(options.planningChangeSetDuplicateGeometryPrecision ?? 3)));
+  const factor = 10 ** precision;
+  const roundValue = (value) => Array.isArray(value)
+    ? value.map(roundValue)
+    : Number.isFinite(value) ? Math.round(value * factor) / factor : value;
+  return JSON.stringify(geometry ? { type: geometry.type, coordinates: roundValue(geometry.coordinates) } : null);
+}
+
 function associateMaterial(candidate, observations) {
   if (!candidate?.localGeometry || !isAreaGeometry(candidate.localGeometry)) return { accepted: false, reason: "material-area-unavailable" };
   const samePage = (observations || []).filter((entry) =>
@@ -311,13 +433,15 @@ function implementationCorroboratedTarget(candidate, map) {
   if (!featureId) return null;
   const feature = (map?.features || []).find((entry) => entry?.id === featureId);
   if (!feature?.localGeometry || !TOPOLOGY_KINDS.has(feature.kind)) return null;
+  if (!planningSemanticCompatibleKind(candidate, feature.kind)) return null;
   return feature;
 }
 
 function inferKindFromExistingGeometry(candidate, features, options) {
   const eligible = (features || []).filter((feature) =>
     feature?.localGeometry && feature.kind !== "park_boundary" &&
-    (TOPOLOGY_KINDS.has(feature.kind) || feature.kind === PAINT_ONLY_KIND)
+    (TOPOLOGY_KINDS.has(feature.kind) || feature.kind === PAINT_ONLY_KIND) &&
+    planningSemanticCompatibleKind(candidate, feature.kind)
   );
   const ranked = eligible.map((feature) => ({ feature, score: geometryMatchScore(candidate.localGeometry, feature.localGeometry) }))
     .filter((entry) => Number.isFinite(entry.score))
@@ -326,6 +450,7 @@ function inferKindFromExistingGeometry(candidate, features, options) {
 }
 
 function findKindMatch(candidate, features, kind, options) {
+  if (!planningSemanticCompatibleKind(candidate, kind)) return { accepted: false, reason: "semantic-kind-incompatible" };
   const eligible = (features || []).filter((feature) =>
     feature?.localGeometry && compatibleKinds(kind, feature.kind) && Number(feature.authority?.rank ?? 100) < 360
   );
@@ -348,6 +473,25 @@ function acceptRanked(ranked, options) {
   if (best.score < minimum) return { accepted: false, reason: "below-score-gate", score: round(best.score), secondScore: second ? round(second.score) : null };
   if (second && best.score - second.score < gap) return { accepted: false, reason: "ambiguous", score: round(best.score), secondScore: round(second.score) };
   return { accepted: true, feature: best.feature, score: round(best.score), secondScore: second ? round(second.score) : null, method: "compiler-spatial-kind-match" };
+}
+
+function planningSemanticCompatibleKind(candidate, kind) {
+  const semantic = normalize(candidate?.semantic);
+  const classification = normalize(candidate?.classification).replace(/[ -]+/g, "_");
+  const target = normalizeKind(kind);
+  if (!target) return false;
+  if (target === "ride_track") return classification === "ride_layout" && /ride[-_ ]?centerline|ride[-_ ]?track/.test(semantic);
+  if (target === "ride_support") return classification === "ride_layout" && /ride[-_ ]?support|support[-_ ]?structure|column|support pier/.test(semantic);
+  if (/ride[-_ ]?centerline|ride[-_ ]?track/.test(semantic)) return false;
+  if (/ride[-_ ]?envelope|ride[-_ ]?structure/.test(semantic)) return classification === "ride_layout" && target === "structure";
+  if (/building[-_ ]?footprint|building[-_ ]?room/.test(semantic)) return ["building", "structure"].includes(target);
+  if (/landscape[-_ ]?area|landscape[-_ ]?path/.test(semantic)) return ["path", "road", "water", "terrain_detail", PAINT_ONLY_KIND].includes(target);
+  if (/landscape[-_ ]?edge|landscape[-_ ]?route/.test(semantic)) return ["path", "road", "barrier"].includes(target);
+  if (/site[-_ ]?feature|site[-_ ]?building[-_ ]?footprint/.test(semantic)) return ["building", "structure", "path", "road", "water", "terrain_detail"].includes(target);
+  if (/site[-_ ]?edge|site[-_ ]?route/.test(semantic)) return ["path", "road", "barrier"].includes(target);
+  if (/demolition[-_ ]?footprint/.test(semantic)) return ["building", "structure"].includes(target);
+  if (/roof/.test(semantic)) return target === "building";
+  return false;
 }
 
 function compatibleKinds(requested, actual) {

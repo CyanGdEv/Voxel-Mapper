@@ -37,6 +37,25 @@ function currentRide(timestamp = "2018-03-01T12:00:00Z", overrides = {}) {
   };
 }
 
+function currentPath(timestamp = "2018-03-01T12:00:00Z", overrides = {}) {
+  return {
+    id: "osm:way:path",
+    kind: "path",
+    localGeometry: {
+      type: "LineString",
+      coordinates: [[0, 0], [10, 8], [20, 4], [30, 15]]
+    },
+    source: {
+      provider: "OpenStreetMap",
+      elementType: "way",
+      elementId: 999,
+      version: 3,
+      timestamp
+    },
+    ...overrides
+  };
+}
+
 const temporal = [{
   statusEvidence: ["approved"],
   dateEvidence: [{ kind: "decision-date", value: "2017-04-01" }]
@@ -49,7 +68,39 @@ test("post-decision current OSM geometry can prove an approved planning geometry
   assert.equal(result.temporal.worldGeometryAuthority, true);
   assert.equal(result.temporal.reason, "post-decision-current-osm-geometry-corroboration");
   assert.equal(result.temporal.implementationCorroboration.featureId, "osm:way:123");
+  assert.equal(result.temporal.implementationCorroboration.featureKind, "ride_track");
+  assert.equal(result.temporal.implementationCorroboration.planningClassification, "ride_layout");
+  assert.equal(result.temporal.implementationCorroboration.planningSemantic, "ride-centerline-or-edge");
   assert.ok(result.temporal.implementationCorroboration.matchScore >= 0.78);
+});
+
+test("generic site-plan route cannot prove ride implementation from geometric coincidence", () => {
+  const result = corroboratePlanningGeometryCandidate(candidate({
+    id: "plan:woodland-route",
+    classification: "site_plan",
+    semantic: "site-edge-or-route"
+  }), [currentRide()], { applicationTemporal: temporal });
+  assert.equal(result.accepted, false);
+  assert.equal(result.reason, "geometry-no-compatible-feature");
+});
+
+test("generic site-plan route can still corroborate a current path", () => {
+  const result = corroboratePlanningGeometryCandidate(candidate({
+    id: "plan:woodland-path",
+    classification: "site_plan",
+    semantic: "site-edge-or-route"
+  }), [currentPath()], { applicationTemporal: temporal });
+  assert.equal(result.accepted, true);
+  assert.equal(result.temporal.implementationCorroboration.featureId, "osm:way:path");
+  assert.equal(result.temporal.implementationCorroboration.featureKind, "path");
+});
+
+test("ride-centerline semantics require a ride-layout planning class", () => {
+  for (const classification of ["site_plan", "location_plan", "landscape_plan"]) {
+    const result = corroboratePlanningGeometryCandidate(candidate({ classification }), [currentRide()], { applicationTemporal: temporal });
+    assert.equal(result.accepted, false, classification);
+    assert.equal(result.reason, "geometry-no-compatible-feature", classification);
+  }
 });
 
 test("stale 0.12 caller override cannot make canonical 0.08 corroboration ambiguous", () => {
