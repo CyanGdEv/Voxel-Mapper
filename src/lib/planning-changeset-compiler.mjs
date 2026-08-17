@@ -134,7 +134,12 @@ export function inferPlanningFeatureKind(candidate, map = null, options = {}) {
     return { kind: null, confidence: 1, reason: "terrain-geometry-immutable", prohibitedTerrainGeometry: true, signals: ["explicit-terrain-kind"] };
   }
   if (explicit === PAINT_ONLY_KIND) return { kind: PAINT_ONLY_KIND, confidence: 0.99, reason: "explicit-surface-paint", signals: ["explicit-kind"] };
-  if (TOPOLOGY_KINDS.has(explicit)) return { kind: explicit, confidence: 0.99, reason: "explicit-feature-kind", signals: ["explicit-kind"] };
+  if (TOPOLOGY_KINDS.has(explicit)) {
+    if (!planningSemanticCompatibleKind(candidate, explicit)) {
+      return { kind: null, confidence: 1, reason: "explicit-kind-incompatible-with-planning-semantic", signals: ["explicit-kind-semantic-mismatch"] };
+    }
+    return { kind: explicit, confidence: 0.99, reason: "explicit-feature-kind", signals: ["explicit-kind"] };
+  }
 
   const semantic = normalize(candidate?.semantic);
   const classification = normalize(candidate?.classification);
@@ -150,14 +155,11 @@ export function inferPlanningFeatureKind(candidate, map = null, options = {}) {
 
   const hit = (kind, confidence, reason, signal) => ({ kind, confidence, reason, signals: [...signals, signal] });
 
-  // A support/column label is more specific than the generic fact that it came
-  // from a ride-layout drawing. Check it first so support linework is never
-  // silently promoted to a ride centerline.
-  if (/ride[-_ ]?support|support[-_ ]?structure|column|support pier/.test(`${semantic} ${text}`)) {
+  if (/ride[-_ ]?support|support[-_ ]?structure|column|support pier/.test(`${semantic} ${text}`) && classification === "ride_layout") {
     return hit("ride_support", 0.94, "ride-support-label", "support-label");
   }
-  if (/ride[-_ ]?centerline|ride[-_ ]?track|track[-_ ]?layout/.test(`${semantic} ${text}`) ||
-      (classification === "ride_layout" && lineGeometry)) {
+  if ((/ride[-_ ]?centerline|ride[-_ ]?track|track[-_ ]?layout/.test(`${semantic} ${text}`) ||
+      (classification === "ride_layout" && lineGeometry)) && classification === "ride_layout") {
     return hit("ride_track", 0.98, "ride-layout-centerline", "ride-layout");
   }
   if (/demolition[-_ ]?footprint/.test(semantic)) {
@@ -427,13 +429,15 @@ function implementationCorroboratedTarget(candidate, map) {
   if (!featureId) return null;
   const feature = (map?.features || []).find((entry) => entry?.id === featureId);
   if (!feature?.localGeometry || !TOPOLOGY_KINDS.has(feature.kind)) return null;
+  if (!planningSemanticCompatibleKind(candidate, feature.kind)) return null;
   return feature;
 }
 
 function inferKindFromExistingGeometry(candidate, features, options) {
   const eligible = (features || []).filter((feature) =>
     feature?.localGeometry && feature.kind !== "park_boundary" &&
-    (TOPOLOGY_KINDS.has(feature.kind) || feature.kind === PAINT_ONLY_KIND)
+    (TOPOLOGY_KINDS.has(feature.kind) || feature.kind === PAINT_ONLY_KIND) &&
+    planningSemanticCompatibleKind(candidate, feature.kind)
   );
   const ranked = eligible.map((feature) => ({ feature, score: geometryMatchScore(candidate.localGeometry, feature.localGeometry) }))
     .filter((entry) => Number.isFinite(entry.score))
@@ -442,6 +446,7 @@ function inferKindFromExistingGeometry(candidate, features, options) {
 }
 
 function findKindMatch(candidate, features, kind, options) {
+  if (!planningSemanticCompatibleKind(candidate, kind)) return { accepted: false, reason: "semantic-kind-incompatible" };
   const eligible = (features || []).filter((feature) =>
     feature?.localGeometry && compatibleKinds(kind, feature.kind) && Number(feature.authority?.rank ?? 100) < 360
   );
@@ -464,6 +469,25 @@ function acceptRanked(ranked, options) {
   if (best.score < minimum) return { accepted: false, reason: "below-score-gate", score: round(best.score), secondScore: second ? round(second.score) : null };
   if (second && best.score - second.score < gap) return { accepted: false, reason: "ambiguous", score: round(best.score), secondScore: round(second.score) };
   return { accepted: true, feature: best.feature, score: round(best.score), secondScore: second ? round(second.score) : null, method: "compiler-spatial-kind-match" };
+}
+
+function planningSemanticCompatibleKind(candidate, kind) {
+  const semantic = normalize(candidate?.semantic);
+  const classification = normalize(candidate?.classification).replace(/[ -]+/g, "_");
+  const target = normalizeKind(kind);
+  if (!target) return false;
+  if (target === "ride_track") return classification === "ride_layout" && /ride[-_ ]?centerline|ride[-_ ]?track/.test(semantic);
+  if (target === "ride_support") return classification === "ride_layout" && /ride[-_ ]?support|support[-_ ]?structure|column|support pier/.test(semantic);
+  if (/ride[-_ ]?centerline|ride[-_ ]?track/.test(semantic)) return false;
+  if (/ride[-_ ]?envelope|ride[-_ ]?structure/.test(semantic)) return classification === "ride_layout" && target === "structure";
+  if (/building[-_ ]?footprint|building[-_ ]?room/.test(semantic)) return ["building", "structure"].includes(target);
+  if (/landscape[-_ ]?area|landscape[-_ ]?path/.test(semantic)) return ["path", "road", "water", "terrain_detail", PAINT_ONLY_KIND].includes(target);
+  if (/landscape[-_ ]?edge|landscape[-_ ]?route/.test(semantic)) return ["path", "road", "barrier"].includes(target);
+  if (/site[-_ ]?feature|site[-_ ]?building[-_ ]?footprint/.test(semantic)) return ["building", "structure", "path", "road", "water", "terrain_detail"].includes(target);
+  if (/site[-_ ]?edge|site[-_ ]?route/.test(semantic)) return ["path", "road", "barrier"].includes(target);
+  if (/demolition[-_ ]?footprint/.test(semantic)) return ["building", "structure"].includes(target);
+  if (/roof/.test(semantic)) return target === "building";
+  return false;
 }
 
 function compatibleKinds(requested, actual) {
