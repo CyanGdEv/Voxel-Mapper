@@ -220,13 +220,55 @@ function applyExtendedTopologyChanges(map, candidates) {
 }
 
 function buildTerrainSafeAuthorityEvidence(map, evidence, changeSet, options) {
-  const acceptedGeometryRefs = new Set(
+  const acceptedChanges = new Map(
     (changeSet.changes || [])
       .filter((change) => ["add", "replace", "retain"].includes(change.operation) && change.featureKind && change.featureKind !== "surface")
-      .map((change) => change.sourceRef)
-      .filter(Boolean)
+      .filter((change) => change.sourceRef)
+      .map((change) => [change.sourceRef, change])
   );
-  const geometryCandidates = (evidence.geometryCandidates || []).filter((candidate) => acceptedGeometryRefs.has(candidateRef(candidate)));
+  const featuresById = new Map((map.features || []).filter((feature) => feature?.id).map((feature) => [feature.id, feature]));
+  const featuresByPlanningSourceRef = new Map();
+  for (const feature of map.features || []) {
+    const sourceRef = feature?.planningTopologyResolution?.sourceRef;
+    if (sourceRef && !featuresByPlanningSourceRef.has(sourceRef)) featuresByPlanningSourceRef.set(sourceRef, feature);
+  }
+
+  const geometryCandidates = [];
+  let geometryRejectedMissingCanonicalTarget = 0;
+  let geometryRejectedCanonicalKindMismatch = 0;
+  for (const candidate of evidence.geometryCandidates || []) {
+    const sourceRef = candidateRef(candidate);
+    const change = acceptedChanges.get(sourceRef);
+    if (!change) continue;
+
+    const implementation = candidate.implementationCorroboration || candidate.planningTemporal?.implementationCorroboration || null;
+    const targetId = change.targetFeatureId || change.featureId || featuresByPlanningSourceRef.get(sourceRef)?.id || implementation?.featureId || null;
+    const target = targetId ? featuresById.get(targetId) : null;
+    if (!target?.localGeometry) {
+      geometryRejectedMissingCanonicalTarget += 1;
+      continue;
+    }
+    if (change.featureKind && target.kind !== change.featureKind && !compatibleKinds(change.featureKind, target.kind)) {
+      geometryRejectedCanonicalKindMismatch += 1;
+      continue;
+    }
+
+    geometryCandidates.push({
+      ...candidate,
+      targetFeatureId: target.id,
+      associationContract: {
+        schemaVersion: 1,
+        certifiedCurrentTarget: true,
+        featureId: target.id,
+        featureKind: target.kind,
+        operation: change.operation,
+        sourceRef,
+        method: "compiled-current-planning-target",
+        matchScore: change.matchScore ?? candidate.compilerDecision?.matchScore ?? implementation?.matchScore ?? null,
+        secondScore: implementation?.secondScore ?? null
+      }
+    });
+  }
 
   const verticalObservations = [];
   let rejectedGroundTargets = 0;
@@ -252,12 +294,15 @@ function buildTerrainSafeAuthorityEvidence(map, evidence, changeSet, options) {
 
   const materialObservations = (evidence.materialObservations || []).filter(isCurrentAuthority);
   const summary = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     terrainElevationAuthority: false,
     terrainGeometryAuthority: false,
     geometryInput: evidence.geometryCandidates?.length || 0,
     geometryRetained: geometryCandidates.length,
-    geometryRejectedBySemanticCompiler: Math.max(0, (evidence.geometryCandidates?.length || 0) - geometryCandidates.length),
+    geometryRejectedBySemanticCompiler: Math.max(0, (evidence.geometryCandidates?.length || 0) - geometryCandidates.length - geometryRejectedMissingCanonicalTarget - geometryRejectedCanonicalKindMismatch),
+    geometryRejectedMissingCanonicalTarget,
+    geometryRejectedCanonicalKindMismatch,
+    geometryCertifiedTargets: geometryCandidates.length,
     verticalInput: evidence.verticalObservations?.length || 0,
     verticalRetainedStructural: verticalObservations.length,
     verticalRejectedGroundTargets: rejectedGroundTargets,
