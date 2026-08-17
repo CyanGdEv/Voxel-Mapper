@@ -3,9 +3,11 @@ import path from "node:path";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { resolvePlanningRevisionAuthority } from "../src/lib/planning-revision-resolver.mjs";
 import {
-  DEFAULT_PLANNING_CORROBORATION_AMBIGUITY_GAP,
-  corroboratePlanningGeometryCandidate
-} from "../src/lib/planning-current-corroboration.mjs";
+  buildImplementedApplicationProof,
+  evaluateImplementedPlanningPage,
+  promoteCertifiedPageEvidence,
+  promoteImplementedApplicationSupportEvidence
+} from "../src/lib/planning-implemented-scheme-authority.mjs";
 import {
   AUTHORITY_BUNDLE_FORMAT,
   REGISTERED_BUNDLE_FORMAT,
@@ -43,19 +45,34 @@ async function resolveBundle(bundle) {
   });
   const decisionByPage = new Map(result.pages.map((page) => [pageKey(page.contentHash, page.pageNumber), page.decision]));
   const documentIndex = new Map((catalog.documents || []).map((document) => [document.contentHash, document]));
+  const referenceFeatures = reference?.features || [];
   const resolvedManifestPath = path.resolve(args.resolvedOut || "planning-current-state-evidence.json");
   const authorityManifestPath = path.resolve(args.authorityOut || "planning-current-authority-evidence.json");
   const resolvedRoot = siblingBundleRoot(resolvedManifestPath, "planning-current-state-bundle");
   const authorityRoot = siblingBundleRoot(authorityManifestPath, "planning-current-authority-bundle");
   await Promise.all([mkdir(resolvedRoot, { recursive: true }), mkdir(authorityRoot, { recursive: true })]);
 
-  const resolvedPages = [];
-  const authorityPages = [];
-  const corroboration = {
-    attemptedGeometryCandidates: 0,
+  // Pass 1: prove implementation at page/scheme level. Individual raw vector
+  // fragments are allowed to contribute anchors, but they cannot directly make
+  // themselves authoritative. A coherent spatial page is promoted only after
+  // multiple independent, post-decision current features prove the scheme was
+  // actually implemented.
+  const pageContexts = [];
+  const implementedScheme = {
+    schemaVersion: 1,
+    evaluatedPages: 0,
+    certifiedSpatialPages: 0,
+    certifiedContextPages: 0,
+    rejectedPages: 0,
+    registrationAnchorCount: 0,
+    candidateProofChecks: 0,
+    applicationProofsAccepted: 0,
+    applicationProofsRejected: 0,
     promotedGeometryCandidates: 0,
+    promotedAttributeObservations: 0,
     rejected: {},
-    matches: []
+    pages: [],
+    applications: []
   };
 
   for (const pageEntry of bundle.manifest.pages || []) {
@@ -63,80 +80,133 @@ async function resolveBundle(bundle) {
     const baseDecision = decisionByPage.get(key) || unknownDecision();
     const evidence = await readBundlePage(bundle.root, pageEntry);
     const document = documentIndex.get(pageEntry.contentHash) || null;
-    const applicationTemporal = (document?.applicationKeys || pageEntry.applicationKeys || [])
+    const applicationKeys = document?.applicationKeys || pageEntry.applicationKeys || [];
+    const applicationTemporal = applicationKeys
       .map((applicationKey) => catalog.applications?.[applicationKey]?.temporal)
       .filter(Boolean);
     const drawingIssueDate = evidence.drawingMetadata.find((entry) => entry.issueDate)?.issueDate || null;
+    const registration = pageRegistration(pageEntry);
+    const evaluation = evaluateImplementedPlanningPage({
+      page: { ...pageEntry, planningTemporal: baseDecision },
+      evidence,
+      referenceFeatures,
+      applicationTemporal,
+      drawingIssueDate,
+      registration,
+      options: implementedSchemeOptions()
+    });
 
-    const geometryCandidates = [];
-    for (const candidate of evidence.geometryCandidates || []) {
-      let temporal = baseDecision;
-      let authority = Boolean(baseDecision.worldGeometryAuthority);
-      let implementationCorroboration = null;
-      if (!authority && baseDecision.state === "proposed" && reference?.features?.length) {
-        corroboration.attemptedGeometryCandidates += 1;
-        const proof = corroboratePlanningGeometryCandidate(candidate, reference.features, {
-          applicationTemporal,
-          drawingIssueDate,
-          minMatchScore: number(args.corroborationMinMatchScore, 0.78),
-          ambiguityGap: number(args.corroborationAmbiguityGap, DEFAULT_PLANNING_CORROBORATION_AMBIGUITY_GAP)
-        });
-        if (proof.accepted) {
-          temporal = {
-            ...baseDecision,
-            ...proof.temporal,
-            lineageMemberships: baseDecision.lineageMemberships || []
-          };
-          authority = true;
-          implementationCorroboration = proof.temporal.implementationCorroboration;
-          corroboration.promotedGeometryCandidates += 1;
-          if (corroboration.matches.length < 1000) corroboration.matches.push({
-            contentHash: pageEntry.contentHash,
-            pageNumber: pageEntry.pageNumber,
-            candidateId: candidate.id || null,
-            semantic: candidate.semantic || null,
-            classification: candidate.classification || pageEntry.classification || null,
-            featureId: proof.match.feature?.id || null,
-            featureKind: proof.match.feature?.kind || null,
-            matchScore: proof.match.score ?? null,
-            secondScore: proof.match.secondScore ?? null,
-            planningDecisionAt: proof.decisionAt,
-            observedAt: proof.observedAt
-          });
-        } else {
-          corroboration.rejected[proof.reason] = (corroboration.rejected[proof.reason] || 0) + 1;
+    pageContexts.push({ key, pageEntry, baseDecision, applicationKeys, applicationTemporal, drawingIssueDate, evaluation });
+    implementedScheme.evaluatedPages += 1;
+    implementedScheme.registrationAnchorCount += Number(evaluation.registrationAnchorCount || 0);
+    implementedScheme.candidateProofChecks += Number(evaluation.candidateProofChecks || 0);
+    if (evaluation.certifiedSpatialAuthority) implementedScheme.certifiedSpatialPages += 1;
+    else if (evaluation.certifiedContext) implementedScheme.certifiedContextPages += 1;
+    else implementedScheme.rejectedPages += 1;
+    mergeCounts(implementedScheme.rejected, evaluation.rejected);
+    implementedScheme.pages.push(compactImplementedPage(pageEntry, evaluation));
+  }
+
+  // Application-level implementation proof lets supporting elevation/material
+  // pages contribute attributes only after at least one spatial scheme page for
+  // the same application has independently proved implementation.
+  const contextsByApplication = new Map();
+  for (const context of pageContexts) {
+    for (const applicationKey of context.applicationKeys || []) {
+      if (!contextsByApplication.has(applicationKey)) contextsByApplication.set(applicationKey, []);
+      contextsByApplication.get(applicationKey).push({ page: context.pageEntry, evaluation: context.evaluation });
+    }
+  }
+  const applicationProofs = new Map();
+  for (const [applicationKey, contexts] of contextsByApplication) {
+    const temporal = catalog.applications?.[applicationKey]?.temporal;
+    const proof = buildImplementedApplicationProof(applicationKey, contexts, temporal ? [temporal] : []);
+    applicationProofs.set(applicationKey, proof);
+    if (proof.accepted) implementedScheme.applicationProofsAccepted += 1;
+    else implementedScheme.applicationProofsRejected += 1;
+    implementedScheme.applications.push({
+      applicationKey,
+      accepted: proof.accepted,
+      confidence: proof.confidence || 0,
+      summary: proof.summary || null
+    });
+  }
+
+  const resolvedPages = [];
+  const authorityPages = [];
+  const corroboration = {
+    attemptedGeometryCandidates: implementedScheme.candidateProofChecks,
+    promotedGeometryCandidates: 0,
+    rejected: implementedScheme.rejected,
+    matches: []
+  };
+
+  // Pass 2: annotate the full evidence stream. Only a certified scheme page can
+  // promote its spatial geometry wholesale; this is what allows planning to
+  // correct incomplete/different OSM after implementation has been proved,
+  // without requiring every proposed line to resemble OSM individually.
+  for (const context of pageContexts) {
+    const { pageEntry, baseDecision, applicationKeys, evaluation } = context;
+    const evidence = await readBundlePage(bundle.root, pageEntry);
+    const direct = annotateEvidence(evidence, baseDecision);
+    let resolvedEvidence = direct;
+
+    if (!isDirectCurrentAuthority(baseDecision)) {
+      if (evaluation.accepted) {
+        const promotion = promoteCertifiedPageEvidence(evidence, evaluation);
+        resolvedEvidence = mergePromotion(direct, promotion);
+      } else {
+        const proof = strongestApplicationProof(applicationKeys, applicationProofs);
+        if (proof?.accepted) {
+          const support = promoteImplementedApplicationSupportEvidence(
+            evidence,
+            { ...pageEntry, planningTemporal: baseDecision },
+            proof
+          );
+          resolvedEvidence = mergePromotion(direct, support);
         }
       }
-      geometryCandidates.push({
-        ...candidate,
-        planningTemporal: temporal,
-        temporalResolutionRequired: temporal.state === "unknown",
-        worldGeometryAuthority: authority,
-        ...(implementationCorroboration ? { implementationCorroboration } : {})
-      });
     }
-    const verticalObservations = (evidence.verticalObservations || []).map((entry) => annotate(entry, baseDecision));
-    const materialObservations = (evidence.materialObservations || []).map((entry) => annotate(entry, baseDecision));
-    const drawingMetadata = (evidence.drawingMetadata || []).map((entry) => annotate(entry, baseDecision));
-    const rideStructureTemplates = (evidence.rideStructureTemplates || []).map((entry) => annotateTemplate(entry, baseDecision));
-    const resolvedEvidence = { geometryCandidates, verticalObservations, materialObservations, rideStructureTemplates, drawingMetadata };
+
+    const promotedGeometry = resolvedEvidence.geometryCandidates.filter(isSchemeAuthorityEntry).length;
+    const promotedAttributes = resolvedEvidence.verticalObservations.filter(isSchemeAuthorityEntry).length +
+      resolvedEvidence.materialObservations.filter(isSchemeAuthorityEntry).length;
+    implementedScheme.promotedGeometryCandidates += promotedGeometry;
+    implementedScheme.promotedAttributeObservations += promotedAttributes;
+    corroboration.promotedGeometryCandidates += promotedGeometry;
+    if (corroboration.matches.length < 1000) {
+      corroboration.matches.push(...(evaluation.anchors || []).slice(0, 1000 - corroboration.matches.length).map((anchor) => ({
+        contentHash: pageEntry.contentHash,
+        pageNumber: pageEntry.pageNumber,
+        source: anchor.source,
+        candidateId: anchor.candidateId || null,
+        featureId: anchor.featureId || null,
+        featureKind: anchor.featureKind || null,
+        matchScore: anchor.score ?? null,
+        planningDecisionAt: anchor.decisionAt || null,
+        observedAt: anchor.observedAt || null
+      })));
+    }
+
     const resolvedPage = await writeEvidencePageStreamsFast(resolvedRoot, {
       ...pageEntry,
       geometryFile: null,
       verticalFile: null,
       materialFile: null,
       templateFile: null,
-      planningTemporal: baseDecision
+      planningTemporal: baseDecision,
+      implementedSchemeEvaluation: compactImplementedPage(pageEntry, evaluation)
     }, resolvedEvidence);
     resolvedPage.planningTemporal = baseDecision;
+    resolvedPage.implementedSchemeEvaluation = compactImplementedPage(pageEntry, evaluation);
     resolvedPages.push(resolvedPage);
 
     const authorityEvidence = {
-      geometryCandidates: geometryCandidates.filter(isAuthorityEntry),
-      verticalObservations: verticalObservations.filter(isAuthorityEntry),
-      materialObservations: materialObservations.filter(isAuthorityEntry),
-      rideStructureTemplates: rideStructureTemplates.filter((entry) => entry.templateAuthorityEligible === true),
-      drawingMetadata: drawingMetadata.filter(isAuthorityEntry)
+      geometryCandidates: resolvedEvidence.geometryCandidates.filter(isAuthorityEntry),
+      verticalObservations: resolvedEvidence.verticalObservations.filter(isAuthorityEntry),
+      materialObservations: resolvedEvidence.materialObservations.filter(isAuthorityEntry),
+      rideStructureTemplates: resolvedEvidence.rideStructureTemplates.filter((entry) => entry.templateAuthorityEligible === true),
+      drawingMetadata: resolvedEvidence.drawingMetadata.filter(isAuthorityEntry)
     };
     const authorityCount = authorityEvidence.geometryCandidates.length + authorityEvidence.verticalObservations.length +
       authorityEvidence.materialObservations.length + authorityEvidence.rideStructureTemplates.length;
@@ -147,14 +217,18 @@ async function resolveBundle(bundle) {
         verticalFile: null,
         materialFile: null,
         templateFile: null,
-        planningTemporal: authorityEvidence.geometryCandidates[0]?.planningTemporal || authorityEvidence.rideStructureTemplates[0]?.planningTemporal || baseDecision
+        planningTemporal: authorityEvidence.geometryCandidates[0]?.planningTemporal || authorityEvidence.verticalObservations[0]?.planningTemporal || baseDecision,
+        implementedSchemeEvaluation: compactImplementedPage(pageEntry, evaluation)
       }, authorityEvidence);
+      authorityPage.implementedSchemeEvaluation = compactImplementedPage(pageEntry, evaluation);
       authorityPages.push(authorityPage);
     }
   }
 
-  const resolvedBundleManifest = makeResolvedManifest(RESOLVED_BUNDLE_FORMAT, "resolved-current-state", resolvedPages, result, corroboration);
-  const authorityBundleManifest = makeResolvedManifest(AUTHORITY_BUNDLE_FORMAT, "strict-current-authority", authorityPages, result, corroboration);
+  implementedScheme.pages.sort(pageSort);
+  implementedScheme.applications.sort((a, b) => String(a.applicationKey).localeCompare(String(b.applicationKey)));
+  const resolvedBundleManifest = makeResolvedManifest(RESOLVED_BUNDLE_FORMAT, "resolved-current-state", resolvedPages, result, corroboration, implementedScheme);
+  const authorityBundleManifest = makeResolvedManifest(AUTHORITY_BUNDLE_FORMAT, "strict-current-authority", authorityPages, result, corroboration, implementedScheme);
   authorityBundleManifest.authorityScope = "planning-current-state-only";
   authorityBundleManifest.worldGeometryAuthority = authorityPages.some(hasWorldAuthorityEvidence);
   authorityBundleManifest.worldGeometryReady = authorityPages.some((page) => Number(page.geometryCount || 0) > 0);
@@ -176,7 +250,8 @@ async function resolveBundle(bundle) {
     evidenceStorage: "chunked-page-ndjson",
     currentStateBundle: path.relative(path.dirname(path.resolve(args.out)), resolvedRoot),
     authorityBundle: path.relative(path.dirname(path.resolve(args.out)), authorityRoot),
-    corroboration
+    corroboration,
+    implementedScheme
   });
 
   console.log(JSON.stringify({
@@ -186,9 +261,12 @@ async function resolveBundle(bundle) {
     authoritativeCurrentPages: result.summary.authoritativeCurrentPages,
     unresolvedPages: result.summary.unresolvedPages,
     conflicts: result.summary.conflicts,
+    certifiedSpatialPages: implementedScheme.certifiedSpatialPages,
+    certifiedContextPages: implementedScheme.certifiedContextPages,
+    implementedApplications: implementedScheme.applicationProofsAccepted,
     authoritativeGeometryCandidates: countPages(authorityPages, "geometryCount"),
     authoritativeRideStructureTemplates: countPages(authorityPages, "rideStructureTemplateCount"),
-    corroboratedGeometryCandidates: corroboration.promotedGeometryCandidates,
+    schemePromotedGeometryCandidates: implementedScheme.promotedGeometryCandidates,
     resolvedEvidencePages: resolvedPages.length,
     authorityEvidencePages: authorityPages.length,
     out: path.resolve(args.out),
@@ -255,9 +333,9 @@ function compactRegisteredEvidence(manifest) {
   };
 }
 
-function makeResolvedManifest(format, stage, pages, result, corroboration) {
+function makeResolvedManifest(format, stage, pages, result, corroboration, implementedScheme = null) {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     format,
     stage,
     coordinateSpace: "local-world-metres-plus-nonspatial-templates",
@@ -273,16 +351,48 @@ function makeResolvedManifest(format, stage, pages, result, corroboration) {
       attemptedGeometryCandidates: corroboration.attemptedGeometryCandidates,
       promotedGeometryCandidates: corroboration.promotedGeometryCandidates,
       rejected: corroboration.rejected
-    }
+    },
+    implementedScheme: implementedScheme ? {
+      schemaVersion: implementedScheme.schemaVersion,
+      evaluatedPages: implementedScheme.evaluatedPages,
+      certifiedSpatialPages: implementedScheme.certifiedSpatialPages,
+      certifiedContextPages: implementedScheme.certifiedContextPages,
+      applicationProofsAccepted: implementedScheme.applicationProofsAccepted,
+      applicationProofsRejected: implementedScheme.applicationProofsRejected,
+      promotedGeometryCandidates: implementedScheme.promotedGeometryCandidates,
+      promotedAttributeObservations: implementedScheme.promotedAttributeObservations,
+      registrationAnchorCount: implementedScheme.registrationAnchorCount,
+      candidateProofChecks: implementedScheme.candidateProofChecks
+    } : null
   };
 }
 
+function annotateEvidence(evidence, decision) {
+  return {
+    geometryCandidates: (evidence.geometryCandidates || []).map((entry) => annotate(entry, decision)),
+    verticalObservations: (evidence.verticalObservations || []).map((entry) => annotate(entry, decision)),
+    materialObservations: (evidence.materialObservations || []).map((entry) => annotate(entry, decision)),
+    drawingMetadata: (evidence.drawingMetadata || []).map((entry) => annotate(entry, decision)),
+    rideStructureTemplates: (evidence.rideStructureTemplates || []).map((entry) => annotateTemplate(entry, decision))
+  };
+}
+function mergePromotion(base, promotion) {
+  return {
+    geometryCandidates: promotion.geometryCandidates?.length ? promotion.geometryCandidates : base.geometryCandidates,
+    verticalObservations: promotion.verticalObservations?.length ? promotion.verticalObservations : base.verticalObservations,
+    materialObservations: promotion.materialObservations?.length ? promotion.materialObservations : base.materialObservations,
+    drawingMetadata: promotion.drawingMetadata?.length ? promotion.drawingMetadata : base.drawingMetadata,
+    rideStructureTemplates: promotion.rideStructureTemplates?.length ? promotion.rideStructureTemplates : base.rideStructureTemplates
+  };
+}
 function annotate(entry, decision) {
   return {
     ...entry,
     planningTemporal: decision,
     temporalResolutionRequired: decision.state === "unknown",
-    worldGeometryAuthority: Boolean(decision.worldGeometryAuthority)
+    worldGeometryAuthority: Boolean(decision.worldGeometryAuthority),
+    terrainGeometryAuthority: false,
+    terrainElevationAuthority: false
   };
 }
 function annotateTemplate(entry, decision) {
@@ -295,9 +405,65 @@ function annotateTemplate(entry, decision) {
     worldGeometryReady: false,
     worldGeometryAuthority: false,
     linkageRequired: true,
-    terrainGeometryMutable: false
+    terrainGeometryMutable: false,
+    terrainGeometryAuthority: false,
+    terrainElevationAuthority: false
   };
 }
+function pageRegistration(pageEntry) {
+  return {
+    status: pageEntry?.georegistrationStatus || "unregistered",
+    solution: pageEntry?.registration || null,
+    automaticMatches: pageEntry?.automaticMatches || [],
+    explicitControlPoints: Number(pageEntry?.explicitControlPoints || 0),
+    automaticControlPoints: Number(pageEntry?.automaticControlPoints || 0)
+  };
+}
+function implementedSchemeOptions() {
+  return {
+    minAnchors: number(args.implementedSchemeMinAnchors, 4),
+    minUniqueFeatures: number(args.implementedSchemeMinUniqueFeatures, 2),
+    minMedianScore: number(args.implementedSchemeMinMedianScore, 0.78),
+    minRegistrationFeatures: number(args.implementedSchemeMinRegistrationFeatures, 3),
+    maxRegistrationMatchRmseM: number(args.implementedSchemeMaxRegistrationMatchRmseM, 1.0),
+    maxRegistrationPageRmseM: number(args.implementedSchemeMaxRegistrationPageRmseM, 1.0),
+    maxCandidateProofChecks: number(args.implementedSchemeMaxCandidateProofChecks, 2500),
+    minMatchScore: number(args.corroborationMinMatchScore, 0.78),
+    ambiguityGap: number(args.corroborationAmbiguityGap, 0.08)
+  };
+}
+function compactImplementedPage(page, evaluation) {
+  return {
+    contentHash: page?.contentHash || null,
+    pageNumber: Number(page?.pageNumber || 1),
+    classification: evaluation?.classification || page?.classification || null,
+    status: evaluation?.status || "not-evaluated",
+    accepted: Boolean(evaluation?.accepted),
+    certifiedSpatialAuthority: Boolean(evaluation?.certifiedSpatialAuthority),
+    certifiedContext: Boolean(evaluation?.certifiedContext),
+    anchorCount: Number(evaluation?.anchorCount || 0),
+    uniqueFeatureCount: Number(evaluation?.uniqueFeatureCount || 0),
+    uniqueFeatureKinds: evaluation?.uniqueFeatureKinds || [],
+    medianMatchScore: evaluation?.medianMatchScore ?? null,
+    registrationAnchorCount: Number(evaluation?.registrationAnchorCount || 0),
+    registrationUniqueFeatureCount: Number(evaluation?.registrationUniqueFeatureCount || 0),
+    registrationMedianScore: evaluation?.registrationMedianScore ?? null,
+    registrationRmseM: evaluation?.registrationRmseM ?? null,
+    candidateProofChecks: Number(evaluation?.candidateProofChecks || 0),
+    proofBoundReached: Boolean(evaluation?.proofBoundReached),
+    rejected: evaluation?.rejected || {}
+  };
+}
+function strongestApplicationProof(applicationKeys, proofs) {
+  return (applicationKeys || [])
+    .map((key) => proofs.get(key))
+    .filter((proof) => proof?.accepted)
+    .sort((a, b) => Number(b.confidence || 0) - Number(a.confidence || 0) || String(a.applicationKey).localeCompare(String(b.applicationKey)))[0] || null;
+}
+function isDirectCurrentAuthority(decision) {
+  return decision?.state === "current" && decision?.worldGeometryAuthority === true;
+}
+function isSchemeAuthorityEntry(entry) { return entry?.implementationSchemeAuthority === true && isAuthorityEntry(entry); }
 function isAuthorityEntry(entry) { return entry?.worldGeometryAuthority === true && entry?.planningTemporal?.state === "current"; }
 function hasWorldAuthorityEvidence(page) {
   return Number(page.geometryCount || 0) + Number(page.verticalCount || 0) + Number(page.materialCount || 0) > 0;
@@ -337,6 +503,9 @@ function mergeApplicationSnapshots(existing, snapshot) {
     ...(snapshot[key] || {}),
     temporal: snapshot[key]?.temporal || existing[key]?.temporal || null
   }]));
+}
+function mergeCounts(target, source) {
+  for (const [key, value] of Object.entries(source || {})) target[key] = (target[key] || 0) + Number(value || 0);
 }
 function unknownDecision() {
   return {
