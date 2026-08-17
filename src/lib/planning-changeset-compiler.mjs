@@ -17,7 +17,7 @@ const DEFAULT_AMBIGUITY_GAP = 0.08;
  */
 export function compilePlanningChangeSet(map, evidence = {}, options = {}) {
   const output = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     status: "compiled",
     terrainPolicy: {
       geometryMutable: false,
@@ -31,7 +31,8 @@ export function compilePlanningChangeSet(map, evidence = {}, options = {}) {
     },
     counts: { add: 0, replace: 0, delete: 0, retain: 0, paint: 0, review: 0, ignored: 0 },
     changes: [],
-    candidates: []
+    candidates: [],
+    targetCollisions: null
   };
 
   for (const candidate of evidence?.geometryCandidates || []) {
@@ -41,9 +42,90 @@ export function compilePlanningChangeSet(map, evidence = {}, options = {}) {
     if (decision.candidate) output.candidates.push(decision.candidate);
   }
 
+  output.targetCollisions = resolvePlanningTargetCollisions(output, options);
   if (!output.changes.length) output.status = "no-planning-geometry";
   else if (output.counts.review) output.status = "compiled-with-review-items";
   return output;
+}
+
+/**
+ * A canonical feature may not be sequentially overwritten by several distinct
+ * raw vector fragments. If several planning records resolve to the same target
+ * with genuinely different geometries, automatic materialization stops and the
+ * whole target group is sent to review until a higher-level page/topology
+ * reconstruction can consolidate those fragments. Byte-equivalent geometry is
+ * treated as duplicated evidence and collapsed deterministically.
+ */
+export function resolvePlanningTargetCollisions(output, options = {}) {
+  const replaceCandidates = (output?.candidates || []).filter((candidate) =>
+    candidate?.planningOperation === "replace" && candidate?.targetFeatureId
+  );
+  const groups = new Map();
+  for (const candidate of replaceCandidates) {
+    const key = String(candidate.targetFeatureId);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(candidate);
+  }
+
+  const summary = {
+    schemaVersion: 1,
+    targetsWithMultipleReplacements: 0,
+    duplicateCandidatesCollapsed: 0,
+    conflictingTargetsDeferred: 0,
+    conflictingCandidatesDeferred: 0,
+    targets: []
+  };
+
+  for (const [targetFeatureId, candidates] of groups) {
+    if (candidates.length <= 1) continue;
+    summary.targetsWithMultipleReplacements += 1;
+    const byGeometry = new Map();
+    for (const candidate of candidates) {
+      const key = geometrySignature(candidate.localGeometry, options);
+      if (!byGeometry.has(key)) byGeometry.set(key, []);
+      byGeometry.get(key).push(candidate);
+    }
+
+    if (byGeometry.size === 1) {
+      const ranked = [...candidates].sort(compareReplacementEvidence);
+      const winner = ranked[0];
+      const duplicates = ranked.slice(1);
+      for (const duplicate of duplicates) {
+        transitionCompiledCandidate(output, duplicate, "replace", "ignored", "duplicate-current-planning-replacement");
+      }
+      summary.duplicateCandidatesCollapsed += duplicates.length;
+      summary.targets.push({
+        targetFeatureId,
+        status: "duplicate-evidence-collapsed",
+        inputCandidates: candidates.length,
+        retainedSourceRef: candidateRef(winner),
+        deferredCandidates: 0
+      });
+      continue;
+    }
+
+    for (const candidate of candidates) {
+      transitionCompiledCandidate(
+        output,
+        candidate,
+        "replace",
+        "review",
+        "multiple-current-planning-fragments-same-target-require-consolidation"
+      );
+    }
+    summary.conflictingTargetsDeferred += 1;
+    summary.conflictingCandidatesDeferred += candidates.length;
+    summary.targets.push({
+      targetFeatureId,
+      status: "conflicting-fragments-deferred",
+      inputCandidates: candidates.length,
+      distinctGeometryCount: byGeometry.size,
+      deferredCandidates: candidates.length
+    });
+  }
+
+  summary.targets.sort((a, b) => String(a.targetFeatureId).localeCompare(String(b.targetFeatureId)));
+  return summary;
 }
 
 export function inferPlanningFeatureKind(candidate, map = null, options = {}) {
@@ -285,6 +367,40 @@ function decision(operation, candidate, inference, match, reason, extra = {}) {
       surfacePaintOnly: inference.kind === PAINT_ONLY_KIND
     }
   };
+}
+
+function transitionCompiledCandidate(output, candidate, fromOperation, toOperation, reason) {
+  const sourceRef = candidateRef(candidate);
+  const record = (output.changes || []).find((entry) =>
+    entry.operation === fromOperation && entry.sourceRef === sourceRef && entry.targetFeatureId === candidate.targetFeatureId
+  );
+  if (!record) return false;
+  record.operation = toOperation;
+  record.reason = reason;
+  record.targetCollision = true;
+  output.counts[fromOperation] = Math.max(0, Number(output.counts[fromOperation] || 0) - 1);
+  output.counts[toOperation] = Number(output.counts[toOperation] || 0) + 1;
+  output.candidates = (output.candidates || []).filter((entry) => entry !== candidate);
+  return true;
+}
+
+function compareReplacementEvidence(a, b) {
+  const confidenceA = Number(a?.confidence ?? a?.planningTemporal?.confidence ?? 0);
+  const confidenceB = Number(b?.confidence ?? b?.planningTemporal?.confidence ?? 0);
+  if (confidenceA !== confidenceB) return confidenceB - confidenceA;
+  const matchA = Number(a?.compilerDecision?.matchScore ?? 0);
+  const matchB = Number(b?.compilerDecision?.matchScore ?? 0);
+  if (matchA !== matchB) return matchB - matchA;
+  return String(candidateRef(a) || "").localeCompare(String(candidateRef(b) || ""));
+}
+
+function geometrySignature(geometry, options = {}) {
+  const precision = Math.max(0, Math.min(6, Number(options.planningChangeSetDuplicateGeometryPrecision ?? 3)));
+  const factor = 10 ** precision;
+  const roundValue = (value) => Array.isArray(value)
+    ? value.map(roundValue)
+    : Number.isFinite(value) ? Math.round(value * factor) / factor : value;
+  return JSON.stringify(geometry ? { type: geometry.type, coordinates: roundValue(geometry.coordinates) } : null);
 }
 
 function associateMaterial(candidate, observations) {
