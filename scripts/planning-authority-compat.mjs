@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { readFile } from "node:fs/promises";
+import { appendArrayValues } from "../src/lib/array-utils.mjs";
 import {
   readBundlePage,
   loadBundleManifest,
@@ -35,11 +36,11 @@ let rideStructureTemplates = [];
 let drawingMetadata = [];
 for (const page of bundle.manifest.pages || []) {
   const evidence = await readBundlePage(bundle.root, page);
-  geometryCandidates.push(...(evidence.geometryCandidates || []).filter(isAuthorityEntry));
-  verticalObservations.push(...(evidence.verticalObservations || []).filter(isAuthorityEntry));
-  materialObservations.push(...(evidence.materialObservations || []).filter(isAuthorityEntry));
-  rideStructureTemplates.push(...(evidence.rideStructureTemplates || []).filter(isCurrentTemplate));
-  drawingMetadata.push(...(evidence.drawingMetadata || []).filter(isAuthorityEntry));
+  appendArrayValues(geometryCandidates, (evidence.geometryCandidates || []).filter(isAuthorityEntry));
+  appendArrayValues(verticalObservations, (evidence.verticalObservations || []).filter(isAuthorityEntry));
+  appendArrayValues(materialObservations, (evidence.materialObservations || []).filter(isAuthorityEntry));
+  appendArrayValues(rideStructureTemplates, (evidence.rideStructureTemplates || []).filter(isCurrentTemplate));
+  appendArrayValues(drawingMetadata, (evidence.drawingMetadata || []).filter(isAuthorityEntry));
 }
 
 // The strict revision resolver intentionally refuses to infer construction from
@@ -49,11 +50,11 @@ for (const page of bundle.manifest.pages || []) {
 // planning geometry to differ from OSM instead of requiring every individual
 // planning fragment to already exist in OSM.
 const implementedSchemeAuthority = await collectImplementedSchemeAuthority(pointerPath);
-geometryCandidates.push(...implementedSchemeAuthority.geometryCandidates);
-verticalObservations.push(...implementedSchemeAuthority.verticalObservations);
-materialObservations.push(...implementedSchemeAuthority.materialObservations);
-rideStructureTemplates.push(...implementedSchemeAuthority.rideStructureTemplates);
-drawingMetadata.push(...implementedSchemeAuthority.drawingMetadata);
+appendArrayValues(geometryCandidates, implementedSchemeAuthority.geometryCandidates);
+appendArrayValues(verticalObservations, implementedSchemeAuthority.verticalObservations);
+appendArrayValues(materialObservations, implementedSchemeAuthority.materialObservations);
+appendArrayValues(rideStructureTemplates, implementedSchemeAuthority.rideStructureTemplates);
+appendArrayValues(drawingMetadata, implementedSchemeAuthority.drawingMetadata);
 
 geometryCandidates = dedupeById(geometryCandidates);
 verticalObservations = dedupeById(verticalObservations);
@@ -185,11 +186,11 @@ async function collectImplementedSchemeAuthority(authorityPointerPath) {
       }
     }
     if (promotion) {
-      promoted.geometryCandidates.push(...promotion.geometryCandidates);
-      promoted.verticalObservations.push(...promotion.verticalObservations);
-      promoted.materialObservations.push(...promotion.materialObservations);
-      promoted.rideStructureTemplates.push(...promotion.rideStructureTemplates);
-      promoted.drawingMetadata.push(...promotion.drawingMetadata);
+      appendArrayValues(promoted.geometryCandidates, promotion.geometryCandidates);
+      appendArrayValues(promoted.verticalObservations, promotion.verticalObservations);
+      appendArrayValues(promoted.materialObservations, promotion.materialObservations);
+      appendArrayValues(promoted.rideStructureTemplates, promotion.rideStructureTemplates);
+      appendArrayValues(promoted.drawingMetadata, promotion.drawingMetadata);
     }
     if (record.evaluation.accepted || record.evaluation.anchorCount > 0) {
       pageProofs.push({
