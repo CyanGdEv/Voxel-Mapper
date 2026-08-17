@@ -4,6 +4,7 @@ import { readdir } from "node:fs/promises";
 import { exists, readJson, sha256, writeJson } from "../src/lib/io.mjs";
 import { classifyPlanningDocument } from "../src/lib/planning-documents.mjs";
 import { processPlanningDocumentShard } from "../src/lib/planning-document-worker.mjs";
+import { activeShardIdsFromCounts } from "../src/lib/planning-pipeline-completeness.mjs";
 
 const DISCOVERY_PARSER_VERSION = 3;
 const args = process.argv.slice(2);
@@ -38,8 +39,11 @@ const result = await processPlanningDocumentShard(queue, {
   downloadDiscovered: !args.includes("--discover-only"),
   strictPlanningDocuments: args.includes("--strict")
 });
+result.expectedActiveShards = activeShardIdsFromCounts(queue.shardCounts || {});
+result.queueItemCount = Number(queue.itemCount || (queue.items || []).length || 0);
 await writeJson(out, result);
 console.log(`Planning document shard ${shardIndex}/${Math.max(0, Number(queue.shardCount || 1) - 1)}`);
+console.log(`Expected active shards: ${result.expectedActiveShards.join(",") || "none"}`);
 console.log(`Input items: ${result.inputItems}`);
 console.log(`Downloaded documents: ${result.downloadedDocuments}`);
 console.log(`Unique content objects: ${result.uniqueContentObjects}`);
