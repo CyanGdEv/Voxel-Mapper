@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import path from "node:path";
-import { readJson } from "../src/lib/io.mjs";
+import { readJson, writeJson } from "../src/lib/io.mjs";
 import { extractPlanningShardToBundle } from "../src/lib/planning-evidence-bundle.mjs";
 
 const args = process.argv.slice(2);
@@ -25,7 +25,15 @@ const { manifest } = await extractPlanningShardToBundle(catalog, {
   maxPlanningPdfPages: Number(value("--max-pages") || 240),
   strictPlanningExtraction: args.includes("--strict")
 });
+manifest.expectedActiveExtractionShards = [...(catalog.activeExtractionShards || [])]
+  .map(Number)
+  .filter((value) => Number.isInteger(value) && value >= 0)
+  .sort((a, b) => a - b);
+manifest.catalogExtractionQueueItems = Number(catalog.extractionQueueItems || 0);
+manifest.acquisitionCoverageComplete = catalog.acquisitionCoverageComplete === true;
+await writeJson(path.join(out, "manifest.json"), manifest);
 console.log(`Shard: ${manifest.selectedShard}`);
+console.log(`Expected extraction shards: ${manifest.expectedActiveExtractionShards.join(",") || "none"}`);
 console.log(`Input documents: ${manifest.inputItems}`);
 console.log(`Extracted PDFs: ${manifest.extractedDocuments}`);
 console.log(`Raster-only documents: ${manifest.rasterOnlyDocuments}`);
