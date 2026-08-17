@@ -5,6 +5,10 @@ import { ensureDir, sha256, writeJson } from "../src/lib/io.mjs";
 import { acquireSources } from "../src/lib/sources.mjs";
 import { collapsePlanningAcquisitionAliases } from "../src/lib/planning-acquisition-aliases.mjs";
 import { buildPlanningDocumentQueue } from "../src/lib/planning-documents.mjs";
+import {
+  MAX_GITHUB_PLANNING_RUNNER_SHARDS,
+  clampGithubPlanningRunnerShards
+} from "../src/lib/github-actions-planning-fanout.mjs";
 
 const args = process.argv.slice(2);
 const value = (name) => {
@@ -13,10 +17,10 @@ const value = (name) => {
 };
 
 const MAX_APPLICATIONS = 2_500;
-const DEFAULT_SHARDS = 256;
+const DEFAULT_SHARDS = MAX_GITHUB_PLANNING_RUNNER_SHARDS;
 
 if (args.includes("--help") || !value("--bbox")) {
-  console.log(`Voxel Mapper planning document plan\n\nUsage:\n  node scripts/planning-document-plan.mjs --bbox south,west,north,east [options]\n\nOptions:\n  --out FILE               Queue output (default planning-document-queue.json)\n  --cache DIR              Discovery cache (default .tpmap-cache)\n  --max-applications N     Maximum intersecting planning applications (max 2500)\n  --shards N               Queue shard count (default 256, max 256)\n  --refresh                Refresh Planning Data/API and local-register discovery\n`);
+  console.log(`Voxel Mapper planning document plan\n\nUsage:\n  node scripts/planning-document-plan.mjs --bbox south,west,north,east [options]\n\nOptions:\n  --out FILE               Queue output (default planning-document-queue.json)\n  --cache DIR              Discovery cache (default .tpmap-cache)\n  --max-applications N     Maximum intersecting planning applications (max 2500)\n  --shards N               Runner shard count (default 20, max 20; larger stale callers are clamped)\n  --refresh                Refresh Planning Data/API and local-register discovery\n`);
   process.exit(args.includes("--help") ? 0 : 2);
 }
 
@@ -53,15 +57,20 @@ if (!(planning.applicationCount > 0) && (
 // when the same bbox already contains a high-confidence first-party register
 // counterpart. This is acquisition deduplication only; it grants no authority.
 const acquisition = collapsePlanningAcquisitionAliases(planning.applications || []);
+const requestedShards = Number(value("--shards") || DEFAULT_SHARDS);
+const executionShards = clampGithubPlanningRunnerShards(requestedShards);
 const queue = buildPlanningDocumentQueue({
   ...planning,
   applications: acquisition.applications
 }, {
-  planningDocumentShards: Number(value("--shards") || DEFAULT_SHARDS)
+  planningDocumentShards: executionShards
 });
 queue.applicationCount = Array.isArray(planning.applications) ? planning.applications.length : Number(planning.applicationCount || 0);
 queue.acquisitionApplicationCount = acquisition.applications.length;
 queue.acquisitionAliases = acquisition.aliases;
+queue.requestedRunnerShards = Number.isFinite(requestedShards) ? requestedShards : null;
+queue.runnerShardLimit = MAX_GITHUB_PLANNING_RUNNER_SHARDS;
+queue.effectiveRunnerShards = executionShards;
 
 // Keep a compact, immutable lifecycle snapshot next to the queue. Discovery-
 // only indexes deliberately contribute no temporal authority; their role is to
@@ -92,6 +101,8 @@ console.log(`Applications: ${planning.applicationCount || 0}`);
 console.log(`Acquisition applications: ${acquisition.applications.length}`);
 console.log(`Acquisition aliases collapsed: ${acquisition.aliases.length}`);
 console.log(`Queue items: ${queue.itemCount}`);
+console.log(`Requested runner shards: ${Number.isFinite(requestedShards) ? requestedShards : "invalid"}`);
+console.log(`Effective runner shards: ${executionShards}`);
 console.log(`Active shards: ${activeShards.join(",") || "none"}`);
 console.log(`Queue: ${out}`);
 
