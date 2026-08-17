@@ -140,7 +140,8 @@ export function matchIndexedGeometryCandidate(candidate, referenceFeatures, opti
     accepted: true,
     feature: best.feature,
     score: round(best.score),
-    secondScore: second ? round(second.score) : null
+    secondScore: second ? round(second.score) : null,
+    method: "geometry-search"
   };
 }
 
