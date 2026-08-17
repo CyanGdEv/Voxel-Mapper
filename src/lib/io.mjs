@@ -1,14 +1,15 @@
 import { createHash } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
 import { once } from "node:events";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
+import { createGunzip, createGzip } from "node:zlib";
 import { UserError } from "./errors.mjs";
 
 let tempWriteSequence = 0;
-const CHUNKED_JSON_FORMAT = "voxel-chunked-json-v1";
-const CHUNKED_JSON_ITEMS_PER_FILE = 5_000;
+const CHUNKED_JSON_FORMAT = "voxel-chunked-json-gzip-v1";
+const DEFAULT_CHUNK_ARRAY_ITEMS = 50_000;
 
 export async function ensureDir(directory) {
   await mkdir(directory, { recursive: true });
@@ -17,10 +18,8 @@ export async function ensureDir(directory) {
 
 export async function readJson(filename) {
   try {
-    const parsed = JSON.parse(await readFile(filename, "utf8"));
-    return parsed?.__chunkedJson?.format === CHUNKED_JSON_FORMAT
-      ? await hydrateChunkedJson(filename, parsed)
-      : parsed;
+    if (await isGzipFile(filename)) return await readChunkedJson(filename);
+    return JSON.parse(await readFile(filename, "utf8"));
   } catch (error) {
     if (error instanceof SyntaxError) throw new UserError(`Invalid JSON in ${filename}: ${error.message}`);
     throw error;
@@ -28,11 +27,12 @@ export async function readJson(filename) {
 }
 
 export async function writeJson(filename, value, spaces = 2) {
+  if (shouldChunkJson(value)) return writeChunkedJson(filename, value);
   try {
     return await writeText(filename, `${JSON.stringify(value, null, spaces)}\n`);
   } catch (error) {
     if (!isInvalidStringLength(error)) throw error;
-    return writeChunkedJson(filename, value, spaces);
+    return writeChunkedJson(filename, value);
   }
 }
 
@@ -57,134 +57,114 @@ function nextTempFilename(filename) {
   return `${filename}.tmp-${process.pid}-${tempWriteSequence}`;
 }
 
-async function writeChunkedJson(filename, value, spaces) {
+function shouldChunkJson(value) {
+  if (!value || Array.isArray(value) || typeof value !== "object") return false;
+  const configured = Math.floor(Number(process.env.VOXEL_CHUNKED_JSON_ARRAY_ITEMS || DEFAULT_CHUNK_ARRAY_ITEMS));
+  const threshold = Number.isFinite(configured) ? Math.max(1, configured) : DEFAULT_CHUNK_ARRAY_ITEMS;
+  return Object.values(value).some((entry) => Array.isArray(entry) && entry.length >= threshold);
+}
+
+async function writeChunkedJson(filename, value) {
   if (!value || Array.isArray(value) || typeof value !== "object") {
     throw new RangeError(`JSON artifact ${filename} exceeds the runtime string limit and cannot be top-level chunked`);
   }
-  const absolute = path.resolve(filename);
-  const bundleName = `${path.basename(absolute)}.chunks`;
-  const bundle = path.join(path.dirname(absolute), bundleName);
-  const tempBundle = nextTempFilename(bundle);
-  await rm(tempBundle, { recursive: true, force: true });
-  await mkdir(tempBundle, { recursive: true });
-
-  const pointer = {};
   const arrays = {};
+  const metadata = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (Array.isArray(entry)) arrays[key] = entry;
+    else metadata[key] = entry;
+  }
+  let header;
   try {
-    for (const [key, entry] of Object.entries(value)) {
-      if (!Array.isArray(entry)) {
-        pointer[key] = entry;
-        continue;
-      }
-      arrays[key] = await writeArrayChunks(tempBundle, safeChunkStem(key), entry);
+    header = JSON.stringify({
+      __chunkedJson: {
+        format: CHUNKED_JSON_FORMAT,
+        schemaVersion: 1,
+        arrays: Object.fromEntries(Object.entries(arrays).map(([key, entries]) => [key, entries.length]))
+      },
+      metadata
+    });
+  } catch (error) {
+    throw new RangeError(`JSON artifact ${filename} still exceeds the runtime string limit after top-level arrays were isolated: ${error?.message || error}`);
+  }
+
+  await ensureDir(path.dirname(filename));
+  const temp = nextTempFilename(filename);
+  const output = createWriteStream(temp);
+  const gzip = createGzip({ level: 6 });
+  gzip.pipe(output);
+  const completion = once(output, "finish");
+  const failure = Promise.race([
+    once(gzip, "error").then(([error]) => { throw error; }),
+    once(output, "error").then(([error]) => { throw error; })
+  ]);
+  try {
+    await writeGzipLine(gzip, header);
+    for (const [key, entries] of Object.entries(arrays)) {
+      for (const entry of entries) await writeGzipLine(gzip, JSON.stringify([key, entry]));
     }
-    pointer.__chunkedJson = {
-      format: CHUNKED_JSON_FORMAT,
-      schemaVersion: 1,
-      bundlePath: bundleName,
-      arrays
-    };
-    let pointerText;
-    try {
-      pointerText = `${JSON.stringify(pointer, null, spaces)}\n`;
-    } catch (error) {
-      throw new RangeError(`JSON artifact ${filename} still exceeds the runtime string limit after top-level arrays were chunked: ${error?.message || error}`);
-    }
-    await rm(bundle, { recursive: true, force: true });
-    await rename(tempBundle, bundle);
-    await writeText(absolute, pointerText);
+    gzip.end();
+    await Promise.race([completion, failure]);
+    await rename(temp, filename);
     return filename;
   } catch (error) {
-    await rm(tempBundle, { recursive: true, force: true });
+    output.destroy();
+    gzip.destroy();
     throw error;
   }
 }
 
-async function writeArrayChunks(bundle, stem, values) {
-  const files = [];
-  for (let offset = 0, chunkIndex = 0; offset < values.length; offset += CHUNKED_JSON_ITEMS_PER_FILE, chunkIndex += 1) {
-    const filename = `${stem}-${String(chunkIndex).padStart(4, "0")}.ndjson`;
-    const fullPath = path.join(bundle, filename);
-    const stream = createWriteStream(fullPath, { encoding: "utf8" });
-    const hash = createHash("sha256");
-    let byteLength = 0;
-    const end = Math.min(values.length, offset + CHUNKED_JSON_ITEMS_PER_FILE);
-    for (let index = offset; index < end; index += 1) {
-      const line = `${JSON.stringify(values[index])}\n`;
-      hash.update(line);
-      byteLength += Buffer.byteLength(line);
-      if (!stream.write(line)) await once(stream, "drain");
-    }
-    stream.end();
-    await once(stream, "finish");
-    files.push({
-      file: filename,
-      count: end - offset,
-      byteLength,
-      sha256: hash.digest("hex")
-    });
-  }
-  return {
-    format: "ndjson",
-    count: values.length,
-    itemsPerFile: CHUNKED_JSON_ITEMS_PER_FILE,
-    files
-  };
+async function writeGzipLine(stream, line) {
+  if (!stream.write(`${line}\n`)) await once(stream, "drain");
 }
 
-async function hydrateChunkedJson(filename, pointer) {
-  const absolute = path.resolve(filename);
-  const root = path.dirname(absolute);
-  const bundle = safeArtifactChild(root, pointer.__chunkedJson.bundlePath, "chunk bundle");
-  const hydrated = { ...pointer };
-  delete hydrated.__chunkedJson;
-  for (const [key, descriptor] of Object.entries(pointer.__chunkedJson.arrays || {})) {
-    hydrated[key] = await readArrayChunks(bundle, key, descriptor);
+async function readChunkedJson(filename) {
+  const input = createReadStream(filename);
+  const gunzip = createGunzip();
+  input.pipe(gunzip);
+  const lines = readline.createInterface({ input: gunzip, crlfDelay: Infinity });
+  let header = null;
+  let values = null;
+  const counts = {};
+  for await (const line of lines) {
+    if (!line.trim()) continue;
+    if (!header) {
+      header = JSON.parse(line);
+      if (header?.__chunkedJson?.format !== CHUNKED_JSON_FORMAT || !header?.metadata || typeof header.metadata !== "object") {
+        throw new UserError(`Unsupported chunked JSON container in ${filename}`);
+      }
+      values = { ...header.metadata };
+      for (const key of Object.keys(header.__chunkedJson.arrays || {})) {
+        values[key] = [];
+        counts[key] = 0;
+      }
+      continue;
+    }
+    const record = JSON.parse(line);
+    if (!Array.isArray(record) || record.length !== 2 || !Object.hasOwn(values, record[0]) || !Array.isArray(values[record[0]])) {
+      throw new UserError(`Invalid chunked JSON record in ${filename}`);
+    }
+    values[record[0]].push(record[1]);
+    counts[record[0]] += 1;
   }
-  return hydrated;
-}
-
-async function readArrayChunks(bundle, key, descriptor) {
-  const expected = Number(descriptor?.count || 0);
-  const files = Array.isArray(descriptor?.files) ? descriptor.files : [];
-  if (expected > 0 && files.length === 0) throw new UserError(`Chunked JSON array ${key} declares ${expected} records but has no files`);
-  const values = [];
-  for (const file of files) {
-    const fullPath = safeArtifactChild(bundle, file?.file, `${key} chunk`);
-    const input = createReadStream(fullPath, { encoding: "utf8" });
-    const lines = readline.createInterface({ input, crlfDelay: Infinity });
-    const hash = createHash("sha256");
-    let count = 0;
-    for await (const line of lines) {
-      if (!line.trim()) continue;
-      hash.update(`${line}\n`);
-      values.push(JSON.parse(line));
-      count += 1;
+  if (!header || !values) throw new UserError(`Chunked JSON container ${filename} is empty`);
+  for (const [key, expected] of Object.entries(header.__chunkedJson.arrays || {})) {
+    if (counts[key] !== Number(expected)) {
+      throw new UserError(`Chunked JSON array ${key} count mismatch in ${filename}: expected ${expected}, got ${counts[key]}`);
     }
-    if (count !== Number(file?.count || 0)) {
-      throw new UserError(`Chunked JSON array ${key} file ${file?.file} count mismatch: expected ${file?.count}, got ${count}`);
-    }
-    if (file?.sha256 && hash.digest("hex") !== file.sha256) {
-      throw new UserError(`Chunked JSON array ${key} file ${file?.file} checksum mismatch`);
-    }
-  }
-  if (values.length !== expected) {
-    throw new UserError(`Chunked JSON array ${key} count mismatch: expected ${expected}, got ${values.length}`);
   }
   return values;
 }
 
-function safeArtifactChild(root, child, label) {
-  if (!child) throw new UserError(`Chunked JSON ${label} path is missing`);
-  const base = path.resolve(root);
-  const resolved = path.resolve(base, child);
-  const relative = path.relative(base, resolved);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) throw new UserError(`Chunked JSON ${label} escapes its artifact root`);
-  return resolved;
-}
-
-function safeChunkStem(value) {
-  return String(value || "array").replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 96) || "array";
+async function isGzipFile(filename) {
+  const handle = await open(filename, "r");
+  try {
+    const bytes = Buffer.alloc(2);
+    const { bytesRead } = await handle.read(bytes, 0, 2, 0);
+    return bytesRead === 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+  } finally {
+    await handle.close();
+  }
 }
 
 function isInvalidStringLength(error) {
