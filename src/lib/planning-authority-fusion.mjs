@@ -243,7 +243,7 @@ export function resolveGeometryCandidateMatch(candidate, features, options = {})
   if (!feature?.localGeometry) {
     return { accepted: false, reason: "certified-target-not-found", targetFeatureId: certified.featureId };
   }
-  if (!semanticCompatible(candidate.semantic, feature.kind)) {
+  if (!planningSemanticCompatible(candidate, feature)) {
     return {
       accepted: false,
       reason: "certified-target-kind-mismatch",
@@ -276,7 +276,7 @@ export function resolveGeometryCandidateMatch(candidate, features, options = {})
 export function matchGeometryCandidate(candidate, features, options = {}) {
   const sourceGeometry = candidate?.localGeometry;
   if (!sourceGeometry) return { accepted: false, reason: "missing-geometry" };
-  const compatible = (features || []).filter((feature) => semanticCompatible(candidate.semantic, feature.kind));
+  const compatible = (features || []).filter((feature) => planningSemanticCompatible(candidate, feature));
   if (!compatible.length) return { accepted: false, reason: "no-compatible-feature" };
   const scored = compatible.map((feature) => ({ feature, score: geometryMatchScore(sourceGeometry, feature.localGeometry) }))
     .filter((entry) => Number.isFinite(entry.score))
@@ -597,16 +597,25 @@ function canonicalize(value) {
   return value;
 }
 
-function semanticCompatible(semantic, kind) {
-  const value = String(semantic || ""), target = String(kind || "");
-  if (/ride-centerline-or-edge/.test(value)) return target === "ride_track";
-  if (/ride-envelope-or-structure/.test(value)) return target === "structure";
-  if (/building-footprint-or-room/.test(value)) return ["building", "structure"].includes(target);
-  if (/landscape-area-or-path/.test(value)) return ["path", "road", "water", "terrain_detail"].includes(target);
-  if (/landscape-edge-or-route/.test(value)) return ["path", "road", "barrier"].includes(target);
-  if (/site-feature-or-building-footprint/.test(value)) return ["building", "structure", "path", "road", "water", "terrain_detail"].includes(target);
-  if (/site-edge-or-route/.test(value)) return ["path", "road", "barrier", "ride_track"].includes(target);
+function planningSemanticCompatible(candidate, feature) {
+  const semantic = String(candidate?.semantic || "");
+  const kind = String(feature?.kind || "");
+  const classification = normalizePlanningClass(candidate?.classification);
+
+  if (kind === "ride_track") {
+    return classification === "ride_layout" && /ride-centerline-or-edge/.test(semantic);
+  }
+  if (/ride-centerline-or-edge/.test(semantic)) return false;
+  if (/ride-envelope-or-structure/.test(semantic)) return classification === "ride_layout" && kind === "structure";
+  if (/building-footprint-or-room/.test(semantic)) return ["building", "structure"].includes(kind);
+  if (/landscape-area-or-path/.test(semantic)) return ["path", "road", "water", "terrain_detail"].includes(kind);
+  if (/landscape-edge-or-route/.test(semantic)) return ["path", "road", "barrier"].includes(kind);
+  if (/site-feature-or-building-footprint/.test(semantic)) return ["building", "structure", "path", "road", "water", "terrain_detail"].includes(kind);
+  if (/site-edge-or-route/.test(semantic)) return ["path", "road", "barrier"].includes(kind);
   return false;
+}
+function normalizePlanningClass(value) {
+  return String(value || "").toLowerCase().trim().replace(/[\s-]+/g, "_");
 }
 function materialCompatibleKind(kind, material) {
   const target = String(kind || "");
