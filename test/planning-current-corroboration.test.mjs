@@ -52,6 +52,25 @@ test("post-decision current OSM geometry can prove an approved planning geometry
   assert.ok(result.temporal.implementationCorroboration.matchScore >= 0.78);
 });
 
+test("stale 0.12 caller override cannot make canonical 0.08 corroboration ambiguous", () => {
+  const shifted = currentRide("2019-01-01T00:00:00Z", {
+    id: "osm:way:456",
+    localGeometry: {
+      type: "LineString",
+      coordinates: [[4, 0], [14, 8], [24, 4], [34, 15]]
+    },
+    source: { ...currentRide().source, elementId: 456, timestamp: "2019-01-01T00:00:00Z" }
+  });
+  const result = corroboratePlanningGeometryCandidate(candidate(), [currentRide(), shifted], {
+    applicationTemporal: temporal,
+    ambiguityGap: 0.12
+  });
+  assert.equal(result.accepted, true);
+  assert.equal(result.match.feature.id, "osm:way:123");
+  assert.ok(result.match.score - result.match.secondScore >= 0.08);
+  assert.ok(result.match.score - result.match.secondScore < 0.12);
+});
+
 test("matching geometry observed before the planning decision cannot prove implementation", () => {
   const result = corroboratePlanningGeometryCandidate(candidate(), [currentRide("2016-03-01T12:00:00Z")], { applicationTemporal: temporal });
   assert.equal(result.accepted, false);
