@@ -61,12 +61,15 @@ export function corroboratePlanningGeometryCandidate(candidate, referenceFeature
       implementationCorroboration: {
         provider: match.feature?.source?.provider || "OpenStreetMap",
         featureId: match.feature?.id || null,
+        featureKind: match.feature?.kind || null,
         elementType: match.feature?.source?.elementType || null,
         elementId: match.feature?.source?.elementId || null,
         version: match.feature?.source?.version ?? null,
         timestamp: match.feature?.source?.timestamp || null,
         matchScore: match.score ?? null,
-        secondScore: match.secondScore ?? null
+        secondScore: match.secondScore ?? null,
+        planningClassification: normalizePlanningClass(candidate?.classification),
+        planningSemantic: String(candidate?.semantic || "") || null
       }
     }
   };
@@ -111,7 +114,7 @@ export function matchIndexedGeometryCandidate(candidate, referenceFeatures, opti
   const source = prepareGeometry(sourceGeometry);
   if (!source) return { accepted: false, reason: "no-finite-match" };
   const index = referenceGeometryIndex(referenceFeatures || []);
-  const compatible = index.filter((entry) => semanticCompatible(candidate.semantic, entry.feature?.kind));
+  const compatible = index.filter((entry) => planningSemanticCompatible(candidate, entry.feature));
   if (!compatible.length) return { accepted: false, reason: "no-compatible-feature" };
   const scored = compatible.map((entry) => ({
     feature: entry.feature,
@@ -189,18 +192,32 @@ function geometryMatchScorePrepared(a, b) {
   return clampScore(0.43 * overlap + 0.29 * distanceScore + 0.18 * scaleScore + 0.10 * typeScore);
 }
 
-function semanticCompatible(semantic, kind) {
-  const value = String(semantic || ""), target = String(kind || "");
-  if (/ride-centerline-or-edge/.test(value)) return target === "ride_track";
-  if (/ride-envelope-or-structure/.test(value)) return target === "structure";
-  if (/building-footprint-or-room/.test(value)) return ["building", "structure"].includes(target);
-  if (/landscape-area-or-path/.test(value)) return ["path", "road", "water", "terrain_detail"].includes(target);
-  if (/landscape-edge-or-route/.test(value)) return ["path", "road", "barrier"].includes(target);
-  if (/site-feature-or-building-footprint/.test(value)) return ["building", "structure", "path", "road", "water", "terrain_detail"].includes(target);
-  if (/site-edge-or-route/.test(value)) return ["path", "road", "barrier", "ride_track"].includes(target);
+function planningSemanticCompatible(candidate, feature) {
+  const semantic = String(candidate?.semantic || "");
+  const kind = String(feature?.kind || "");
+  const classification = normalizePlanningClass(candidate?.classification);
+
+  // A current coaster track is unusually distinctive and high-impact. Generic
+  // site/location/landscape route linework (paths, drawing edges, woodland
+  // routes, boundaries) must never be promoted into ride authority merely
+  // because its bounding box resembles a coaster segment. Only an actual ride
+  // layout with ride-specific centerline semantics can prove ride geometry.
+  if (kind === "ride_track") {
+    return classification === "ride_layout" && /ride-centerline-or-edge/.test(semantic);
+  }
+  if (/ride-centerline-or-edge/.test(semantic)) return false;
+  if (/ride-envelope-or-structure/.test(semantic)) return classification === "ride_layout" && kind === "structure";
+  if (/building-footprint-or-room/.test(semantic)) return ["building", "structure"].includes(kind);
+  if (/landscape-area-or-path/.test(semantic)) return ["path", "road", "water", "terrain_detail"].includes(kind);
+  if (/landscape-edge-or-route/.test(semantic)) return ["path", "road", "barrier"].includes(kind);
+  if (/site-feature-or-building-footprint/.test(semantic)) return ["building", "structure", "path", "road", "water", "terrain_detail"].includes(kind);
+  if (/site-edge-or-route/.test(semantic)) return ["path", "road", "barrier"].includes(kind);
   return false;
 }
 
+function normalizePlanningClass(value) {
+  return String(value || "").toLowerCase().trim().replace(/[\s-]+/g, "_");
+}
 function geometryFamily(type) {
   if (/Polygon/.test(String(type))) return "area";
   if (/LineString/.test(String(type))) return "line";
