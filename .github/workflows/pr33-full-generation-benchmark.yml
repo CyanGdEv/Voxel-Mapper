@@ -5,8 +5,10 @@ on:
     branches: [main]
     paths:
       - 'src/lib/planning-*.mjs'
+      - 'src/lib/io.mjs'
       - 'scripts/planning-*.mjs'
       - 'test/planning-*.test.mjs'
+      - 'test/io-*.test.mjs'
       - '.github/workflows/planning-documents.yml'
       - '.github/workflows/generate-world.yml'
       - '.github/workflows/pr33-full-generation-benchmark.yml'
