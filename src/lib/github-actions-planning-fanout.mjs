@@ -1,4 +1,4 @@
-export const MAX_GITHUB_PLANNING_RUNNER_SHARDS = 4;
+export const MAX_GITHUB_PLANNING_RUNNER_SHARDS = 20;
 
 export function clampGithubPlanningRunnerShards(value, fallback = MAX_GITHUB_PLANNING_RUNNER_SHARDS) {
   const parsed = Number(value);
