@@ -2,6 +2,7 @@
 import { access, appendFile, cp, mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { spawnSync } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { buildPark } from "../src/lib/pipeline.mjs";
 import { readJson, sha256, sha256File, writeJson } from "../src/lib/io.mjs";
@@ -10,6 +11,8 @@ import { createWorldShardBundle, planWorldShards } from "../src/lib/world-shards
 import { validatePreparation } from "./replay-world-preparation.mjs";
 
 const PREPARATION_CACHE_VERSION = 1;
+const REQUIRED_PREPARATION_HEAP_MB = 6144;
+const HEAP_REEXEC_FLAG = "VOXEL_WORLD_PREPARATION_HEAP_REEXEC";
 
 export function parsePrepareArgs(argv) {
   const result = {
@@ -260,9 +263,46 @@ async function fileExists(filename) {
   }
 }
 
+function configuredOldSpaceMb() {
+  const values = [
+    ...process.execArgv,
+    ...String(process.env.NODE_OPTIONS || "").split(/\s+/).filter(Boolean)
+  ];
+  let configured = 0;
+  for (const value of values) {
+    const match = String(value).match(/^--max-old-space-size(?:=|$)(\d+)?$/);
+    if (match?.[1]) configured = Math.max(configured, Number(match[1]));
+  }
+  return configured;
+}
+
+function runCliWithPreparationHeap() {
+  const configured = configuredOldSpaceMb();
+  if (process.env[HEAP_REEXEC_FLAG] === "1" || configured >= REQUIRED_PREPARATION_HEAP_MB) return false;
+  const child = spawnSync(process.execPath, [
+    `--max-old-space-size=${REQUIRED_PREPARATION_HEAP_MB}`,
+    process.argv[1],
+    ...process.argv.slice(2)
+  ], {
+    stdio: "inherit",
+    env: { ...process.env, [HEAP_REEXEC_FLAG]: "1" }
+  });
+  if (child.error) throw child.error;
+  if (child.signal) throw new Error(`World preparation child terminated by signal ${child.signal}`);
+  process.exitCode = child.status ?? 1;
+  return true;
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
-  prepareBboxWorldShards(parsePrepareArgs(process.argv.slice(2))).catch((error) => {
+  try {
+    if (!runCliWithPreparationHeap()) {
+      prepareBboxWorldShards(parsePrepareArgs(process.argv.slice(2))).catch((error) => {
+        console.error(error?.stack || error);
+        process.exitCode = 1;
+      });
+    }
+  } catch (error) {
     console.error(error?.stack || error);
     process.exitCode = 1;
-  });
+  }
 }

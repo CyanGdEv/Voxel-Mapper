@@ -14,6 +14,7 @@ on:
     paths:
       - ".github/workflows/park-generation-acceptance.yml"
       - "scripts/validate-park-generation.mjs"
+      - "scripts/validate-ride-plaza-production.mjs"
       - "scripts/validate-bedrock-content.mjs"
       - "scripts/generate-bbox-world.mjs"
       - "scripts/prepare-bbox-world-shards.mjs"
@@ -122,6 +123,16 @@ jobs:
           --report park-acceptance-report.json
           --markdown PARK_ACCEPTANCE.md
 
+      - id: ride-plaza
+        name: Require complete 3D rides and planning-derived access surfaces
+        if: steps.watch.outcome == 'success'
+        shell: bash
+        run: >-
+          node scripts/validate-ride-plaza-production.mjs
+          --root acceptance-download
+          --report ride-plaza-production-report.json
+          --markdown RIDE_PLAZA_PRODUCTION.md
+
       - id: content
         name: Decode finished world and verify visible terrain + mapped surfaces
         if: steps.watch.outcome == 'success'
@@ -137,6 +148,7 @@ jobs:
         shell: bash
         run: |
           [[ -f PARK_ACCEPTANCE.md ]] && cat PARK_ACCEPTANCE.md >> "$GITHUB_STEP_SUMMARY"
+          [[ -f RIDE_PLAZA_PRODUCTION.md ]] && cat RIDE_PLAZA_PRODUCTION.md >> "$GITHUB_STEP_SUMMARY"
           [[ -f BEDROCK_CONTENT_QA.md ]] && cat BEDROCK_CONTENT_QA.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload top-down maps and acceptance evidence
@@ -147,6 +159,8 @@ jobs:
           path: |
             PARK_ACCEPTANCE.md
             park-acceptance-report.json
+            RIDE_PLAZA_PRODUCTION.md
+            ride-plaza-production-report.json
             BEDROCK_CONTENT_QA.md
             bedrock-content-qa.json
             acceptance-download/preparation/**/preview.svg

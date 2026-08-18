@@ -39,7 +39,7 @@ function makeMap(features = []) {
   return { projector, features: [...features] };
 }
 
-test("hyphenated planning document classes normalize before semantic compilation", async () => {
+test("generic ride-layout linework is review-only until semantic enrichment proves track", async () => {
   const map = makeMap([]);
   const options = {
     planningAuthorityEvidenceData: {
@@ -47,6 +47,34 @@ test("hyphenated planning document classes normalize before semantic compilation
         id: "plan:ride-hyphen",
         classification: "ride-layout",
         semantic: "unclassified-linework",
+        localGeometry: line([0, 0], [10, 0], [20, 4])
+      })],
+      verticalObservations: [],
+      materialObservations: []
+    }
+  };
+  const result = await reconcileCompiledPlanningChanges(map, options);
+  assert.equal(result.added, 0);
+  assert.equal(map.features.length, 0);
+  assert.equal(result.changeSet.counts.review, 1);
+  assert.match(result.changeSet.changes[0].reason, /not-explicitly-certified-as-track/);
+});
+
+test("explicitly enriched ride-track centreline still materializes as ride topology", async () => {
+  const map = makeMap([]);
+  const options = {
+    planningAuthorityEvidenceData: {
+      geometryCandidates: [current({
+        id: "plan:ride-certified",
+        classification: "ride-layout",
+        semantic: "ride-track-centerline",
+        kind: "ride_track",
+        subtype: "ride_track_centerline",
+        rideStructureEvidence: {
+          role: "track",
+          subtype: "ride_track_centerline",
+          source: "planning-pdf-ride-structure-semantic-enrichment"
+        },
         localGeometry: line([0, 0], [10, 0], [20, 4])
       })],
       verticalObservations: [],

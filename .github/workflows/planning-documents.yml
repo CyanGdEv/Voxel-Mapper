@@ -310,7 +310,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 256
+      max-parallel: 20
       matrix:
         shard: ${{ fromJSON(needs.merge-extraction.outputs.active_georeg_shards) }}
     steps:
@@ -351,8 +351,16 @@ jobs:
             planning-georegistration-shard-${{ matrix.shard }}.json
             planning-registered-evidence-shard-${{ matrix.shard }}
           retention-days: 7
+      - name: Upload compact registration manifest for global revision planning
+        uses: actions/upload-artifact@v4
+        with:
+          name: planning-georegistration-manifest-shard-${{ matrix.shard }}
+          path: |
+            planning-georegistration-shard-${{ matrix.shard }}.json
+            planning-registered-evidence-shard-${{ matrix.shard }}/manifest.json
+          retention-days: 7
 
-  finalize-current-state:
+  plan-current-state:
     needs: [georegister, georeg_reference, catalog]
     if: always() && needs.georegister.result == 'success' && needs.georeg_reference.outputs.reference_status == 'success' && needs.catalog.result == 'success'
     runs-on: ubuntu-latest
@@ -363,11 +371,11 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - name: Download every registered planning page shard
+      - name: Download compact registered shard manifests only
         uses: actions/download-artifact@v4
         with:
-          pattern: planning-georegistration-shard-*
-          path: planning-georegistration-shards
+          pattern: planning-georegistration-manifest-shard-*
+          path: planning-georegistration-manifests
           merge-multiple: false
       - name: Download shared OSM georegistration reference
         uses: actions/download-artifact@v4
@@ -381,25 +389,206 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: planning-document-queue
-      - name: Merge parallel page registrations in-process for authority resolution
+      - name: Resolve global revision/current-state decisions from manifests only
         run: >-
-          node scripts/planning-georeg-merge.mjs
-          --shards planning-georegistration-shards
-          --reference planning-georeg-reference.json
-          --out planning-georegistration.json
-          --registered-out planning-registered-evidence
-      - name: Resolve revisions, current state and post-decision implementation evidence without an intermediate artifact round trip
-        run: >-
-          node scripts/planning-resolve-revisions.mjs
-          --registered planning-registered-evidence
-          --reference planning-georeg-reference.json
+          node scripts/planning-current-state-plan.mjs
+          --manifests planning-georegistration-manifests
           --catalog planning-document-catalog.json
           --queue planning-document-queue.json
-          --out planning-revision-resolution.json
+          --out planning-current-state-plan.json
+      - name: Upload metadata-only current-state plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: planning-current-state-plan
+          path: |
+            planning-current-state-plan.json
+            planning-georeg-reference.json
+            planning-document-catalog.json
+            planning-document-queue.json
+          retention-days: 7
+
+  prove-current-state:
+    needs: [plan-current-state, merge-extraction]
+    if: needs.plan-current-state.result == 'success'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: ${{ fromJSON(needs.merge-extraction.outputs.active_georeg_shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download only this registered planning evidence shard
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-georegistration-shard-${{ matrix.shard }}
+          path: planning-georegistration-shard
+      - name: Download metadata-only current-state plan
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-current-state-plan
+          path: planning-current-state-plan
+      - name: Prove implementation for this shard only
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: >-
+          node scripts/planning-current-state-proof-shard.mjs
+          --registered "planning-georegistration-shard/planning-registered-evidence-shard-${{ matrix.shard }}"
+          --plan planning-current-state-plan/planning-current-state-plan.json
+          --reference planning-current-state-plan/planning-georeg-reference.json
+          --catalog planning-current-state-plan/planning-document-catalog.json
+          --queue planning-current-state-plan/planning-document-queue.json
+          --shard "${{ matrix.shard }}"
+          --out "planning-current-state-proof-shard-${{ matrix.shard }}.json"
+      - name: Upload compact implementation proof shard
+        uses: actions/upload-artifact@v4
+        with:
+          name: planning-current-state-proof-shard-${{ matrix.shard }}
+          path: planning-current-state-proof-shard-${{ matrix.shard }}.json
+          retention-days: 7
+
+  merge-current-state-proofs:
+    needs: [prove-current-state, plan-current-state]
+    if: always() && needs.prove-current-state.result == 'success' && needs.plan-current-state.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download compact implementation proof shards
+        uses: actions/download-artifact@v4
+        with:
+          pattern: planning-current-state-proof-shard-*
+          path: planning-current-state-proofs
+          merge-multiple: false
+      - name: Download metadata-only current-state plan
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-current-state-plan
+          path: planning-current-state-plan
+      - name: Merge application implementation proof without geometry
+        run: >-
+          node scripts/planning-current-state-proof-merge.mjs
+          --proofs planning-current-state-proofs
+          --catalog planning-current-state-plan/planning-document-catalog.json
+          --queue planning-current-state-plan/planning-document-queue.json
+          --out planning-current-state-application-proofs.json
+      - name: Upload global application proof metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: planning-current-state-application-proofs
+          path: planning-current-state-application-proofs.json
+          retention-days: 7
+
+  promote-current-state:
+    needs: [merge-current-state-proofs, plan-current-state, merge-extraction]
+    if: needs.merge-current-state-proofs.result == 'success'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard: ${{ fromJSON(needs.merge-extraction.outputs.active_georeg_shards) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download only this registered planning evidence shard
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-georegistration-shard-${{ matrix.shard }}
+          path: planning-georegistration-shard
+      - name: Download this shard's compact implementation proof
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-current-state-proof-shard-${{ matrix.shard }}
+          path: planning-current-state-proof-shard
+      - name: Download metadata-only current-state plan
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-current-state-plan
+          path: planning-current-state-plan
+      - name: Download global application proof metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-current-state-application-proofs
+          path: planning-current-state-application-proofs
+      - name: Promote authority within this shard only
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: >-
+          node scripts/planning-current-state-promote-shard.mjs
+          --registered "planning-georegistration-shard/planning-registered-evidence-shard-${{ matrix.shard }}"
+          --plan planning-current-state-plan/planning-current-state-plan.json
+          --proof "planning-current-state-proof-shard/planning-current-state-proof-shard-${{ matrix.shard }}.json"
+          --applications planning-current-state-application-proofs/planning-current-state-application-proofs.json
+          --shard "${{ matrix.shard }}"
+          --resolved-out "planning-current-state-resolved-shard-${{ matrix.shard }}"
+          --authority-out "planning-current-state-authority-shard-${{ matrix.shard }}"
+          --summary-out "planning-current-state-promoted-shard-${{ matrix.shard }}.json"
+      - name: Upload promoted current-state page streams
+        uses: actions/upload-artifact@v4
+        with:
+          name: planning-current-state-shard-${{ matrix.shard }}
+          path: |
+            planning-current-state-resolved-shard-${{ matrix.shard }}
+            planning-current-state-authority-shard-${{ matrix.shard }}
+            planning-current-state-promoted-shard-${{ matrix.shard }}.json
+          retention-days: 7
+
+  finalize-current-state:
+    needs: [promote-current-state, plan-current-state, merge-current-state-proofs]
+    if: always() && needs.promote-current-state.result == 'success' && needs.plan-current-state.result == 'success' && needs.merge-current-state-proofs.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Download promoted current-state page streams
+        uses: actions/download-artifact@v4
+        with:
+          pattern: planning-current-state-shard-*
+          path: planning-current-state-shards
+          merge-multiple: false
+      - name: Download metadata-only current-state plan
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-current-state-plan
+          path: planning-current-state-plan
+      - name: Download global application proof metadata
+        uses: actions/download-artifact@v4
+        with:
+          name: planning-current-state-application-proofs
+          path: planning-current-state-application-proofs
+      - name: Merge manifests and copy NDJSON streams without parsing geometry
+        run: >-
+          node scripts/planning-current-state-merge.mjs
+          --shards planning-current-state-shards
+          --plan planning-current-state-plan/planning-current-state-plan.json
+          --applications planning-current-state-application-proofs/planning-current-state-application-proofs.json
+          --revision-out planning-revision-resolution.json
           --resolved-out planning-current-state-evidence.json
           --authority-out planning-current-authority-pointer.json
-      - name: Materialize only the strict authority subset for world fusion
-        run: node scripts/planning-authority-compat.mjs --manifest planning-current-authority-pointer.json --out planning-current-authority-evidence.json
+          --georeg-out planning-georegistration.json
+          --registered-manifest-out planning-registered-evidence/manifest.json
+      - name: Restore compact shared georegistration reference to the published artifact root
+        run: cp planning-current-state-plan/planning-georeg-reference.json planning-georeg-reference.json
+      - name: Stream strict authority compatibility JSON from the chunked authority bundle
+        run: node scripts/planning-authority-compat-stream.mjs --manifest planning-current-authority-pointer.json --out planning-current-authority-evidence.json
       - name: Upload current-state authority and compact georegistration audit
         uses: actions/upload-artifact@v4
         with:
@@ -490,8 +679,8 @@ jobs:
           --out planning-revision-resolution.json
           --resolved-out planning-current-state-evidence.json
           --authority-out planning-current-authority-pointer.json
-      - name: Materialize fail-closed authority compatibility output
-        run: node scripts/planning-authority-compat.mjs --manifest planning-current-authority-pointer.json --out planning-current-authority-evidence.json
+      - name: Stream fail-closed authority compatibility output
+        run: node scripts/planning-authority-compat-stream.mjs --manifest planning-current-authority-pointer.json --out planning-current-authority-evidence.json
       - name: Upload degraded current-state authority and audit
         uses: actions/upload-artifact@v4
         with:

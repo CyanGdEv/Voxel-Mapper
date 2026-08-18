@@ -66,3 +66,51 @@ test("fast writer preserves empty stream fields and drawing metadata exactly", a
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("fast writer preserves record order and bytes across forced bounded batches", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "voxel-fast-evidence-batches-"));
+  try {
+    const manyGeometryCandidates = Array.from({ length: 500 }, (_, index) => ({
+      id: `g-${index}`,
+      semantic: "site-edge-or-route",
+      localGeometry: { type: "LineString", coordinates: [[index, index + 0.25], [index + 1, index + 1.25]] },
+      payload: "x".repeat(256)
+    }));
+    const largeEvidence = { ...evidence, geometryCandidates: manyGeometryCandidates };
+    const canonicalRoot = path.join(root, "canonical");
+    const fastRoot = path.join(root, "fast");
+    const canonical = await writeEvidencePageStreams(canonicalRoot, page, largeEvidence);
+    const fast = await writeEvidencePageStreamsFast(fastRoot, page, largeEvidence, null, { maxBatchBytes: 16 * 1024 });
+
+    assert.deepEqual(fast, canonical);
+    const canonicalBytes = await readFile(path.join(canonicalRoot, canonical.geometryFile));
+    const fastBytes = await readFile(path.join(fastRoot, fast.geometryFile));
+    assert.deepEqual(fastBytes, canonicalBytes);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("fast writer writes a single record larger than its preferred batch without aggregating it", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "voxel-fast-evidence-large-record-"));
+  try {
+    const largeRecordEvidence = {
+      geometryCandidates: [{ id: "large", payload: "z".repeat(64 * 1024) }],
+      verticalObservations: [],
+      materialObservations: [],
+      rideStructureTemplates: [],
+      drawingMetadata: []
+    };
+    const canonicalRoot = path.join(root, "canonical");
+    const fastRoot = path.join(root, "fast");
+    const canonical = await writeEvidencePageStreams(canonicalRoot, page, largeRecordEvidence);
+    const fast = await writeEvidencePageStreamsFast(fastRoot, page, largeRecordEvidence, null, { maxBatchBytes: 16 * 1024 });
+
+    assert.deepEqual(fast, canonical);
+    const canonicalBytes = await readFile(path.join(canonicalRoot, canonical.geometryFile));
+    const fastBytes = await readFile(path.join(fastRoot, fast.geometryFile));
+    assert.deepEqual(fastBytes, canonicalBytes);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

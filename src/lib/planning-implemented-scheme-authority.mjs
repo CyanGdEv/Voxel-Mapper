@@ -8,6 +8,7 @@ const SPATIAL_CERTIFICATION_CLASSES = new Set(["site_plan", "landscape_plan", "r
 const CONTEXT_ONLY_CLASSES = new Set(["location_plan"]);
 const CORROBORATABLE_CLASSES = new Set(["site_plan", "landscape_plan", "ride_layout", "location_plan"]);
 const EXCLUDED_STATES = new Set(["refused", "withdrawn", "demolished", "superseded"]);
+const DEFAULT_RETAINED_DIAGNOSTIC_ANCHORS = 32;
 
 export function evaluateImplementedPlanningPage({
   page,
@@ -99,6 +100,15 @@ export function evaluateImplementedPlanningPage({
   const certifiedContext = evidencePass && contextOnly;
   const status = certifiedSpatialAuthority ? "implemented-plan-certified" :
     certifiedContext ? "implemented-context-certified" : "insufficient-independent-current-anchors";
+  const temporal = certifiedSpatialAuthority || certifiedContext ? implementedTemporal(baseTemporal, anchors, {
+    classification,
+    certifiedSpatialAuthority,
+    certifiedContext
+  }) : null;
+  const retainedAnchors = retainDiagnosticAnchors(
+    anchors,
+    options.maxRetainedDiagnosticAnchors ?? DEFAULT_RETAINED_DIAGNOSTIC_ANCHORS
+  );
 
   return {
     status,
@@ -108,6 +118,7 @@ export function evaluateImplementedPlanningPage({
     certifiedContext,
     anchorCount: anchors.length,
     uniqueFeatureCount: uniqueFeatures.size,
+    uniqueFeatureIds: [...uniqueFeatures].sort(),
     uniqueFeatureKinds: [...uniqueKinds].sort(),
     medianMatchScore: round(medianScore),
     registrationAnchorCount: registrationProof.anchors.length,
@@ -116,13 +127,10 @@ export function evaluateImplementedPlanningPage({
     registrationRmseM: registrationProof.registrationRmseM,
     candidateProofChecks,
     proofBoundReached: candidateProofChecks >= maxCandidateProofChecks && !evidencePass,
-    anchors,
+    retainedAnchorCount: retainedAnchors.length,
+    anchors: retainedAnchors,
     rejected: rejectionCounts,
-    temporal: certifiedSpatialAuthority || certifiedContext ? implementedTemporal(baseTemporal, anchors, {
-      classification,
-      certifiedSpatialAuthority,
-      certifiedContext
-    }) : null
+    temporal
   };
 }
 
@@ -172,7 +180,9 @@ export function buildImplementedApplicationProof(applicationKey, pageEvaluations
   const spatial = (pageEvaluations || []).filter((entry) => entry?.evaluation?.certifiedSpatialAuthority);
   if (!spatial.length) return { accepted: false, applicationKey, applicationTemporal, confidence: 0, summary: null };
   const totalAnchors = spatial.reduce((sum, entry) => sum + Number(entry.evaluation.anchorCount || 0), 0);
-  const uniqueFeatureIds = new Set(spatial.flatMap((entry) => entry.evaluation.anchors || []).map((entry) => entry.featureId).filter(Boolean));
+  const uniqueFeatureIds = new Set(spatial.flatMap((entry) =>
+    entry.evaluation.uniqueFeatureIds || (entry.evaluation.anchors || []).map((anchor) => anchor.featureId)
+  ).filter(Boolean));
   const confidence = Math.min(0.96, 0.84 + Math.min(0.1, uniqueFeatureIds.size * 0.015) + Math.min(0.02, totalAnchors * 0.001));
   return {
     accepted: true,
@@ -367,6 +377,31 @@ function implementedTemporal(baseTemporal, anchors, flags) {
   };
 }
 
+function retainDiagnosticAnchors(anchors, requestedLimit) {
+  const parsed = Number(requestedLimit);
+  const limit = Math.max(0, Number.isFinite(parsed) ? Math.floor(parsed) : DEFAULT_RETAINED_DIAGNOSTIC_ANCHORS);
+  if (limit === 0 || !(anchors || []).length) return [];
+  if (anchors.length <= limit) return anchors;
+
+  const retained = [];
+  const retainedRefs = new Set();
+  const featureIds = new Set();
+  for (const anchor of anchors) {
+    const featureId = anchor?.featureId || null;
+    if (!featureId || featureIds.has(featureId)) continue;
+    retained.push(anchor);
+    retainedRefs.add(anchor);
+    featureIds.add(featureId);
+    if (retained.length >= limit) return retained;
+  }
+  for (const anchor of anchors) {
+    if (retainedRefs.has(anchor)) continue;
+    retained.push(anchor);
+    if (retained.length >= limit) break;
+  }
+  return retained;
+}
+
 function promoteSpatialEntry(entry, temporal) {
   return {
     ...entry,
@@ -426,6 +461,7 @@ function rejected(reason, classification) {
     certifiedContext: false,
     anchorCount: 0,
     uniqueFeatureCount: 0,
+    uniqueFeatureIds: [],
     uniqueFeatureKinds: [],
     medianMatchScore: 0,
     registrationAnchorCount: 0,
@@ -434,6 +470,7 @@ function rejected(reason, classification) {
     registrationRmseM: null,
     candidateProofChecks: 0,
     proofBoundReached: false,
+    retainedAnchorCount: 0,
     anchors: [],
     rejected: {},
     temporal: null

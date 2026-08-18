@@ -27,14 +27,18 @@ test("bbox generation reuses planning authority and compiles reconstruction only
   assert.doesNotMatch(yaml, /scripts\/generate-bbox-world\.mjs/);
 });
 
-test("planning application processing can fan out to the GitHub matrix ceiling of 256", async () => {
+test("planning acquisition/extraction can use the GitHub matrix ceiling while geometry-heavy stages stay bounded to twenty runners", async () => {
   const yaml = await readFile(planningPath, "utf8");
   const acquire = yaml.split("  acquire:")[1].split("  catalog:")[0];
   const extract = yaml.split("  extract-vector:")[1].split("  merge-extraction:")[0];
-  const georegister = yaml.split("  georegister:")[1].split("  finalize-current-state:")[0];
+  const georegister = yaml.split("  georegister:")[1].split("  plan-current-state:")[0];
+  const prove = yaml.split("  prove-current-state:")[1].split("  merge-current-state-proofs:")[0];
+  const promote = yaml.split("  promote-current-state:")[1].split("  finalize-current-state:")[0];
   assert.match(acquire, /max-parallel: 256/);
   assert.match(extract, /max-parallel: 256/);
-  assert.match(georegister, /max-parallel: 256/);
+  assert.match(georegister, /max-parallel: 20/);
+  assert.match(prove, /max-parallel: 20/);
+  assert.match(promote, /max-parallel: 20/);
   assert.match(yaml, /--extraction-shards 256/);
   assert.match(yaml, /planning-georeg-plan\.mjs --evidence planning-vector-evidence --shards 256/);
 });
@@ -89,12 +93,23 @@ test("planning workflow supports reusable workflow_call without removing develop
   assert.match(yaml, /hard cap 256/);
 });
 
-test("planning current-state resolution consumes merged georegistration in the same job without a huge intermediate artifact", async () => {
+test("planning current-state resolution is sharded and the finalizer never rematerializes park-wide geometry", async () => {
   const yaml = await readFile(planningPath, "utf8");
+  const planner = yaml.split("  plan-current-state:")[1].split("  prove-current-state:")[0];
+  const prover = yaml.split("  prove-current-state:")[1].split("  merge-current-state-proofs:")[0];
+  const proofMerge = yaml.split("  merge-current-state-proofs:")[1].split("  promote-current-state:")[0];
+  const promoter = yaml.split("  promote-current-state:")[1].split("  finalize-current-state:")[0];
   const finalizer = yaml.split("  finalize-current-state:")[1].split("  finalize-current-state-degraded:")[0];
-  assert.match(finalizer, /scripts\/planning-georeg-merge\.mjs/);
-  assert.match(finalizer, /scripts\/planning-resolve-revisions\.mjs/);
-  assert.match(finalizer, /scripts\/planning-authority-compat\.mjs/);
+
+  assert.match(planner, /scripts\/planning-current-state-plan\.mjs/);
+  assert.match(prover, /scripts\/planning-current-state-proof-shard\.mjs/);
+  assert.match(proofMerge, /scripts\/planning-current-state-proof-merge\.mjs/);
+  assert.match(promoter, /scripts\/planning-current-state-promote-shard\.mjs/);
+  assert.match(finalizer, /scripts\/planning-current-state-merge\.mjs/);
+  assert.match(finalizer, /scripts\/planning-authority-compat-stream\.mjs/);
+  assert.match(finalizer, /Merge manifests and copy NDJSON streams without parsing geometry/);
+  assert.doesNotMatch(finalizer, /scripts\/planning-georeg-merge\.mjs/);
+  assert.doesNotMatch(finalizer, /scripts\/planning-resolve-revisions\.mjs/);
+  assert.doesNotMatch(finalizer, /scripts\/planning-authority-compat\.mjs/);
   assert.doesNotMatch(yaml, /name: planning-georegistration-evidence/);
-  assert.doesNotMatch(finalizer, /Download planning spatial registration evidence/);
 });

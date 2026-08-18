@@ -121,10 +121,21 @@ export function sliceCompilationForShard(compilation, shard) {
     floorDiv(Number(sign.x), 16),
     floorDiv(Number(sign.z), 16)
   ));
+  const statefulBlockReplacements = (compilation.meta?.statefulBlockReplacements || []).filter((replacement) => {
+    if (!Number.isInteger(replacement?.x) || !Number.isInteger(replacement?.z)) {
+      throw new Error("Stateful block replacement coordinates must be integer world-grid coordinates");
+    }
+    return containsChunk(
+      shard,
+      floorDiv(replacement.x, 16),
+      floorDiv(replacement.z, 16)
+    );
+  });
   return {
     ...compilation,
     meta: {
       ...compilation.meta,
+      statefulBlockReplacements,
       bounds: {
         minX: shard.minChunkX * 16,
         minZ: shard.minChunkZ * 16,
