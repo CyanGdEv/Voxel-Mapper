@@ -56,7 +56,7 @@ test("LiDAR shell repair preserves a real courtyard instead of filling it as a r
   assert.equal(stats.trueInteriorRingsPreserved, 1);
   const roofIndex = target.palette.indexOf("minecraft:deepslate_tiles");
   const roofAtCourtyardCentre = target.chunks.flatMap((chunk) => chunk.o).some((op) =>
-    op[7] === roofIndex && op[1] <= 3 && op[5] >= 3 && op[3] <= 3 && op[6] >= 3
+    op[7] === roofIndex && op[1] <= 3 && op[4] >= 3 && op[3] <= 3 && op[6] >= 3
   );
   assert.equal(roofAtCourtyardCentre, false, "true polygon holes must remain open");
 });
