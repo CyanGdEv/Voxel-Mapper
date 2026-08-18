@@ -48,11 +48,6 @@ export function repairLidarBuildingShells(compilation, { map, sources }) {
       for (const [x1, x2, z] of polygonScanlineSpans(polygon)) {
         if (z < bounds.minZ || z > bounds.maxZ) continue;
         for (let x = Math.max(x1, bounds.minX); x <= Math.min(x2, bounds.maxX); x += 1) {
-          // polygonScanlineSpans is used elsewhere primarily as a filled-area
-          // rasterizer. Explicitly subtract interior rings here so a real
-          // courtyard/skylight void cannot be mistaken for the crack we are
-          // trying to seal. Probe the Minecraft cell centre to avoid ambiguous
-          // integer points that lie exactly on a hole boundary.
           if (holes.some((ring) => pointInRing(x + 0.5, z + 0.5, ring))) continue;
           cells.set(`${x},${z}`, { x, z });
         }
