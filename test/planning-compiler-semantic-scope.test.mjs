@@ -28,7 +28,7 @@ test("scheme-certified generic site route cannot be inferred as ride track", () 
   assert.notEqual(result.reason, "unambiguous-existing-feature-kind");
 });
 
-test("ride layout line can still be inferred as ride track", () => {
+test("generic ride-layout line requires semantic enrichment before track inference", () => {
   const geometry = line([0, 0], [10, 5], [20, 0]);
   const map = { features: [feature("ride", "ride_track", geometry)] };
   const candidate = {
@@ -39,6 +39,28 @@ test("ride layout line can still be inferred as ride track", () => {
     planningTemporal: { state: "current" }
   };
   const result = inferPlanningFeatureKind(candidate, map);
+  assert.equal(result.kind, null);
+  assert.equal(result.reason, "ride-track-semantic-enrichment-required");
+});
+
+test("explicit enriched ride centreline can still be inferred as ride track", () => {
+  const geometry = line([0, 0], [10, 5], [20, 0]);
+  const candidate = {
+    classification: "ride_layout",
+    kind: "ride_track",
+    featureKind: "ride_track",
+    subtype: "ride_track_centerline",
+    semantic: "ride-track-centerline",
+    rideStructureEvidence: {
+      role: "track",
+      subtype: "ride_track_centerline",
+      source: "planning-pdf-ride-structure-semantic-enrichment"
+    },
+    localGeometry: geometry,
+    worldGeometryAuthority: true,
+    planningTemporal: { state: "current" }
+  };
+  const result = inferPlanningFeatureKind(candidate, { features: [] });
   assert.equal(result.kind, "ride_track");
 });
 
