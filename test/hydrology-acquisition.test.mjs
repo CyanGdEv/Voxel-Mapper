@@ -63,6 +63,7 @@ test("bbox source acquisition can inject independent water and normalization ret
       cache: path.join(root, "cache"),
       noCache: true,
       autoHydrologyWithLocalOsm: true,
+      disablePlanItDiscovery: true,
       planningAcquirerImpl: async () => ({
         provider: "Mock Planning", providerId: "planning-data-england", status: "acquired",
         applicationCount: 0, jurisdictionCount: 0, applications: [], jurisdictions: []
@@ -97,7 +98,8 @@ test("bbox source acquisition can inject independent water and normalization ret
     const independent = map.features.find((feature) => feature.id === "public:os-openmap-local:test-water");
     assert.ok(independent);
     assert.equal(independent.source.provider, "Ordnance Survey");
-    assert.equal(independent.authority.rank, 300);
+    assert.equal(independent.authority.rank, 315);
+    assert.equal(independent.authority.layer, "licensed-public-water");
     assert.ok(independent.localGeometry);
   } finally {
     await rm(root, { recursive: true, force: true });
