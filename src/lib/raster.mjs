@@ -57,6 +57,8 @@ export function renderHydrologyWater(compilation, { map, sources }) {
     features: 0,
     cells: 0,
     waterBlocks: 0,
+    operations: 0,
+    estimatedBlocks: 0,
     measuredDepthFeatures: 0,
     maxDepthConstrainedFeatures: 0,
     surfaceOnlyFeatures: 0,
