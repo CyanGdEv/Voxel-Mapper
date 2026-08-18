@@ -36,6 +36,7 @@ test("decoded Bedrock content acceptance passes a real sloped terrain world", as
       noAddon: true,
       buildings: "markers",
       accuracyMode: "plausible",
+      disablePlanItDiscovery: true,
       acquireElevationImpl: async () => {
         const result = {
           provider: "Mock 1 m LiDAR",
@@ -87,6 +88,7 @@ test("decoded Bedrock content acceptance rejects a flat world whose evidence cla
       noAddon: true,
       buildings: "markers",
       accuracyMode: "plausible",
+      disablePlanItDiscovery: true,
       planningAcquirerImpl: planningNone
     });
 
