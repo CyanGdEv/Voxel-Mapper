@@ -2,6 +2,7 @@ import * as base from "./osm-base.mjs";
 import { geometryMapCoordinates } from "./geo.mjs";
 import { applyOfficialSourceAuthority } from "./official-source-authority.mjs";
 import { normalizeParkingFeatures } from "./parking-evidence.mjs";
+import { normalizeParkingDetailFeatures } from "./parking-detail-evidence.mjs";
 
 export * from "./osm-base.mjs";
 
@@ -68,8 +69,10 @@ export async function normalizeMap(sources, options = {}) {
   // and an OSM amenity=parking polygon are comparable as the same drivable
   // feature kind. OSM parking can therefore be suppressed as a true fallback.
   const parking = normalizeParkingFeatures(map);
+  const parkingDetails = normalizeParkingDetailFeatures(map);
   map.sourceFusion ||= {};
   map.sourceFusion.parking = parking;
+  map.sourceFusion.parkingDetails = parkingDetails;
 
   applyOfficialSourceAuthority(map, options);
   base.refreshMapDerivedData(map);
@@ -81,10 +84,11 @@ function syncGeoJsonParkingProperties(map) {
   const byId = new Map((map.features || []).map((feature) => [String(feature.id), feature]));
   for (const raw of map.geojson?.features || []) {
     const feature = byId.get(String(raw.id));
-    if (!feature?.parkingEvidence) continue;
+    if (!feature?.parkingEvidence && !feature?.parkingDetailEvidence) continue;
     raw.properties ||= {};
     raw.properties.kind = feature.kind;
     raw.properties.subtype = feature.subtype;
-    raw.properties.parkingEvidence = feature.parkingEvidence;
+    if (feature.parkingEvidence) raw.properties.parkingEvidence = feature.parkingEvidence;
+    if (feature.parkingDetailEvidence) raw.properties.parkingDetailEvidence = feature.parkingDetailEvidence;
   }
 }
