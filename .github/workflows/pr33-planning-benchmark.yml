@@ -45,45 +45,6 @@ jobs:
           name: planning-current-state-evidence
           path: planning-benchmark-output
       - name: Require semantically valid verified planning authority
-        shell: bash
-        run: |
-          node --input-type=module - <<'NODE'
-          import path from 'node:path';
-          import { readJson } from './src/lib/io.mjs';
-          const filename = path.join('planning-benchmark-output', 'planning-current-authority-evidence.json');
-          const authority = await readJson(filename);
-          const candidates = authority.geometryCandidates || [];
-          const geometry = Number(authority?.counts?.geometryCandidates || candidates.length || 0);
-          const materials = Number(authority?.counts?.materialObservations || authority?.materialObservations?.length || 0);
-          const templates = Number(authority?.counts?.rideStructureTemplates || authority?.rideStructureTemplates?.length || 0);
-          const unsafeRideAuthority = candidates.filter((candidate) => {
-            const implementation = candidate.implementationCorroboration || candidate.planningTemporal?.implementationCorroboration || {};
-            if (implementation.featureKind !== 'ride_track') return false;
-            const classification = String(candidate.classification || implementation.planningClassification || '').toLowerCase().replace(/[\s-]+/g, '_');
-            const semantic = String(candidate.semantic || implementation.planningSemantic || '');
-            return classification !== 'ride_layout' || !/ride-centerline-or-edge/.test(semantic);
-          });
-          const targets = candidates.map((candidate) => {
-            const implementation = candidate.implementationCorroboration || candidate.planningTemporal?.implementationCorroboration || {};
-            return implementation.featureId || candidate.associationContract?.featureId || null;
-          }).filter(Boolean);
-          console.log(JSON.stringify({
-            worldGeometryAuthority: authority.worldGeometryAuthority,
-            geometry,
-            materials,
-            templates,
-            distinctCurrentTargets: new Set(targets).size,
-            unsafeRideAuthority: unsafeRideAuthority.length
-          }, null, 2));
-          if (authority.worldGeometryAuthority !== true) throw new Error('Benchmark produced no verified planning world authority');
-          if (geometry <= 0) throw new Error('Benchmark produced zero verified planning geometry candidates');
-          if (unsafeRideAuthority.length) {
-            const sample = unsafeRideAuthority.slice(0, 5).map((candidate) => ({
-              id: candidate.id,
-              classification: candidate.classification,
-              semantic: candidate.semantic,
-              target: candidate.implementationCorroboration?.featureId || candidate.planningTemporal?.implementationCorroboration?.featureId || candidate.associationContract?.featureId || null
-            }));
-            throw new Error(`Generic planning geometry incorrectly gained ride authority: ${JSON.stringify(sample)}`);
-          }
-          NODE
+        run: >-
+          node scripts/validate-planning-authority-bundle.mjs
+          --manifest planning-benchmark-output/planning-current-authority-pointer.json
