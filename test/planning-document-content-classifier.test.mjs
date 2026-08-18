@@ -4,6 +4,7 @@ import { reclassifyPlanningDocumentFromContent } from "../src/lib/planning-docum
 
 function extraction(classification, text, { widthPt = 840, heightPt = 594, xPt = 700, yPt = 60 } = {}) {
   return {
+    contentHash: "planning-doc",
     classification,
     pages: [{
       pageNumber: 1,
@@ -62,4 +63,36 @@ test("generic supporting drawing with an explicit elevation title is promoted", 
   const result = reclassifyPlanningDocumentFromContent(value, "supporting");
   assert.equal(result.changed, true);
   assert.equal(result.classification, "elevation");
+});
+
+test("ride layout content preserves explicit Track Level AOD as a positioned vertical anchor", () => {
+  const value = extraction("unknown", "GALACTICA ROLLER COASTER TRACK LAYOUT - TRACK LEVEL 142.35 m AOD");
+  const result = reclassifyPlanningDocumentFromContent(value, "unknown");
+  assert.equal(result.classification, "ride_layout");
+  assert.equal(result.rideLevelObservationsAdded, 1);
+  assert.equal(value.normalizedEvidence.verticalObservations.length, 1);
+  assert.deepEqual(value.normalizedEvidence.verticalObservations[0], {
+    contentHash: "planning-doc",
+    pageNumber: 1,
+    xPt: 700,
+    yPt: 60,
+    label: "TRACK LEVEL",
+    valueM: 142.35,
+    datum: "AOD",
+    raw: "TRACK LEVEL 142.35 m AOD",
+    confidence: 0.95,
+    source: "pdf-text-explicit-ride-level-aod",
+    classification: "ride_layout",
+    georegistrationRequired: true,
+    worldGeometryAuthority: false
+  });
+});
+
+test("strong ride_layout documents also receive Top of Rail AOD anchors", () => {
+  const value = extraction("ride_layout", "TOP OF RAIL: 155.80m AOD");
+  const result = reclassifyPlanningDocumentFromContent(value, "ride_layout");
+  assert.equal(result.changed, false);
+  assert.equal(result.rideLevelObservationsAdded, 1);
+  assert.equal(value.normalizedEvidence.verticalObservations[0].label, "TOP OF RAIL");
+  assert.equal(value.normalizedEvidence.verticalObservations[0].valueM, 155.8);
 });
