@@ -1,6 +1,7 @@
 import path from "node:path";
 import * as base from "./sources-base.mjs";
 import { acquireOsOpenMapLocalHydrology } from "./hydrology-acquisition.mjs";
+import { AUTHORITATIVE_SOURCE_CATALOG } from "./official-source-authority.mjs";
 
 export * from "./sources-base.mjs";
 
@@ -60,5 +61,6 @@ export async function acquireSources(options = {}) {
   sources.acquisitionAttempts.hydrology = hydrology.acquisitionAttempts || [];
   sources.autoSelection ||= {};
   sources.autoSelection.hydrology = hydrology.providerId || null;
+  sources.authoritativeSourceCatalog = AUTHORITATIVE_SOURCE_CATALOG.map((entry) => ({ ...entry }));
   return sources;
 }
