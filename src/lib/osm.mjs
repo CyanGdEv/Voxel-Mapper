@@ -1,12 +1,14 @@
 import * as base from "./osm-base.mjs";
 import { geometryMapCoordinates } from "./geo.mjs";
 import { applyOfficialSourceAuthority } from "./official-source-authority.mjs";
+import { normalizeParkingFeatures } from "./parking-evidence.mjs";
 
 export * from "./osm-base.mjs";
 
 /**
  * Extends the canonical normalized map with automatically acquired licensed
- * hydrology features, then applies the common official-source authority policy.
+ * hydrology features, promotes parking into a dedicated drivable-surface
+ * evidence model, then applies the common official-source authority policy.
  * Planning/verified overrides remain above official base data; OSM is retained
  * only where no stronger compatible observation clearly represents the feature.
  */
@@ -62,7 +64,27 @@ export async function normalizeMap(sources, options = {}) {
     };
   }
 
+  // This happens before official-source fusion so an official parking polygon
+  // and an OSM amenity=parking polygon are comparable as the same drivable
+  // feature kind. OSM parking can therefore be suppressed as a true fallback.
+  const parking = normalizeParkingFeatures(map);
+  map.sourceFusion ||= {};
+  map.sourceFusion.parking = parking;
+
   applyOfficialSourceAuthority(map, options);
   base.refreshMapDerivedData(map);
+  syncGeoJsonParkingProperties(map);
   return map;
+}
+
+function syncGeoJsonParkingProperties(map) {
+  const byId = new Map((map.features || []).map((feature) => [String(feature.id), feature]));
+  for (const raw of map.geojson?.features || []) {
+    const feature = byId.get(String(raw.id));
+    if (!feature?.parkingEvidence) continue;
+    raw.properties ||= {};
+    raw.properties.kind = feature.kind;
+    raw.properties.subtype = feature.subtype;
+    raw.properties.parkingEvidence = feature.parkingEvidence;
+  }
 }
