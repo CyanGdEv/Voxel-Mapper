@@ -1,424 +1,58 @@
 import path from "node:path";
-import { bboxAreaKm2, bboxCenter, createProjector, parseBbox } from "./geo.mjs";
-import { UserError, invariant } from "./errors.mjs";
-import { cachedJson, ensureDir, fetchJson, readJson, sha256 } from "./io.mjs";
-import { acquireLidarElevation } from "./lidar.mjs";
-import { acquireOrthophotos } from "./orthophoto.mjs";
-import { resolveSourcePlan } from "./source-registry.mjs";
-import { RUNTIME_SOURCE_PROVIDERS } from "./runtime-source-providers.mjs";
-import { acquirePlanningForBbox } from "./planning-acquisition.mjs";
-import { augmentPlanningFromLocalPortals } from "./planning-lpa-fallback.mjs";
+import * as base from "./sources-base.mjs";
+import { acquireOsOpenMapLocalHydrology } from "./hydrology-acquisition.mjs";
 
-const DEFAULT_NOMINATIM = "https://nominatim.openstreetmap.org/search";
-const DEFAULT_OVERPASS = "https://overpass-api.de/api/interpreter";
-const DEFAULT_OPEN_METEO = "https://api.open-meteo.com/v1/elevation";
+export * from "./sources-base.mjs";
 
-export async function acquireSources(options) {
-  const cacheDir = path.resolve(options.cache || ".tpmap-cache");
-  await ensureDir(cacheDir);
-  const contact = options.contact || process.env.TPMAP_CONTACT;
-  const userAgent = contact ? `VoxelMapper/0.12 (${contact})` : "VoxelMapper/0.12";
+/**
+ * Adds independent bbox hydrology acquisition to the canonical source resolver.
+ * Failure is non-fatal by default: OSM remains the explicit fallback and the
+ * failed attempt is retained in provenance diagnostics.
+ */
+export async function acquireSources(options = {}) {
+  const sources = await base.acquireSources(options);
+  const selected = sources.sourcePlan?.selected?.hydrology;
+  const acquirer = options.hydrologyAcquirerImpl || acquireOsOpenMapLocalHydrology;
+  let hydrology;
 
-  let bbox = options.bbox ? parseBbox(options.bbox) : undefined;
-  let geocoder = null;
-  let suppliedBoundary = null;
-
-  if (!bbox && !options.osm) {
-    invariant(options.parkName, "Use --bbox for universal generation, or --park-name for legacy place lookup");
-    invariant(options.acceptNominatimPolicy,
-      "Live place lookup requires --accept-nominatim-policy. Read https://operations.osmfoundation.org/policies/nominatim/");
-    invariant(contact,
-      "Live OSM services require --contact with a project URL or email for an identifying User-Agent");
-    geocoder = await resolveWithNominatim({ ...options, cacheDir, userAgent });
-    bbox = geocoder.bbox;
-    suppliedBoundary = geocoder.geometry?.type?.includes("Polygon") ? geocoder.geometry : null;
-  }
-
-  if (!bbox && options.osm) bbox = deriveBboxFromOverpass(await readJson(path.resolve(options.osm)));
-  invariant(bbox, "Could not determine a bounding box");
-
-  const areaKm2 = bboxAreaKm2(bbox);
-  const maxAreaKm2 = options.maxAreaKm2 ?? 12;
-  if (areaKm2 > maxAreaKm2 && !options.allowLargeArea) {
-    throw new UserError(
-      `The requested bounding box is ${areaKm2.toFixed(2)} km²; the safety limit is ${maxAreaKm2} km²`,
-      "Use a tighter --bbox or deliberately add --allow-large-area."
-    );
-  }
-
-  const sourcePlan = resolveSourcePlan(bbox, {
-    providers: RUNTIME_SOURCE_PROVIDERS,
-    preferredProviderIds: options.preferredProviderIds || options.preferProvider || [],
-    excludedProviderIds: options.excludedProviderIds || options.excludeProvider || [],
-    maxPerKind: options.maxProvidersPerKind || 5
-  });
-  const acquisitionOptions = { ...options, bbox, cacheDir, userAgent };
-  const selectedOsm = sourcePlan.selected.osm;
-  if (!options.osm) {
-    invariant(selectedOsm?.acquisition?.adapter === "overpass", "No executable OSM provider is available for this bbox");
-  }
-
-  // OSM, terrain and the national planning index are independent once the
-  // bbox/source plan is resolved. Start them together, then use the acquired
-  // OSM park identity and discovered jurisdiction to supplement incomplete
-  // national planning coverage from a supported public LPA register.
-  const osmPromise = options.osm
-    ? (async () => {
-        const filename = path.resolve(options.osm);
-        const data = await readJson(filename);
-        return { data, dataHash: sha256(data), filename, source: "local", cacheHit: true };
-      })()
-    : fetchOverpass(acquisitionOptions);
-  const terrainPromise = options.elevation != null
-    ? (async () => ({
-        result: await (options.acquireElevationImpl || acquireElevation)({ ...acquisitionOptions, elevation: options.elevation }),
-        providerId: `explicit:${options.elevation}`,
-        attempts: [{ providerId: `explicit:${options.elevation}`, status: "success" }]
-      }))()
-    : acquireAutomaticTerrain(acquisitionOptions, sourcePlan);
-  const planningPromise = acquirePlanningSafely(acquisitionOptions, sourcePlan.selected.planning);
-
-  const [osm, terrainAcquisition, primaryPlanning] = await Promise.all([
-    osmPromise,
-    terrainPromise,
-    planningPromise
-  ]);
-  const planning = await augmentPlanningFromLocalPortals(acquisitionOptions, primaryPlanning, osm.data);
-  const center = bboxCenter(bbox);
-  const elevation = terrainAcquisition.result;
-  // Orthophoto interpretation can depend on the chosen terrain/elevation
-  // frame, so it intentionally remains after terrain acquisition.
-  const orthophoto = await acquireOrthophotos(
-    acquisitionOptions,
-    { center, projector: createProjector(center), elevation }
-  );
-  return {
-    parkName: options.parkName || geocoder?.displayName?.split(",")[0] || "Bounding Box Build",
-    bbox,
-    areaKm2,
-    center,
-    suppliedBoundary,
-    geocoder,
-    sourcePlan,
-    acquisitionAttempts: {
-      terrain: terrainAcquisition.attempts,
-      planning: planning.acquisitionAttempts || []
-    },
-    autoSelection: {
-      osm: options.osm ? "local" : sourcePlan.selected.osm?.providerId || null,
-      terrain: terrainAcquisition.providerId,
-      planning: planning.providerId || sourcePlan.selected.planning?.providerId || null,
-      imagery: sourcePlan.selected.imagery?.providerId || null,
-      trees: sourcePlan.selected.trees?.providerId || null,
-      hydrology: sourcePlan.selected.hydrology?.providerId || null,
-      landcover: sourcePlan.selected.landcover?.providerId || null
-    },
-    osm,
-    elevation,
-    planning,
-    orthophoto,
-    acquiredAt: new Date().toISOString()
-  };
-}
-
-async function acquireAutomaticTerrain(options, sourcePlan) {
-  const candidates = (sourcePlan.candidatesByKind.terrain || []).filter((entry) => entry.implemented);
-  const attempts = [];
-  const acquirer = options.acquireElevationImpl || acquireElevation;
-  for (const candidate of candidates) {
-    const elevation = elevationOptionFromCandidate(candidate);
-    if (!elevation || elevation === "none") continue;
-    if (elevation === "open-meteo" && !options.acceptOpenMeteoTerms) {
-      attempts.push({ providerId: candidate.providerId, adapter: elevation, status: "blocked-policy" });
-      continue;
-    }
+  if (selected?.acquisition?.adapter === "os-openmap-local-water") {
     try {
-      const result = await acquirer({ ...options, elevation });
-      attempts.push({ providerId: candidate.providerId, adapter: elevation, status: "success" });
-      // Keep the acquired object itself. LiDAR deliberately exposes its live
-      // projection/sampling functions as non-enumerable properties so evidence
-      // JSON stays compact. Spreading the object used to drop those functions,
-      // causing the raster compiler to fall back to a zero-elevation sampler
-      // while still subtracting the real LiDAR datum.
-      result.acquisitionAttempts = attempts;
-      return { result, providerId: candidate.providerId, attempts };
+      hydrology = await acquirer({
+        ...options,
+        bbox: sources.bbox,
+        cacheDir: path.resolve(options.cache || ".tpmap-cache")
+      }, selected);
+      hydrology.providerId ||= selected.providerId;
+      hydrology.acquisitionAttempts ||= [{ providerId: selected.providerId, status: "success" }];
     } catch (error) {
-      attempts.push({
-        providerId: candidate.providerId,
-        adapter: elevation,
-        status: "failed",
-        message: error?.message || String(error)
-      });
       if (options.strictSourceAcquisition) throw error;
+      hydrology = {
+        provider: selected.providerName,
+        providerId: selected.providerId,
+        status: "failed",
+        features: [],
+        featureCount: 0,
+        bathymetryProvided: false,
+        warning: `Independent hydrology acquisition failed; retaining OSM as fallback: ${error?.message || String(error)}`,
+        acquisitionAttempts: [{ providerId: selected.providerId, status: "failed", message: error?.message || String(error) }]
+      };
     }
-  }
-  return {
-    result: {
-      provider: "none",
-      resolutionM: null,
-      points: [],
-      acquisitionAttempts: attempts,
-      warning: attempts.length
-        ? "Automatic terrain providers were unavailable or blocked; a flat verified datum will be used."
-        : "No executable terrain source was selected; a flat verified datum will be used."
-    },
-    providerId: null,
-    attempts
-  };
-}
-
-async function acquirePlanningSafely(options, selectedPlanning) {
-  const acquirer = options.planningAcquirerImpl || acquirePlanningForBbox;
-  if (!selectedPlanning) {
-    return {
-      provider: "none",
-      providerId: null,
-      status: "no-executable-provider",
-      applicationCount: 0,
-      jurisdictionCount: 0,
-      applications: [],
-      jurisdictions: [],
+  } else {
+    hydrology = {
+      provider: sources.osm?.source === "local" ? "local OSM fallback" : "OpenStreetMap fallback",
+      providerId: selected?.providerId || "openstreetmap-overpass",
+      status: "osm-fallback",
+      features: [],
+      featureCount: 0,
+      bathymetryProvided: false,
       acquisitionAttempts: []
     };
   }
-  try {
-    const result = await acquirer(options, selectedPlanning);
-    return {
-      ...result,
-      providerId: result.providerId || selectedPlanning.providerId,
-      acquisitionAttempts: [{ providerId: selectedPlanning.providerId, status: "success" }]
-    };
-  } catch (error) {
-    if (options.strictSourceAcquisition) throw error;
-    return {
-      provider: selectedPlanning.providerName,
-      providerId: selectedPlanning.providerId,
-      status: "failed",
-      applicationCount: 0,
-      jurisdictionCount: 0,
-      applications: [],
-      jurisdictions: [],
-      warning: `Planning acquisition failed; continuing with lower-authority evidence: ${error?.message || String(error)}`,
-      acquisitionAttempts: [{
-        providerId: selectedPlanning.providerId,
-        status: "failed",
-        message: error?.message || String(error)
-      }]
-    };
-  }
-}
 
-function elevationOptionFromCandidate(candidate) {
-  const adapter = candidate?.acquisition?.adapter;
-  if (adapter === "ea-lidar") return "ea-lidar";
-  if (adapter === "open-meteo") return "open-meteo";
-  return null;
-}
-
-async function resolveWithNominatim({ parkName, nominatimUrl, cacheDir, userAgent, noCache }) {
-  const endpoint = nominatimUrl || DEFAULT_NOMINATIM;
-  const url = new URL(endpoint);
-  url.searchParams.set("q", parkName);
-  url.searchParams.set("format", "jsonv2");
-  url.searchParams.set("limit", "5");
-  url.searchParams.set("polygon_geojson", "1");
-  url.searchParams.set("addressdetails", "1");
-
-  const { data, cacheHit } = await cachedJson({
-    cacheDir: path.join(cacheDir, "nominatim"),
-    key: url.toString(),
-    noCache,
-    fetcher: () => fetchJson(url, { headers: { "User-Agent": userAgent, Accept: "application/json" } }, { retries: 1 })
-  });
-  invariant(Array.isArray(data) && data.length, `No place named “${parkName}” was found`);
-  const ranked = [...data].sort((a, b) => rankPlace(b, parkName) - rankPlace(a, parkName));
-  const choice = ranked[0];
-  const bounds = choice.boundingbox?.map(Number);
-  invariant(bounds?.length === 4 && bounds.every(Number.isFinite), "The geocoder result has no valid bounding box");
-  return {
-    provider: "OpenStreetMap Nominatim",
-    policy: "https://operations.osmfoundation.org/policies/nominatim/",
-    cacheHit,
-    placeId: choice.place_id,
-    osmType: choice.osm_type,
-    osmId: choice.osm_id,
-    displayName: choice.display_name,
-    bbox: { south: bounds[0], north: bounds[1], west: bounds[2], east: bounds[3] },
-    geometry: choice.geojson || null,
-    candidates: ranked.slice(0, 5).map((item) => ({
-      placeId: item.place_id, displayName: item.display_name, type: item.type, importance: item.importance
-    }))
-  };
-}
-
-function rankPlace(place, query) {
-  let score = Number(place.importance || 0);
-  if (place.type === "theme_park" || place.addresstype === "theme_park") score += 10;
-  if (String(place.display_name).toLowerCase().startsWith(query.toLowerCase())) score += 2;
-  return score;
-}
-
-async function fetchOverpass({ bbox, overpassUrl, cacheDir, userAgent, noCache }) {
-  const endpoint = overpassUrl || DEFAULT_OVERPASS;
-  const query = buildOverpassQuery(bbox);
-  const { data, cacheHit } = await cachedJson({
-    cacheDir: path.join(cacheDir, "overpass"),
-    key: `${endpoint}\n${query}`,
-    noCache,
-    fetcher: () => fetchJson(endpoint, {
-      method: "POST",
-      headers: {
-        "User-Agent": userAgent,
-        Accept: "application/json",
-        "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
-      },
-      body: new URLSearchParams({ data: query })
-    }, { timeoutMs: 180_000, retries: 2 })
-  });
-  invariant(Array.isArray(data?.elements), "Overpass returned no elements array");
-  return {
-    data,
-    source: "live",
-    cacheHit,
-    endpoint,
-    queryHash: sha256(query),
-    query,
-    attribution: "© OpenStreetMap contributors, ODbL 1.0",
-    license: "https://www.openstreetmap.org/copyright"
-  };
-}
-
-export function buildOverpassQuery({ south, west, north, east }) {
-  const bbox = [south, west, north, east].map((value) => value.toFixed(7)).join(",");
-  return `[out:json][timeout:120][bbox:${bbox}];
-(
-  nwr["tourism"="theme_park"];
-  nwr["tourism"];
-  nwr["building"];
-  nwr["highway"];
-  nwr["area:highway"];
-  nwr["attraction"];
-  nwr["roller_coaster"];
-  nwr["railway"];
-  nwr["natural"];
-  nwr["geological"];
-  nwr["landuse"];
-  nwr["leisure"];
-  nwr["waterway"];
-  nwr["barrier"];
-  nwr["amenity"];
-  nwr["man_made"];
-  nwr["shop"];
-  nwr["entrance"];
-  nwr["door"];
-  nwr["historic"];
-  nwr["information"];
-  nwr["playground"];
-  nwr["public_transport"];
-  nwr["landcover"];
-  nwr["boundary"="administrative"];
-);
-out meta geom;`;
-}
-
-async function acquireElevation(options) {
-  const provider = options.elevation || "none";
-  if (provider === "none") {
-    return {
-      provider: "none",
-      resolutionM: null,
-      points: [],
-      warning: "No executable terrain source was selected; a flat verified datum will be used."
-    };
-  }
-  if (provider === "ea-lidar" || provider === "geotiff") {
-    return acquireLidarElevation(options, provider);
-  }
-  if (provider !== "open-meteo") throw new UserError(`Unsupported elevation provider: ${provider}`);
-  invariant(options.acceptOpenMeteoTerms,
-    "Open-Meteo elevation requires --accept-open-meteo-terms. Commercial use requires an appropriate plan/API endpoint.");
-  const apiKey = options.openMeteoApiKey || process.env.TPMAP_OPEN_METEO_API_KEY;
-  if (options.commercial && !apiKey) {
-    throw new UserError("Commercial Open-Meteo use requires --open-meteo-api-key (or choose --elevation none)");
-  }
-
-  const endpoint = options.openMeteoUrl || (options.commercial
-    ? "https://customer-api.open-meteo.com/v1/elevation"
-    : DEFAULT_OPEN_METEO);
-  const spacingM = Math.max(30, options.elevationSpacing || 90);
-  const projector = createProjector(bboxCenter(options.bbox));
-  const [minX, maxZ] = projector.forward([options.bbox.west, options.bbox.south]);
-  const [maxX, minZ] = projector.forward([options.bbox.east, options.bbox.north]);
-  const columns = Math.max(2, Math.ceil((maxX - minX) / spacingM) + 1);
-  const rows = Math.max(2, Math.ceil((maxZ - minZ) / spacingM) + 1);
-  const coordinates = [];
-  for (let row = 0; row < rows; row += 1) {
-    const z = minZ + (row / (rows - 1)) * (maxZ - minZ);
-    for (let column = 0; column < columns; column += 1) {
-      const x = minX + (column / (columns - 1)) * (maxX - minX);
-      const [lon, lat] = projector.inverse([x, z]);
-      coordinates.push({ x, z, lat, lon });
-    }
-  }
-
-  const key = `${endpoint}:${coordinates.map((p) => `${p.lat.toFixed(6)},${p.lon.toFixed(6)}`).join(";")}`;
-  const { data, cacheHit } = await cachedJson({
-    cacheDir: path.join(options.cacheDir, "elevation"),
-    key,
-    noCache: options.noCache,
-    fetcher: async () => {
-      const elevation = [];
-      for (let i = 0; i < coordinates.length; i += 100) {
-        const batch = coordinates.slice(i, i + 100);
-        const url = new URL(endpoint);
-        url.searchParams.set("latitude", batch.map((p) => p.lat.toFixed(6)).join(","));
-        url.searchParams.set("longitude", batch.map((p) => p.lon.toFixed(6)).join(","));
-        if (apiKey) url.searchParams.set("apikey", apiKey);
-        const response = await fetchJson(url, { headers: { "User-Agent": options.userAgent } }, { retries: 2 });
-        invariant(Array.isArray(response.elevation) && response.elevation.length === batch.length,
-          "Open-Meteo returned an unexpected elevation response");
-        elevation.push(...response.elevation);
-      }
-      return { elevation };
-    }
-  });
-
-  return {
-    provider: "Open-Meteo / Copernicus DEM GLO-90",
-    endpoint,
-    cacheHit,
-    resolutionM: 90,
-    requestedSpacingM: spacingM,
-    rows,
-    columns,
-    bounds: { minX, minZ, maxX, maxZ },
-    points: coordinates.map((point, index) => ({ ...point, elevation: Number(data.elevation[index]) })),
-    attribution: "Elevation: Open-Meteo; Copernicus DEM GLO-90",
-    license: "https://open-meteo.com/en/docs/elevation-api"
-  };
-}
-
-function deriveBboxFromOverpass(data) {
-  const values = [];
-  for (const element of data?.elements || []) {
-    if (Number.isFinite(element.lat) && Number.isFinite(element.lon)) values.push([element.lat, element.lon]);
-    for (const point of element.geometry || []) {
-      if (Number.isFinite(point.lat) && Number.isFinite(point.lon)) values.push([point.lat, point.lon]);
-    }
-    for (const member of element.members || []) {
-      for (const point of member.geometry || []) {
-        if (Number.isFinite(point.lat) && Number.isFinite(point.lon)) values.push([point.lat, point.lon]);
-      }
-    }
-  }
-  invariant(values.length, "The supplied Overpass JSON contains no coordinates; add --bbox");
-  const latitudes = values.map(([lat]) => lat);
-  const longitudes = values.map(([, lon]) => lon);
-  const padding = 0.0001;
-  return {
-    south: Math.min(...latitudes) - padding,
-    north: Math.max(...latitudes) + padding,
-    west: Math.min(...longitudes) - padding,
-    east: Math.max(...longitudes) + padding
-  };
+  sources.hydrology = hydrology;
+  sources.acquisitionAttempts ||= {};
+  sources.acquisitionAttempts.hydrology = hydrology.acquisitionAttempts || [];
+  sources.autoSelection ||= {};
+  sources.autoSelection.hydrology = hydrology.providerId || selected?.providerId || null;
+  return sources;
 }
