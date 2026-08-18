@@ -26,9 +26,9 @@ export function enrichPlanningPedestrianEvidence(extraction, options = {}) {
     if (!nearby.length) { counts.unlabeled += 1; continue; }
     const text = nearby.map((entry) => entry.text).join(" ");
     const hits = [];
-    if (ROAD_ROUTE.test(text)) hits.push({ kind: "road", subtype: "planning_access_road", semantic: "site-edge-or-route", confidence: 0.96 });
-    if (PEDESTRIAN_AREA.test(text)) hits.push({ kind: "path", subtype: "pedestrian_plaza", semantic: "site-feature-or-building-footprint", confidence: 0.97, area: true });
-    if (PEDESTRIAN_ROUTE.test(text)) hits.push({ kind: "path", subtype: "pedestrian_route", semantic: candidate.closed ? "site-feature-or-building-footprint" : "site-edge-or-route", confidence: 0.96 });
+    if (ROAD_ROUTE.test(text)) hits.push({ kind: "road", subtype: "planning_access_road", semantic: "site-route", confidence: 0.96 });
+    if (PEDESTRIAN_AREA.test(text)) hits.push({ kind: "path", subtype: "pedestrian_plaza", semantic: "site-feature", confidence: 0.97, area: true });
+    if (PEDESTRIAN_ROUTE.test(text)) hits.push({ kind: "path", subtype: "pedestrian_route", semantic: candidate.closed ? "site-feature" : "site-route", confidence: 0.96 });
     const uniqueKinds = new Set(hits.map((hit) => hit.kind));
     if (!hits.length) { counts.unlabeled += 1; continue; }
     if (uniqueKinds.size > 1) { counts.ambiguous += 1; continue; }
