@@ -1,5 +1,6 @@
 import * as base from "./planning-changeset-compiler-base.mjs";
 import { preparePlanningParkingEvidence } from "./parking-evidence.mjs";
+import { preparePlanningParkingDetailEvidence } from "./parking-detail-evidence.mjs";
 
 export const resolvePlanningTargetCollisions = base.resolvePlanningTargetCollisions;
 
@@ -12,11 +13,12 @@ export const resolvePlanningTargetCollisions = base.resolvePlanningTargetCollisi
  *
  * Parking semantics are normalized before the generic compiler so current
  * planning car-park areas/aisles can replace lower-authority OSM geometry while
- * explicit bay/island polygons remain paint-only surface evidence. No parking
- * grid is synthesized here.
+ * explicit bay/island/detail evidence remains fail-closed. No parking grid or
+ * marking pattern is synthesized here.
  */
 export function compilePlanningChangeSet(map, evidence = {}, options = {}) {
-  const parkingPrepared = preparePlanningParkingEvidence(evidence);
+  const detailPrepared = preparePlanningParkingDetailEvidence(evidence);
+  const parkingPrepared = preparePlanningParkingEvidence(detailPrepared);
   const inputCandidates = parkingPrepared?.geometryCandidates || [];
   const deferredRideLines = inputCandidates.filter(isUncertifiedRideLayoutLine);
   const safeEvidence = deferredRideLines.length
@@ -27,15 +29,22 @@ export function compilePlanningChangeSet(map, evidence = {}, options = {}) {
   output.input ||= {};
   output.input.geometryCandidates = inputCandidates.length;
   const parkingCandidates = inputCandidates.filter((candidate) => candidate?.parkingEvidence || candidate?.tags?.["planning:parking_semantic"]);
+  const detailCandidates = inputCandidates.filter((candidate) => candidate?.parkingDetailEvidence || candidate?.tags?.["planning:parking_detail_semantic"]);
   output.parkingSemanticSafety = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     parkingCandidates: parkingCandidates.length,
     parkingAreaCandidates: parkingCandidates.filter((candidate) => candidate?.parkingEvidence?.role === "area").length,
     parkingAisleCandidates: parkingCandidates.filter((candidate) => candidate?.parkingEvidence?.role === "aisle").length,
     explicitBayCandidates: parkingCandidates.filter((candidate) => candidate?.parkingEvidence?.role === "bay").length,
     explicitIslandCandidates: parkingCandidates.filter((candidate) => candidate?.parkingEvidence?.role === "island").length,
+    detailCandidates: detailCandidates.length,
+    kerbCandidates: detailCandidates.filter((candidate) => candidate?.parkingDetailEvidence?.role === "kerb").length,
+    crossingCandidates: detailCandidates.filter((candidate) => candidate?.parkingDetailEvidence?.role === "crossing").length,
+    arrowCandidates: detailCandidates.filter((candidate) => candidate?.parkingDetailEvidence?.role === "arrow").length,
+    hatchingCandidates: detailCandidates.filter((candidate) => candidate?.parkingDetailEvidence?.role === "hatching").length,
     inventedBayGridAllowed: false,
-    rule: "planning parking geometry must pass the same georegistration/currentness/ambiguity gates as every other planning feature"
+    inferredMarkingPatternAllowed: false,
+    rule: "planning parking geometry/detail must pass the same georegistration/currentness/ambiguity gates as every other planning feature"
   };
 
   for (const candidate of deferredRideLines) {
@@ -68,7 +77,8 @@ export function compilePlanningChangeSet(map, evidence = {}, options = {}) {
 }
 
 export function inferPlanningFeatureKind(candidate, map = null, options = {}) {
-  const prepared = preparePlanningParkingEvidence({ geometryCandidates: [candidate] }).geometryCandidates[0] || candidate;
+  const detailPrepared = preparePlanningParkingDetailEvidence({ geometryCandidates: [candidate] }).geometryCandidates[0] || candidate;
+  const prepared = preparePlanningParkingEvidence({ geometryCandidates: [detailPrepared] }).geometryCandidates[0] || detailPrepared;
   if (isUncertifiedRideLayoutLine(prepared)) {
     return {
       kind: null,
