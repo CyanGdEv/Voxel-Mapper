@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 import path from "node:path";
-import { createReadStream } from "node:fs";
-import { open, readFile } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { once } from "node:events";
+import { readFile } from "node:fs/promises";
 import readline from "node:readline";
+import { createGzip } from "node:zlib";
 import {
   AUTHORITY_BUNDLE_FORMAT,
   loadBundleManifest
 } from "../src/lib/planning-evidence-bundle.mjs";
+
+const CHUNKED_JSON_FORMAT = "voxel-chunked-json-gzip-v1";
 
 const args = parseArgs(process.argv.slice(2));
 if (!args.manifest || !args.out) {
@@ -21,38 +25,25 @@ const bundleRoot = path.resolve(path.dirname(pointerPath), pointer.bundlePath ||
 const bundle = await loadBundleManifest(bundleRoot, AUTHORITY_BUNDLE_FORMAT);
 const manifest = bundle.manifest;
 const outPath = path.resolve(args.out);
-const handle = await open(outPath, "w");
 
-try {
-  const prefix = {
-    schemaVersion: 4,
-    coordinateSpace: "local-world-metres-plus-nonspatial-templates",
-    authorityScope: "planning-current-state-plus-independently-corroborated-implemented-schemes",
-    sourceStorage: "chunked-page-ndjson",
-    sourceBundle: pointer.bundlePath || null,
-    worldGeometryReady: Number(manifest.geometryCandidateCount || 0) > 0,
-    worldGeometryAuthority: Boolean(manifest.worldGeometryAuthority),
-    temporalResolutionRequired: false
-  };
-  await handle.write(`${JSON.stringify(prefix).slice(0, -1)},`);
-  await writeCollection(handle, bundle.root, manifest.pages || [], "geometryFile", "geometryCandidates");
-  await handle.write(",");
-  await writeCollection(handle, bundle.root, manifest.pages || [], "verticalFile", "verticalObservations");
-  await handle.write(",");
-  await writeCollection(handle, bundle.root, manifest.pages || [], "materialFile", "materialObservations");
-  await handle.write(",");
-  await writeCollection(handle, bundle.root, manifest.pages || [], "templateFile", "rideStructureTemplates");
-  await handle.write(",");
-  const drawingMetadata = (manifest.pages || []).flatMap((page) => page.drawingMetadata || []);
-  await handle.write(`"drawingMetadata":${JSON.stringify(drawingMetadata)},`);
-  await handle.write(`"counts":${JSON.stringify({
+const drawingMetadata = (manifest.pages || []).flatMap((page) => page.drawingMetadata || []);
+const metadata = {
+  schemaVersion: 4,
+  coordinateSpace: "local-world-metres-plus-nonspatial-templates",
+  authorityScope: "planning-current-state-plus-independently-corroborated-implemented-schemes",
+  sourceStorage: "chunked-page-ndjson",
+  sourceBundle: pointer.bundlePath || null,
+  worldGeometryReady: Number(manifest.geometryCandidateCount || 0) > 0,
+  worldGeometryAuthority: Boolean(manifest.worldGeometryAuthority),
+  temporalResolutionRequired: false,
+  counts: {
     geometryCandidates: Number(manifest.geometryCandidateCount || 0),
     verticalObservations: Number(manifest.verticalObservationCount || 0),
     materialObservations: Number(manifest.materialObservationCount || 0),
     rideStructureTemplates: Number(manifest.rideStructureTemplateCount || 0),
     drawingMetadata: drawingMetadata.length
-  })},`);
-  await handle.write(`"implementedSchemeAuthority":${JSON.stringify({
+  },
+  implementedSchemeAuthority: {
     status: Number(manifest.implementedScheme?.certifiedSpatialPages || 0) > 0 ? "applied" : "no-implemented-scheme-proof",
     evaluatedPages: Number(manifest.implementedScheme?.evaluatedPages || 0),
     certifiedSpatialPages: Number(manifest.implementedScheme?.certifiedSpatialPages || 0),
@@ -64,38 +55,74 @@ try {
     promotedRideStructureTemplates: 0,
     supportingEvidencePages: 0,
     pageProofs: []
-  })},`);
-  await handle.write(`"templatePolicy":${JSON.stringify({
+  },
+  templatePolicy: {
     spatialAuthority: false,
     worldGeometryAuthority: false,
     exactAuthoritativePlanAnchorLinkRequired: true,
     terrainGeometryMutable: false
-  })},`);
-  await handle.write(`"terrainPolicy":${JSON.stringify({
+  },
+  terrainPolicy: {
     geometryAuthority: false,
     elevationAuthority: false,
     planningMayRepaintExistingTopSurfaceOnly: true
-  })},`);
-  await handle.write(`"corroboration":${JSON.stringify(pointer.corroboration || manifest.corroboration || null)}}\n`);
-} finally {
-  await handle.close();
+  },
+  corroboration: pointer.corroboration || manifest.corroboration || null
+};
+
+// Keep the compatibility contract identical after readJson(), but never create
+// a >500 MB JavaScript string. io.mjs already supports this line-oriented gzip
+// container and rehydrates each top-level array record-by-record. The world and
+// benchmark consumers therefore see the same object while storage, transfer and
+// parsing remain below V8's hard maximum string length.
+const arrays = {
+  geometryCandidates: Number(manifest.geometryCandidateCount || 0),
+  verticalObservations: Number(manifest.verticalObservationCount || 0),
+  materialObservations: Number(manifest.materialObservationCount || 0),
+  rideStructureTemplates: Number(manifest.rideStructureTemplateCount || 0),
+  drawingMetadata: drawingMetadata.length
+};
+const header = JSON.stringify({
+  __chunkedJson: {
+    format: CHUNKED_JSON_FORMAT,
+    schemaVersion: 1,
+    arrays
+  },
+  metadata
+});
+
+const output = createWriteStream(outPath);
+const gzip = createGzip({ level: 3 });
+gzip.pipe(output);
+const completion = once(output, "finish");
+const failure = Promise.race([
+  once(gzip, "error").then(([error]) => { throw error; }),
+  once(output, "error").then(([error]) => { throw error; })
+]);
+
+try {
+  await writeGzipLine(gzip, header);
+  await writeCollection(gzip, bundle.root, manifest.pages || [], "geometryFile", "geometryCandidates");
+  await writeCollection(gzip, bundle.root, manifest.pages || [], "verticalFile", "verticalObservations");
+  await writeCollection(gzip, bundle.root, manifest.pages || [], "materialFile", "materialObservations");
+  await writeCollection(gzip, bundle.root, manifest.pages || [], "templateFile", "rideStructureTemplates");
+  for (const value of drawingMetadata) await writeGzipLine(gzip, JSON.stringify(["drawingMetadata", value]));
+  gzip.end();
+  await Promise.race([completion, failure]);
+} catch (error) {
+  output.destroy();
+  gzip.destroy();
+  throw error;
 }
 
 console.log(JSON.stringify({
   out: outPath,
-  counts: {
-    geometryCandidates: Number(manifest.geometryCandidateCount || 0),
-    verticalObservations: Number(manifest.verticalObservationCount || 0),
-    materialObservations: Number(manifest.materialObservationCount || 0),
-    rideStructureTemplates: Number(manifest.rideStructureTemplateCount || 0)
-  },
+  counts: metadata.counts,
   worldGeometryAuthority: Boolean(manifest.worldGeometryAuthority),
-  mode: "streamed-from-authority-bundle"
+  mode: "streamed-chunked-gzip-from-authority-bundle"
 }, null, 2));
 
-async function writeCollection(handle, root, pages, field, property) {
-  await handle.write(`${JSON.stringify(property)}:[`);
-  let first = true;
+async function writeCollection(stream, root, pages, field, property) {
   for (const page of pages) {
     if (!page?.[field]) continue;
     const filename = path.resolve(root, page[field]);
@@ -104,13 +131,18 @@ async function writeCollection(handle, root, pages, field, property) {
     for await (const line of lines) {
       const value = line.trim();
       if (!value) continue;
-      if (!first) await handle.write(",");
-      await handle.write(value);
-      first = false;
+      // The NDJSON value has already been validated/written by the authority
+      // bundle producer. Wrap its raw JSON text directly rather than parsing and
+      // serializing a second geometry object in this compatibility stage.
+      await writeGzipLine(stream, `[${JSON.stringify(property)},${value}]`);
     }
   }
-  await handle.write("]");
 }
+
+async function writeGzipLine(stream, line) {
+  if (!stream.write(`${line}\n`)) await once(stream, "drain");
+}
+
 function parseArgs(values) {
   const result = {};
   for (let index = 0; index < values.length; index += 1) {
