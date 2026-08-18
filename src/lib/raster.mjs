@@ -6,11 +6,12 @@ export const formatSignText = base.formatSignText;
 
 /**
  * Run the canonical compiler first, then repair LiDAR building shells from one
- * shared filled footprint mask. The old implementation filled roofs with
- * scanlines but walls with line rasterization; diagonal/irregular footprints
- * could therefore disagree by a cell and leave visible holes.
+ * shared filled footprint mask. Roof and wall topology can no longer disagree
+ * on diagonal/irregular footprints, while genuine interior rings stay open.
  *
- * This pass deliberately preserves true polygon interior rings (courtyards).
+ * LiDAR-supported sub-block roof transitions are recorded as stateful Bedrock
+ * replacements. The direct-world writer first emits the proven full-block roof
+ * fallback and mcworld.mjs replaces only those explicit cells with slabs/stairs.
  */
 export function compileMap(input) {
   const compilation = base.compileMap(input);
@@ -22,6 +23,8 @@ export function compileMap(input) {
   compilation.stats.buildingShellRepairOperations = repair.operations;
   compilation.stats.buildingShellSealedRoofCells = repair.roofCells;
   compilation.stats.buildingShellSealedWallColumns = repair.wallColumns;
+  compilation.stats.buildingRoofStairCells = repair.roofStairCells;
+  compilation.stats.buildingRoofSlabCells = repair.roofSlabCells;
   return compilation;
 }
 
@@ -30,6 +33,9 @@ export function repairLidarBuildingShells(compilation, { map, sources }) {
   const minDatum = Number(compilation?.meta?.elevationDatumM || 0);
   if (!bounds || !map?.features?.length) return emptyStats("missing-compilation-context");
 
+  compilation.meta ||= {};
+  compilation.meta.statefulBlockReplacements ||= [];
+  const statefulByCell = new Map(compilation.meta.statefulBlockReplacements.map((item) => [cellKey(item.x, item.y, item.z), item]));
   const stats = emptyStats("complete");
   const features = map.features.filter((feature) =>
     feature?.kind === "building" && feature?.roof?.source === "lidar-dsm-surface" &&
@@ -67,12 +73,13 @@ export function repairLidarBuildingShells(compilation, { map, sources }) {
       const terrainY = Number.isFinite(terrainAbsolute) ? Math.round(terrainAbsolute - minDatum) : 0;
       const measuredHeight = Number.isFinite(pair?.surface) && Number.isFinite(pair?.terrain)
         ? pair.surface - pair.terrain : null;
-      const measuredRoofY = Number.isFinite(pair?.surface) ? Math.round(pair.surface - minDatum) : null;
+      const measuredRoofRaw = Number.isFinite(pair?.surface) ? pair.surface - minDatum : null;
+      const measuredRoofY = Number.isFinite(measuredRoofRaw) ? Math.round(measuredRoofRaw) : null;
       const fallbackHeight = Math.max(2, Math.round(Number(feature?.vertical?.heightM ?? feature?.roof?.heightM ?? 5)));
-      const roofY = Number.isFinite(measuredRoofY) && measuredHeight >= 1.5 && measuredHeight <= 80 &&
-        measuredRoofY >= terrainY + 2 && measuredRoofY <= terrainY + 80
-        ? measuredRoofY : terrainY + fallbackHeight;
-      const result = { terrainY, roofY };
+      const measured = Number.isFinite(measuredRoofY) && measuredHeight >= 1.5 && measuredHeight <= 80 &&
+        measuredRoofY >= terrainY + 2 && measuredRoofY <= terrainY + 80;
+      const roofY = measured ? measuredRoofY : terrainY + fallbackHeight;
+      const result = { terrainY, roofY, roofSurfaceY: measured ? measuredRoofRaw : roofY, measured };
       heights.set(key, result);
       return result;
     };
@@ -81,6 +88,8 @@ export function repairLidarBuildingShells(compilation, { map, sources }) {
     const floorBlock = buildingFloorBlock(feature);
     const wallBlock = buildingWallBlock(feature);
 
+    // Roof and floor share exactly the same topology mask. This is the core
+    // watertightness guarantee for reconstructed building shells.
     for (const cell of cells.values()) {
       const { terrainY, roofY } = heightAt(cell.x, cell.z);
       appendCellOperation(compilation, 2, cell.x, terrainY + 1, cell.z, floorBlock, stats);
@@ -96,21 +105,85 @@ export function repairLidarBuildingShells(compilation, { map, sources }) {
     }
 
     const detailBlock = wallDetailBlock(feature);
+    const roofFamily = statefulRoofFamily(roofBlock);
+    const transitionCandidates = new Map();
+
     for (const cell of cells.values()) {
       const current = heightAt(cell.x, cell.z);
       for (const [dx, dz] of [[1, 0], [0, 1]]) {
         const neighbour = cells.get(`${cell.x + dx},${cell.z + dz}`);
         if (!neighbour) continue;
         const other = heightAt(neighbour.x, neighbour.z);
-        const delta = other.roofY - current.roofY;
-        if (Math.abs(delta) < 2) continue;
-        const lower = delta > 0 ? cell : neighbour;
-        const lowerHeight = delta > 0 ? current : other;
+        const deltaRaw = other.roofSurfaceY - current.roofSurfaceY;
+        const absoluteDelta = Math.abs(deltaRaw);
+
+        if (current.measured && other.measured && roofFamily && absoluteDelta >= 0.45 && absoluteDelta < 1.5) {
+          const lower = deltaRaw > 0 ? cell : neighbour;
+          const lowerHeight = deltaRaw > 0 ? current : other;
+          const riseDx = deltaRaw > 0 ? dx : -dx;
+          const riseDz = deltaRaw > 0 ? dz : -dz;
+          const kind = absoluteDelta >= 0.8 ? "stair" : "slab";
+          const candidate = {
+            x: lower.x,
+            y: lowerHeight.roofY,
+            z: lower.z,
+            kind,
+            deltaM: absoluteDelta,
+            riseDx,
+            riseDz
+          };
+          const key = cellKey(candidate.x, candidate.y, candidate.z);
+          const existing = transitionCandidates.get(key);
+          if (!existing || transitionPriority(candidate) > transitionPriority(existing)) transitionCandidates.set(key, candidate);
+          continue;
+        }
+
+        if (absoluteDelta < 1.5) continue;
+        const lower = deltaRaw > 0 ? cell : neighbour;
+        const lowerHeight = deltaRaw > 0 ? current : other;
         appendCellOperation(compilation, 3, lower.x, lowerHeight.roofY + 1, lower.z, detailBlock, stats);
         stats.roofStepDetailCells += 1;
       }
     }
+
+    for (const candidate of transitionCandidates.values()) {
+      const replacement = candidate.kind === "stair"
+        ? {
+            x: candidate.x,
+            y: candidate.y,
+            z: candidate.z,
+            name: roofFamily.stairs,
+            states: {
+              "minecraft:corner": "none",
+              upside_down_bit: 0,
+              weirdo_direction: stairDirection(candidate.riseDx, candidate.riseDz)
+            },
+            kind: "lidar-roof-stair",
+            featureId: feature.id,
+            evidenceDeltaM: Number(candidate.deltaM.toFixed(3))
+          }
+        : {
+            x: candidate.x,
+            y: candidate.y,
+            z: candidate.z,
+            name: roofFamily.slab,
+            states: { "minecraft:vertical_half": "bottom" },
+            kind: "lidar-roof-slab",
+            featureId: feature.id,
+            evidenceDeltaM: Number(candidate.deltaM.toFixed(3))
+          };
+      const key = cellKey(replacement.x, replacement.y, replacement.z);
+      const existing = statefulByCell.get(key);
+      if (!existing || replacementPriority(replacement) > replacementPriority(existing)) statefulByCell.set(key, replacement);
+    }
   }
+
+  compilation.meta.statefulBlockReplacements = [...statefulByCell.values()].sort((a, b) =>
+    a.z - b.z || a.x - b.x || a.y - b.y || a.name.localeCompare(b.name)
+  );
+  stats.roofStairCells = compilation.meta.statefulBlockReplacements.filter((item) => item.kind === "lidar-roof-stair").length;
+  stats.roofSlabCells = compilation.meta.statefulBlockReplacements.filter((item) => item.kind === "lidar-roof-slab").length;
+  stats.statefulDetailReplacements = stats.roofStairCells + stats.roofSlabCells;
 
   for (const chunk of compilation.chunks || []) chunk.o.sort((a, b) => a[0] - b[0]);
   compilation.chunks?.sort((a, b) => a.z - b.z || a.x - b.x);
@@ -119,13 +192,16 @@ export function repairLidarBuildingShells(compilation, { map, sources }) {
 
 function emptyStats(status) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     status,
-    method: "shared-footprint-mask LiDAR shell repair",
+    method: "shared-footprint-mask LiDAR shell repair with stateful roof transitions",
     buildings: 0,
     roofCells: 0,
     wallColumns: 0,
     roofStepDetailCells: 0,
+    roofStairCells: 0,
+    roofSlabCells: 0,
+    statefulDetailReplacements: 0,
     trueInteriorRingsPreserved: 0,
     operations: 0,
     estimatedBlocks: 0,
@@ -196,3 +272,34 @@ function wallDetailBlock(feature) {
   if (/deepslate|slate/.test(text)) return "minecraft:cobbled_deepslate_wall";
   return "minecraft:stone_brick_wall";
 }
+
+function statefulRoofFamily(block) {
+  return ({
+    "minecraft:deepslate_tiles": { slab: "minecraft:deepslate_tile_slab", stairs: "minecraft:deepslate_tile_stairs" },
+    "minecraft:deepslate_bricks": { slab: "minecraft:deepslate_brick_slab", stairs: "minecraft:deepslate_brick_stairs" },
+    "minecraft:polished_deepslate": { slab: "minecraft:polished_deepslate_slab", stairs: "minecraft:polished_deepslate_stairs" },
+    "minecraft:brick_block": { slab: "minecraft:brick_slab", stairs: "minecraft:brick_stairs" },
+    "minecraft:stone_bricks": { slab: "minecraft:stone_brick_slab", stairs: "minecraft:stone_brick_stairs" },
+    "minecraft:spruce_planks": { slab: "minecraft:spruce_slab", stairs: "minecraft:spruce_stairs" },
+    "minecraft:oak_planks": { slab: "minecraft:oak_slab", stairs: "minecraft:oak_stairs" },
+    "minecraft:sandstone": { slab: "minecraft:sandstone_slab", stairs: "minecraft:sandstone_stairs" },
+    "minecraft:smooth_sandstone": { slab: "minecraft:smooth_sandstone_slab", stairs: "minecraft:smooth_sandstone_stairs" }
+  })[block] || null;
+}
+
+function stairDirection(dx, dz) {
+  if (dx > 0) return 0;
+  if (dx < 0) return 1;
+  if (dz > 0) return 2;
+  return 3;
+}
+
+function transitionPriority(candidate) {
+  return (candidate.kind === "stair" ? 10 : 0) + candidate.deltaM;
+}
+
+function replacementPriority(replacement) {
+  return (replacement.kind === "lidar-roof-stair" ? 10 : 0) + Number(replacement.evidenceDeltaM || 0);
+}
+
+const cellKey = (x, y, z) => `${x},${y},${z}`;

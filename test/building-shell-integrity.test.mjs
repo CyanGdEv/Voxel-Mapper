@@ -71,3 +71,45 @@ test("LiDAR-proven roof steps use thin wall-family detail rather than another fu
   assert.ok(stats.roofStepDetailCells > 0);
   assert.ok(target.palette.includes("minecraft:brick_wall"));
 });
+
+test("one-metre LiDAR roof transitions become oriented Bedrock stairs", () => {
+  const target = compilation();
+  const feature = building({
+    type: "Polygon",
+    coordinates: [[[0, 0], [5, 0], [5, 4], [0, 4], [0, 0]]]
+  });
+  const slopedElevation = {
+    sampleLocal: () => 100,
+    samplePairLocal(x) {
+      return { terrain: 100, surface: 106 + x };
+    }
+  };
+  const stats = repairLidarBuildingShells(target, { map: { features: [feature] }, sources: { elevation: slopedElevation } });
+  assert.ok(stats.roofStairCells > 0);
+  const stair = target.meta.statefulBlockReplacements.find((item) => item.kind === "lidar-roof-stair");
+  assert.ok(stair);
+  assert.equal(stair.name, "minecraft:deepslate_tile_stairs");
+  assert.equal(stair.states["minecraft:corner"], "none");
+  assert.equal(stair.states.upside_down_bit, 0);
+  assert.equal(stair.states.weirdo_direction, 0, "east-rising roof should retain an east stair orientation");
+});
+
+test("half-metre LiDAR roof transitions become bottom slabs without inventing new source resolution", () => {
+  const target = compilation();
+  const feature = building({
+    type: "Polygon",
+    coordinates: [[[0, 0], [5, 0], [5, 4], [0, 4], [0, 0]]]
+  });
+  const steppedElevation = {
+    sampleLocal: () => 100,
+    samplePairLocal(x) {
+      return { terrain: 100, surface: 106 + x * 0.5 };
+    }
+  };
+  const stats = repairLidarBuildingShells(target, { map: { features: [feature] }, sources: { elevation: steppedElevation } });
+  assert.ok(stats.roofSlabCells > 0);
+  const slab = target.meta.statefulBlockReplacements.find((item) => item.kind === "lidar-roof-slab");
+  assert.ok(slab);
+  assert.equal(slab.name, "minecraft:deepslate_tile_slab");
+  assert.deepEqual(slab.states, { "minecraft:vertical_half": "bottom" });
+});
