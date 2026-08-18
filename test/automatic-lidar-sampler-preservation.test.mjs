@@ -19,6 +19,11 @@ test("automatic LiDAR selection preserves non-enumerable runtime samplers", asyn
       osm: osmPath,
       cache: path.join(root, "cache"),
       noCache: true,
+      // This is an isolated source-selection/unit test. Its planning acquirer is
+      // deliberately empty, so allowing the normal discovery-index fallback
+      // would turn the test into an external PlanIt network request and make CI
+      // nondeterministic/hang until the workflow timeout.
+      disablePlanItDiscovery: true,
       acquireElevationImpl: async ({ elevation }) => {
         calls.push(elevation);
         assert.equal(elevation, "ea-lidar");
