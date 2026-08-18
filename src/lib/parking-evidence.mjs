@@ -37,7 +37,7 @@ export function normalizeParkingFeatures(map) {
     const area = AREA_TYPES.has(feature?.localGeometry?.type);
 
     if (amenity === "parking" && area) {
-      if (["multi-storey", "underground", "rooftop"].includes(parking)) {
+      if (["multi_storey", "underground", "rooftop"].includes(parking)) {
         feature.parkingEvidence = parkingEvidence(feature, "structured", parking || "structured_parking");
         summary.structuredParkingRetained += 1;
         continue;
