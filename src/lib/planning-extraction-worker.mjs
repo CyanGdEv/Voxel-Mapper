@@ -1,5 +1,6 @@
 import { extractPlanningDocument } from "./planning-vector-extractor.mjs";
 import { loadPlanningPdfJsRuntime } from "./planning-pdfjs-runtime.mjs";
+import { reclassifyPlanningDocumentFromContent } from "./planning-document-content-classifier.mjs";
 import { enrichPlanningRideStructureEvidence } from "./planning-ride-structure-enrichment.mjs";
 import { enrichPlanningLegendEvidence } from "./planning-legend-enrichment.mjs";
 import { enrichPlanningTextEvidence } from "./planning-text-evidence.mjs";
@@ -28,6 +29,11 @@ export async function processPlanningExtractionShard(catalog, options = {}) {
     const extractionItem = { ...item, classification: normalizeExtractorClass(item.classification) };
     try {
       const extraction = await extractPlanningDocument(extractionItem, extractionOptions);
+      // Council portals frequently expose opaque filenames/codes. Once PDF text
+      // is available, weak unknown/supporting classifications may be promoted by
+      // strong drawing-title/engineering phrases. This is semantic routing only:
+      // it never bypasses georegistration, currentness, or authority gates.
+      reclassifyPlanningDocumentFromContent(extraction, extractionItem.classification);
       // Ride-structure semantics need raw page text/vector paths, so run this
       // before compaction. Section/elevation support detail is removed from map
       // geometry here and retained once as non-spatial design templates.
@@ -213,6 +219,8 @@ function documentSummary(document) {
     objectPath: document.objectPath || null,
     contentType: document.contentType || null,
     classification: document.classification || "unknown",
+    acquisitionClassification: document.acquisitionClassification || null,
+    contentClassification: document.contentClassification || null,
     applicationKeys: document.applicationKeys || [],
     acquisitionShard: document.acquisitionShard ?? null,
     status: document.status || null,
