@@ -389,6 +389,8 @@ jobs:
           --out planning-georegistration.json
           --registered-out planning-registered-evidence
       - name: Resolve revisions, current state and post-decision implementation evidence without an intermediate artifact round trip
+        env:
+          NODE_OPTIONS: --max-old-space-size=6144
         run: >-
           node scripts/planning-resolve-revisions.mjs
           --registered planning-registered-evidence
