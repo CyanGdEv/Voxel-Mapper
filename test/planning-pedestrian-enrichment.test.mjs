@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { enrichPlanningPedestrianEvidence } from "../src/lib/planning-pedestrian-enrichment.mjs";
-import { compilePlanningChangeSet } from "../src/lib/planning-changeset-compiler.mjs";
+import { compilePlanningChangeSet, inferPlanningFeatureKind } from "../src/lib/planning-changeset-compiler.mjs";
 
 function candidate({ classification = "site_plan", closed = true, semantic = null } = {}) {
   return {
@@ -73,11 +73,13 @@ test("current labelled plaza polygon compiles as real path geometry rather than 
   value.localGeometry = polygon;
   value.worldGeometryAuthority = true;
   value.planningTemporal = { state: "current", confidence: 0.99, worldGeometryAuthority: true };
+  const inference = inferPlanningFeatureKind(value, { features: [] });
+  assert.equal(inference.kind, "path", `plaza inference: ${JSON.stringify(inference)} candidate=${JSON.stringify(value)}`);
   const result = compilePlanningChangeSet({ features: [] }, {
     geometryCandidates: [value],
     materialObservations: []
   });
-  assert.equal(result.counts.add, 1);
+  assert.equal(result.counts.add, 1, `plaza compile result: ${JSON.stringify(result)}`);
   assert.equal(result.candidates[0].kind, "path");
   assert.equal(result.changes[0].featureKind, "path");
 });
