@@ -1,31 +1,148 @@
 import * as base from "./raster-base.mjs";
 import { pointInRing, polygonScanlineSpans } from "./geo.mjs";
 import { primaryMaterialBlock } from "./material-palettes.mjs";
+import { enrichHydrology, hydrologyRenderFeatures, waterFeatureCells } from "./hydrology.mjs";
 
 export const formatSignText = base.formatSignText;
 
 /**
- * Run the canonical compiler first, then repair LiDAR building shells from one
- * shared filled footprint mask. Roof and wall topology can no longer disagree
- * on diagonal/irregular footprints, while genuine interior rings stay open.
- *
- * LiDAR-supported sub-block roof transitions are recorded as stateful Bedrock
- * replacements. The direct-world writer first emits the proven full-block roof
- * fallback and mcworld.mjs replaces only those explicit cells with slabs/stairs.
+ * Run the canonical compiler first, then apply source-aware hydrology and repair
+ * LiDAR building shells. OSM remains a fallback water source: independent
+ * licensed/survey water geometry can supersede it without granting that source
+ * unrelated terrain or planning authority.
  */
 export function compileMap(input) {
-  const compilation = base.compileMap(input);
+  const hydrology = enrichHydrology(input.map, input.sources, input.options);
+  const renderInput = {
+    ...input,
+    map: {
+      ...input.map,
+      features: hydrologyRenderFeatures(input.map)
+    }
+  };
+  const compilation = base.compileMap(renderInput);
+  const water = renderHydrologyWater(compilation, renderInput);
   const repair = repairLidarBuildingShells(compilation, input);
   compilation.meta ||= {};
   compilation.meta.verticalStats ||= {};
+  compilation.meta.hydrologyEvidence = hydrology;
+  compilation.meta.verticalStats.hydrology = water;
   compilation.meta.verticalStats.buildingShellIntegrity = repair;
   compilation.stats ||= {};
+  compilation.stats.waterFeatures = water.features;
+  compilation.stats.waterCells = water.cells;
+  compilation.stats.waterVolumeBlocks = water.waterBlocks;
+  compilation.stats.waterMeasuredDepthFeatures = water.measuredDepthFeatures;
+  compilation.stats.waterMaxDepthConstrainedFeatures = water.maxDepthConstrainedFeatures;
+  compilation.stats.waterSurfaceOnlyFeatures = water.surfaceOnlyFeatures;
   compilation.stats.buildingShellRepairOperations = repair.operations;
   compilation.stats.buildingShellSealedRoofCells = repair.roofCells;
   compilation.stats.buildingShellSealedWallColumns = repair.wallColumns;
   compilation.stats.buildingRoofStairCells = repair.roofStairCells;
   compilation.stats.buildingRoofSlabCells = repair.roofSlabCells;
   return compilation;
+}
+
+/**
+ * Converts hydrology evidence into real Bedrock water volume. This pass may
+ * replace the already-built terrain column only where depth is independently
+ * measured/constrained. Unknown/OSM-only depth never excavates terrain.
+ */
+export function renderHydrologyWater(compilation, { map, sources }) {
+  const bounds = compilation?.meta?.bounds;
+  const minDatum = Number(compilation?.meta?.elevationDatumM || 0);
+  const stats = {
+    schemaVersion: 1,
+    status: "complete",
+    features: 0,
+    cells: 0,
+    waterBlocks: 0,
+    measuredDepthFeatures: 0,
+    maxDepthConstrainedFeatures: 0,
+    surfaceOnlyFeatures: 0,
+    lidarLevelFeatures: 0,
+    expandedWidthFeatures: 0,
+    suppressedOsmFeatures: map?.hydrology?.suppressedOsmFeatures || 0,
+    terrainExcavationPolicy: "only independently measured depth or measured max-depth constrained inference may replace terrain below the water surface",
+    osmDepthExcavationAllowed: false
+  };
+  if (!bounds || !map?.features?.length) return { ...stats, status: "missing-compilation-context" };
+
+  const waterFeatures = map.features.filter((feature) => feature?.kind === "water" && !feature?.hydrology?.suppressForRendering);
+  for (const feature of waterFeatures) {
+    const cells = waterFeatureCells(feature)
+      .filter(([x, z]) => x >= bounds.minX && x <= bounds.maxX && z >= bounds.minZ && z <= bounds.maxZ);
+    if (!cells.length) continue;
+    stats.features += 1;
+    stats.cells += cells.length;
+    if (feature.hydrology?.surfaceElevationSource === "lidar-shoreline-median") stats.lidarLevelFeatures += 1;
+    if (["LineString", "MultiLineString"].includes(feature.localGeometry?.type) && Number(feature.hydrology?.widthM) > 1) {
+      stats.expandedWidthFeatures += 1;
+    }
+
+    const measuredDepth = finitePositive(feature.hydrology?.depthM);
+    const measuredMaxDepth = finitePositive(feature.hydrology?.maxDepthM);
+    const depthSteps = measuredMaxDepth !== null ? interiorDistanceSteps(cells) : null;
+    const maxStep = depthSteps ? Math.max(...depthSteps.values(), 1) : 1;
+    if (measuredDepth !== null) stats.measuredDepthFeatures += 1;
+    else if (measuredMaxDepth !== null) stats.maxDepthConstrainedFeatures += 1;
+    else stats.surfaceOnlyFeatures += 1;
+
+    for (const [x, z] of cells) {
+      const sampled = typeof sources?.elevation?.sampleLocal === "function" ? sources.elevation.sampleLocal(x, z) : null;
+      const sourceTerrainY = Number.isFinite(sampled) ? Math.round(sampled - minDatum) : 0;
+      const explicitSurface = Number(feature.hydrology?.surfaceElevationM);
+      const surfaceY = Number.isFinite(explicitSurface) ? Math.round(explicitSurface - minDatum) : sourceTerrainY;
+      let depthBlocks = null;
+      if (measuredDepth !== null) {
+        depthBlocks = Math.max(1, Math.round(measuredDepth));
+      } else if (measuredMaxDepth !== null && depthSteps) {
+        const step = depthSteps.get(`${x},${z}`) || 1;
+        depthBlocks = Math.max(1, Math.round(measuredMaxDepth * step / maxStep));
+      }
+
+      if (depthBlocks === null) {
+        appendColumnOperation(compilation, 1.4, x, surfaceY, surfaceY, z, "minecraft:water", stats);
+        stats.waterBlocks += 1;
+        continue;
+      }
+      const bedY = surfaceY - depthBlocks;
+      appendColumnOperation(compilation, 1.4, x, bedY + 1, surfaceY, z, "minecraft:water", stats);
+      stats.waterBlocks += Math.max(1, surfaceY - bedY);
+    }
+  }
+
+  for (const chunk of compilation.chunks || []) chunk.o.sort((a, b) => a[0] - b[0]);
+  compilation.chunks?.sort((a, b) => a.z - b.z || a.x - b.x);
+  return stats;
+}
+
+function interiorDistanceSteps(cells) {
+  const occupied = new Set(cells.map(([x, z]) => `${x},${z}`));
+  const distance = new Map();
+  let frontier = [];
+  for (const [x, z] of cells) {
+    const key = `${x},${z}`;
+    const boundary = [[-1, 0], [1, 0], [0, -1], [0, 1]].some(([dx, dz]) => !occupied.has(`${x + dx},${z + dz}`));
+    if (!boundary) continue;
+    distance.set(key, 1);
+    frontier.push([x, z]);
+  }
+  let step = 1;
+  while (frontier.length) {
+    const next = [];
+    for (const [x, z] of frontier) {
+      for (const [dx, dz] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+        const nx = x + dx, nz = z + dz, key = `${nx},${nz}`;
+        if (!occupied.has(key) || distance.has(key)) continue;
+        distance.set(key, step + 1);
+        next.push([nx, nz]);
+      }
+    }
+    frontier = next;
+    step += 1;
+  }
+  return distance;
 }
 
 export function repairLidarBuildingShells(compilation, { map, sources }) {
@@ -88,8 +205,6 @@ export function repairLidarBuildingShells(compilation, { map, sources }) {
     const floorBlock = buildingFloorBlock(feature);
     const wallBlock = buildingWallBlock(feature);
 
-    // Roof and floor share exactly the same topology mask. This is the core
-    // watertightness guarantee for reconstructed building shells.
     for (const cell of cells.values()) {
       const { terrainY, roofY } = heightAt(cell.x, cell.z);
       appendCellOperation(compilation, 2, cell.x, terrainY + 1, cell.z, floorBlock, stats);
@@ -300,6 +415,11 @@ function transitionPriority(candidate) {
 
 function replacementPriority(replacement) {
   return (replacement.kind === "lidar-roof-stair" ? 10 : 0) + Number(replacement.evidenceDeltaM || 0);
+}
+
+function finitePositive(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
 }
 
 const cellKey = (x, y, z) => `${x},${y},${z}`;
