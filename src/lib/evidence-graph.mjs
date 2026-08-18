@@ -18,11 +18,14 @@ export function buildEvidenceGraph(map, sources = {}, options = {}) {
 
 export function materializeEvidenceWinners(map, options = {}) {
   const minimumScore = Math.max(0.72, Number(options.minAttributeMaterializationScore ?? 0.72));
+  const missingFallbackScore = Math.max(0.5, Math.min(minimumScore, Number(options.minMissingAttributeFallbackScore ?? 0.5)));
   const summary = {
     schemaVersion: 1,
     minimumScore,
+    missingFallbackScore,
     featuresChanged: 0,
     appliedAttributes: 0,
+    fallbackAttributesApplied: 0,
     geometryDeferred: 0,
     conflictsDeferred: 0,
     lowConfidenceDeferred: 0,
@@ -45,7 +48,9 @@ export function materializeEvidenceWinners(map, options = {}) {
         summary.conflictsDeferred += 1;
         continue;
       }
-      if (!(Number(winner.score) >= minimumScore)) {
+      const missing = attributeMissing(feature, attribute);
+      const threshold = missing ? missingFallbackScore : minimumScore;
+      if (!(Number(winner.score) >= threshold)) {
         summary.lowConfidenceDeferred += 1;
         continue;
       }
@@ -53,12 +58,22 @@ export function materializeEvidenceWinners(map, options = {}) {
       feature.attributeAuthority ||= {};
       feature.attributeAuthority[attribute] = compactWinner(winner);
       summary.appliedAttributes += 1;
+      if (missing && Number(winner.score) < minimumScore) summary.fallbackAttributesApplied += 1;
       summary.byAttribute[attribute] = (summary.byAttribute[attribute] || 0) + 1;
       changed = true;
     }
     if (changed) summary.featuresChanged += 1;
   }
   return summary;
+}
+
+function attributeMissing(feature, attribute) {
+  if (attribute === "height") return !Number.isFinite(feature.vertical?.heightM);
+  if (attribute === "groundElevation") return !Number.isFinite(feature.vertical?.elevationM);
+  if (attribute === "roof") return !feature.roof;
+  if (attribute === "material") return !feature.materialPalette && !feature.tags?.material && !feature.tags?.["building:material"] && !feature.tags?.surface;
+  if (attribute === "width") return !Number.isFinite(Number(feature.tags?.width ?? feature.surfaceEvidence?.widthM));
+  return false;
 }
 
 function applyAttributeWinner(feature, attribute, winner) {
