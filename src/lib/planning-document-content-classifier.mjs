@@ -50,6 +50,11 @@ const RULES = Object.freeze([
   }
 ]);
 
+const RIDE_LEVEL_PATTERNS = Object.freeze([
+  /\b(track\s+level|track\s+r\.?l\.?|top\s+of\s+rail|rail\s+level|tor)\s*[:=]?\s*([+-]?\d{1,4}(?:\.\d{1,4})?)\s*m?\s*aod\b/ig,
+  /\b([+-]?\d{1,4}(?:\.\d{1,4})?)\s*m?\s*aod\s*(track\s+level|track\s+r\.?l\.?|top\s+of\s+rail|rail\s+level|tor)\b/ig
+]);
+
 /**
  * Conservatively upgrades an acquisition-time weak classification after PDF
  * text has actually been extracted. This never overrides an explicit strong
@@ -59,7 +64,14 @@ export function reclassifyPlanningDocumentFromContent(extraction, acquisitionCla
   if (!extraction) return { changed: false, classification: normalizeClass(acquisitionClassification), reason: "no-extraction" };
   const current = normalizeClass(extraction.classification || acquisitionClassification);
   if (!WEAK_CLASSES.has(current)) {
-    return { changed: false, classification: current, confidence: 1, reason: "strong-acquisition-classification" };
+    const rideLevelObservationsAdded = current === "ride_layout" ? enrichRideLevelObservations(extraction) : 0;
+    return {
+      changed: false,
+      classification: current,
+      confidence: 1,
+      reason: "strong-acquisition-classification",
+      rideLevelObservationsAdded
+    };
   }
 
   const pages = (extraction.pages || []).map((page) => ({
@@ -98,6 +110,8 @@ export function reclassifyPlanningDocumentFromContent(extraction, acquisitionCla
     authorityGranted: false
   };
   propagateClassification(extraction, best.classification);
+  const rideLevelObservationsAdded = best.classification === "ride_layout" ? enrichRideLevelObservations(extraction) : 0;
+  extraction.contentClassification.rideLevelObservationsAdded = rideLevelObservationsAdded;
   return { changed: true, ...extraction.contentClassification };
 }
 
@@ -115,6 +129,45 @@ function matchRule(rule, page) {
     if (match) return { titleLike: false, text: match[0] };
   }
   return null;
+}
+
+function enrichRideLevelObservations(extraction) {
+  extraction.normalizedEvidence ||= {};
+  const existing = extraction.normalizedEvidence.verticalObservations || [];
+  const additions = [];
+  for (const page of extraction.pages || []) {
+    for (const item of page?.text?.items || []) {
+      const raw = String(item?.text ?? item?.str ?? "").trim();
+      if (!raw) continue;
+      for (const pattern of RIDE_LEVEL_PATTERNS) {
+        pattern.lastIndex = 0;
+        for (const match of raw.matchAll(pattern)) {
+          const forward = /^(?:track|top|rail|tor)/i.test(String(match[1] || ""));
+          const labelRaw = forward ? match[1] : match[2];
+          const valueRaw = forward ? match[2] : match[1];
+          const valueM = Number(valueRaw);
+          if (!Number.isFinite(valueM)) continue;
+          additions.push({
+            contentHash: extraction.contentHash || null,
+            pageNumber: Number(page?.pageNumber || 1),
+            xPt: finiteOrNull(item?.xPt ?? item?.x),
+            yPt: finiteOrNull(item?.yPt ?? item?.y),
+            label: normalizeRideLevelLabel(labelRaw),
+            valueM,
+            datum: "AOD",
+            raw: match[0],
+            confidence: 0.95,
+            source: "pdf-text-explicit-ride-level-aod",
+            classification: "ride_layout",
+            georegistrationRequired: true,
+            worldGeometryAuthority: false
+          });
+        }
+      }
+    }
+  }
+  extraction.normalizedEvidence.verticalObservations = dedupeVerticalObservations([...existing, ...additions]);
+  return Math.max(0, extraction.normalizedEvidence.verticalObservations.length - existing.length);
 }
 
 function pageText(page) {
@@ -149,6 +202,27 @@ function propagateClassification(extraction, classification) {
   }
 }
 
+function dedupeVerticalObservations(values) {
+  const byKey = new Map();
+  for (const entry of values || []) {
+    const key = `${entry.contentHash || ""}:${entry.pageNumber || 1}:${round(entry.xPt, 1)}:${round(entry.yPt, 1)}:${String(entry.label || "").toUpperCase()}:${round(entry.valueM, 3)}`;
+    const previous = byKey.get(key);
+    if (!previous || Number(entry.confidence || 0) > Number(previous.confidence || 0)) byKey.set(key, entry);
+  }
+  return [...byKey.values()];
+}
+
+function normalizeRideLevelLabel(value) {
+  const text = String(value || "").trim().toUpperCase().replace(/\s+/g, " ");
+  if (/^TOR$/.test(text)) return "TOR";
+  if (/TOP OF RAIL/.test(text)) return "TOP OF RAIL";
+  if (/RAIL LEVEL/.test(text)) return "RAIL LEVEL";
+  if (/TRACK\s+R\.?L\.?/.test(text)) return "TRACK RL";
+  return "TRACK LEVEL";
+}
+
+function finiteOrNull(value) { const number = Number(value); return Number.isFinite(number) ? number : null; }
+function round(value, places = 3) { const number = Number(value); if (!Number.isFinite(number)) return null; const factor = 10 ** places; return Math.round(number * factor) / factor; }
 function normalizeClass(value) {
   return String(value || "unknown").trim().toLowerCase().replace(/[\s-]+/g, "_");
 }
