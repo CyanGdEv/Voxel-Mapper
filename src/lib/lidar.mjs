@@ -25,10 +25,28 @@ export function enhanceLidarReconstructionSampling(elevation, options = {}) {
   const nativePair = elevation.samplePairLocal.bind(elevation);
   const spacingM = clampSpacing(options.lidarReconstructionSampleSpacingM ?? DEFAULT_RECONSTRUCTION_SAMPLE_SPACING_M);
   const offsets = sampleOffsets(spacingM);
-  elevation.samplePairLocalNative = nativePair;
-  elevation.nativeResolutionM = elevation.resolutionM ?? null;
-  elevation.reconstructionSampleSpacingM = spacingM;
-  elevation.highDensitySampling = {
+
+  // The canonical LiDAR runtime intentionally exposes samplers as immutable,
+  // non-enumerable properties. Clone all descriptors and replace only the
+  // reconstruction pair sampler on the clone; never mutate source authority.
+  const descriptors = Object.getOwnPropertyDescriptors(elevation);
+  descriptors.samplePairLocal = {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: (x, z) => robustPair(nativePair, x, z, offsets)
+  };
+  descriptors.samplePairLocalNative = {
+    configurable: false,
+    enumerable: false,
+    writable: false,
+    value: nativePair
+  };
+  const enhanced = Object.create(Object.getPrototypeOf(elevation));
+  Object.defineProperties(enhanced, descriptors);
+  enhanced.nativeResolutionM = elevation.resolutionM ?? null;
+  enhanced.reconstructionSampleSpacingM = spacingM;
+  enhanced.highDensitySampling = {
     schemaVersion: 1,
     enabled: true,
     nativeResolutionM: elevation.resolutionM ?? null,
@@ -37,8 +55,7 @@ export function enhanceLidarReconstructionSampling(elevation, options = {}) {
     method: "median of bilinearly interpolated native DSM/DTM sub-samples",
     sourceResolutionUnchanged: true
   };
-  elevation.samplePairLocal = (x, z) => robustPair(nativePair, x, z, offsets);
-  return elevation;
+  return enhanced;
 }
 
 function robustPair(samplePair, x, z, offsets) {
