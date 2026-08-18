@@ -1,12 +1,14 @@
 import * as base from "./osm-base.mjs";
 import { geometryMapCoordinates } from "./geo.mjs";
+import { applyOfficialSourceAuthority } from "./official-source-authority.mjs";
 
 export * from "./osm-base.mjs";
 
 /**
  * Extends the canonical normalized map with automatically acquired licensed
- * hydrology features. These retain their own provider/provenance and remain
- * below planning/verified overrides in authority.
+ * hydrology features, then applies the common official-source authority policy.
+ * Planning/verified overrides remain above official base data; OSM is retained
+ * only where no stronger compatible observation clearly represents the feature.
  */
 export async function normalizeMap(sources, options = {}) {
   const map = await base.normalizeMap(sources, options);
@@ -31,32 +33,36 @@ export async function normalizeMap(sources, options = {}) {
       },
       source: { ...(raw.source || {}) },
       verification: { plan: "licensed-public-observation", vertical: "unknown", ...(raw.verification || {}) },
-      authority: { layer: "licensed-public-water", rank: 300, geometryLocked: false, ...(raw.authority || {}) }
+      authority: { layer: "licensed-public-water", rank: 315, geometryLocked: false, ...(raw.authority || {}) }
     });
   }
-  if (!additions.length) return map;
-  map.features.push(...additions);
-  map.geojson.features.push(...additions.map((feature) => ({
-    type: "Feature",
-    id: feature.id,
-    geometry: feature.geometry,
-    properties: {
-      name: feature.name,
-      kind: feature.kind,
-      subtype: feature.subtype,
-      source: feature.source,
-      verification: feature.verification,
-      authority: feature.authority,
-      ...feature.tags
-    }
-  })));
-  map.sourceFusion ||= {};
-  map.sourceFusion.automaticHydrology = {
-    providerId: sources.hydrology?.providerId || null,
-    status: sources.hydrology?.status || null,
-    accepted: additions.length,
-    bathymetryProvided: Boolean(sources.hydrology?.bathymetryProvided)
-  };
+
+  if (additions.length) {
+    map.features.push(...additions);
+    map.geojson.features.push(...additions.map((feature) => ({
+      type: "Feature",
+      id: feature.id,
+      geometry: feature.geometry,
+      properties: {
+        name: feature.name,
+        kind: feature.kind,
+        subtype: feature.subtype,
+        source: feature.source,
+        verification: feature.verification,
+        authority: feature.authority,
+        ...feature.tags
+      }
+    })));
+    map.sourceFusion ||= {};
+    map.sourceFusion.automaticHydrology = {
+      providerId: sources.hydrology?.providerId || null,
+      status: sources.hydrology?.status || null,
+      accepted: additions.length,
+      bathymetryProvided: Boolean(sources.hydrology?.bathymetryProvided)
+    };
+  }
+
+  applyOfficialSourceAuthority(map, options);
   base.refreshMapDerivedData(map);
   return map;
 }
