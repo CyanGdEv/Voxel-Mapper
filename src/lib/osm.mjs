@@ -57,5 +57,6 @@ export async function normalizeMap(sources, options = {}) {
     accepted: additions.length,
     bathymetryProvided: Boolean(sources.hydrology?.bathymetryProvided)
   };
+  base.refreshMapDerivedData(map);
   return map;
 }
