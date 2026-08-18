@@ -98,13 +98,21 @@ test("landscape area with current material becomes paint-only and keeps terrain 
   assert.equal(paint.planningTopologyResolution.terrainElevationChanged, false);
 });
 
-test("verified-current ride layout fills a missing OSM ride gap", async () => {
+test("verified-current explicitly enriched ride centreline fills a missing OSM ride gap", async () => {
   const map = mapWith([]);
   const evidence = {
     geometryCandidates: [current({
       id: "plan:ride",
       classification: "ride_layout",
-      semantic: "ride-centerline-or-edge",
+      kind: "ride_track",
+      featureKind: "ride_track",
+      subtype: "ride_track_centerline",
+      semantic: "ride-track-centerline",
+      rideStructureEvidence: {
+        role: "track",
+        subtype: "ride_track_centerline",
+        source: "planning-pdf-ride-structure-semantic-enrichment"
+      },
       localGeometry: line([0, 0], [10, 0], [20, 5])
     })],
     materialObservations: []
