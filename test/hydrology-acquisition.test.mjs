@@ -99,7 +99,7 @@ test("bbox source acquisition can inject independent water and normalization ret
     assert.ok(independent);
     assert.equal(independent.source.provider, "Ordnance Survey");
     assert.equal(independent.authority.rank, 315);
-    assert.equal(independent.authority.layer, "licensed-public-water");
+    assert.equal(independent.authority.layer, "official-openmap-local-geometry");
     assert.ok(independent.localGeometry);
   } finally {
     await rm(root, { recursive: true, force: true });
