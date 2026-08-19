@@ -26,6 +26,11 @@
         "from": "runtime",
         "to": "runtime",
         "filter": ["**/*"]
+      },
+      {
+        "from": "runtime-deps",
+        "to": "runtime/node_modules",
+        "filter": ["**/*"]
       }
     ],
     "win": {
