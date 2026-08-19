@@ -2,6 +2,16 @@ name: Build Voxel Mapper Windows app
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "desktop/**"
+      - "app/**"
+      - "src/**"
+      - "scripts/**"
+      - "assets/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/build-windows-app.yml"
   push:
     branches: [main]
     paths:
