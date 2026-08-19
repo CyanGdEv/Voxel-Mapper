@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog } from "electron";
+import { appendFileSync, mkdirSync } from "node:fs";
 import { spawn } from "node:child_process";
 import net from "node:net";
 import path from "node:path";
@@ -7,24 +8,45 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_ID = "dev.cyangdev.voxelmapper";
 const SMOKE_MODE = process.env.VOXEL_DESKTOP_SMOKE === "1";
+const SMOKE_LOG = String(process.env.VOXEL_DESKTOP_SMOKE_LOG || "").trim();
 let backend = null;
 let mainWindow = null;
 let backendUrl = null;
 let quitting = false;
+let smokeKeepAlive = null;
 
 app.setAppUserModelId(APP_ID);
-if (SMOKE_MODE) app.commandLine.appendSwitch("disable-gpu");
+if (SMOKE_MODE) {
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-software-rasterizer");
+}
+
+desktopLog(`boot pid=${process.pid} packaged=${app.isPackaged} resources=${process.resourcesPath || "n/a"}`);
 
 app.whenReady().then(async () => {
   try {
     const port = await resolveBackendPort();
     backendUrl = `http://127.0.0.1:${port}`;
+    desktopLog(`app-ready port=${port} runtime=${runtimeRoot()} node=${nodeBinary()}`);
     backend = startBackend(port);
-    await waitForHealth(`${backendUrl}/api/health`, 30_000);
+    await waitForHealth(`${backendUrl}/api/health`, SMOKE_MODE ? 90_000 : 30_000);
+    desktopLog(`backend-healthy ${backendUrl}`);
+
+    // GitHub-hosted Windows runners do not provide a normal interactive user
+    // desktop. In smoke mode we intentionally validate the packaged Electron
+    // main process + bundled backend without creating a BrowserWindow. Normal
+    // desktop launches still create and display the full map UI below.
+    if (SMOKE_MODE) {
+      smokeKeepAlive = setInterval(() => {}, 60_000);
+      return;
+    }
+
     mainWindow = createWindow();
-    if (!SMOKE_MODE) mainWindow.once("ready-to-show", () => mainWindow?.show());
+    mainWindow.once("ready-to-show", () => mainWindow?.show());
     await mainWindow.loadURL(backendUrl);
+    desktopLog("renderer-loaded");
   } catch (error) {
+    desktopLog(`startup-failed ${error?.stack || error?.message || String(error)}`);
     if (!SMOKE_MODE) {
       await dialog.showMessageBox({
         type: "error",
@@ -44,6 +66,8 @@ app.on("window-all-closed", () => {
 
 app.on("before-quit", () => {
   quitting = true;
+  if (smokeKeepAlive) clearInterval(smokeKeepAlive);
+  smokeKeepAlive = null;
   stopBackend();
 });
 
@@ -90,6 +114,7 @@ function startBackend(port) {
   const root = runtimeRoot();
   const server = path.join(root, "app", "server.mjs");
   const workspace = path.join(app.getPath("userData"), "workspace");
+  desktopLog(`spawn-backend server=${server} workspace=${workspace}`);
   const child = spawn(nodeBinary(), [server], {
     cwd: root,
     windowsHide: true,
@@ -103,9 +128,20 @@ function startBackend(port) {
     }
   });
 
-  child.stdout?.on("data", (chunk) => console.log(`[generator] ${String(chunk).trimEnd()}`));
-  child.stderr?.on("data", (chunk) => console.error(`[generator] ${String(chunk).trimEnd()}`));
+  desktopLog(`backend-pid=${child.pid ?? "unknown"}`);
+  child.stdout?.on("data", (chunk) => {
+    const message = String(chunk).trimEnd();
+    desktopLog(`[generator:stdout] ${message}`);
+    console.log(`[generator] ${message}`);
+  });
+  child.stderr?.on("data", (chunk) => {
+    const message = String(chunk).trimEnd();
+    desktopLog(`[generator:stderr] ${message}`);
+    console.error(`[generator] ${message}`);
+  });
+  child.on("error", (error) => desktopLog(`backend-spawn-error ${error?.stack || error}`));
   child.on("exit", (code, signal) => {
+    desktopLog(`backend-exit code=${code} signal=${signal}`);
     if (quitting) return;
     console.error(`Voxel Mapper backend exited unexpectedly (code=${code}, signal=${signal})`);
     if (mainWindow && !mainWindow.isDestroyed() && !SMOKE_MODE) {
@@ -177,4 +213,12 @@ async function waitForHealth(url, timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw lastError || new Error("Timed out waiting for the Voxel Mapper backend.");
+}
+
+function desktopLog(message) {
+  if (!SMOKE_LOG) return;
+  try {
+    mkdirSync(path.dirname(SMOKE_LOG), { recursive: true });
+    appendFileSync(SMOKE_LOG, `${new Date().toISOString()} ${message}\n`, "utf8");
+  } catch {}
 }
