@@ -38,12 +38,19 @@ test("3D buildings are an explicit stable-profile toggle", async () => {
   assert.equal(on.featureProfile.buildings3d, true);
 });
 
-test("CLI parser accepts stable mode and building mode without changing research defaults", () => {
+test("stable defaults to markers while existing research generation stays on shells", async () => {
+  const stable = await buildBboxWorldOptions({ bbox, out: "out/stable", cache: ".cache", stable: true }, async () => false, false);
+  const research = await buildBboxWorldOptions({ bbox, out: "out/research", cache: ".cache", stable: false }, async () => false, false);
+  assert.equal(stable.options.buildings, "markers");
+  assert.equal(research.options.buildings, "shells");
+});
+
+test("CLI parser accepts stable mode and explicit building mode without changing research defaults", () => {
   const stable = parseGenerateArgs(["--bbox", bbox, "--stable", "--buildings", "shells"]);
   assert.equal(stable.stable, true);
   assert.equal(stable.buildings, "shells");
 
   const normal = parseGenerateArgs(["--bbox", bbox]);
   assert.equal(normal.stable, false);
-  assert.equal(normal.buildings, "markers");
+  assert.equal(normal.buildings, undefined);
 });
