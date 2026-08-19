@@ -34,7 +34,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      # The generation engine currently targets Node 20. Install its native
+      # dependencies under that exact ABI and copy this runtime into the app.
+      - name: Use generator Node runtime
+        uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
@@ -57,14 +60,32 @@ jobs:
           Copy-Item package.json (Join-Path $runtime "package.json")
 
           # Keep the generator on the exact Node runtime/ABI used by npm ci.
-          # Electron is only the native desktop shell and never loads the
-          # LevelDB/native generation dependencies in its own Node process.
+          # Electron is only the desktop shell and never loads LevelDB/native
+          # generation dependencies in its own Node process.
           $nodeExe = (Get-Command node).Source
           Copy-Item $nodeExe (Join-Path $runtime "node.exe")
 
           if (-not (Test-Path (Join-Path $runtime "node.exe"))) { throw "Bundled Node runtime missing" }
           if (-not (Test-Path (Join-Path $runtime "app/server.mjs"))) { throw "Stable app backend missing" }
           if (-not (Test-Path (Join-Path $runtime "scripts/generate-bbox-world.mjs"))) { throw "BBox generator missing" }
+
+      - name: Validate bundled Windows generator runtime
+        shell: pwsh
+        run: |
+          Push-Location desktop/runtime
+          try {
+            .\node.exe src/cli.mjs doctor
+            if ($LASTEXITCODE -ne 0) { throw "Bundled generator runtime doctor failed" }
+          } finally {
+            Pop-Location
+          }
+
+      # Electron 43's packaging toolchain requires Node >=22.12. Switch only
+      # after the Node-20 generator runtime has been fully assembled.
+      - name: Use desktop packaging Node runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: Install desktop packager
         working-directory: desktop
@@ -101,10 +122,12 @@ jobs:
       - name: Summary
         shell: pwsh
         run: |
-          Add-Content $env:GITHUB_STEP_SUMMARY "## Voxel Mapper Windows app"
-          Add-Content $env:GITHUB_STEP_SUMMARY ""
-          Add-Content $env:GITHUB_STEP_SUMMARY "The **voxel-mapper-windows** artifact contains:"
-          Add-Content $env:GITHUB_STEP_SUMMARY "- an installable Windows `.exe`"
-          Add-Content $env:GITHUB_STEP_SUMMARY "- a portable Windows `.exe`"
-          Add-Content $env:GITHUB_STEP_SUMMARY ""
-          Add-Content $env:GITHUB_STEP_SUMMARY "Stable mode keeps planning data disabled. 3D buildings remain an in-app toggle."
+          @'
+          ## Voxel Mapper Windows app
+
+          The **voxel-mapper-windows** artifact contains:
+          - an installable Windows `.exe`
+          - a portable Windows `.exe`
+
+          Stable mode keeps planning data disabled. 3D buildings remain an in-app toggle.
+          '@ | Add-Content $env:GITHUB_STEP_SUMMARY
