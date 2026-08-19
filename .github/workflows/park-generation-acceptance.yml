@@ -23,6 +23,7 @@ on:
       - "src/lib/raster.mjs"
       - "src/lib/mcworld.mjs"
       - "src/lib/planning-lpa-fallback.mjs"
+      - "src/lib/planning-authority-fusion.mjs"
 
 permissions:
   contents: read
