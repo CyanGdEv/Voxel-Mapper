@@ -52,12 +52,6 @@ function createWindow() {
     backgroundColor: "#0a0d12",
     title: "Voxel Mapper",
     autoHideMenuBar: true,
-    titleBarStyle: "hidden",
-    titleBarOverlay: {
-      color: "#0f141b",
-      symbolColor: "#f4f7fb",
-      height: 44
-    },
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -66,9 +60,8 @@ function createWindow() {
     }
   });
 
-  // The UI may load OSM/Leaflet assets, but it is not allowed to create a
-  // second browser-style application window. World downloads stay in this app
-  // and use Electron's standard Windows download behavior.
+  // Keep native Windows title-bar/window controls and suppress browser-style
+  // secondary windows. The map/generator UI lives entirely inside this window.
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.on("closed", () => {
     mainWindow = null;
