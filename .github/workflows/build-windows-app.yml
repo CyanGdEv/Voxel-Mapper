@@ -30,7 +30,7 @@ permissions:
 jobs:
   windows-app:
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
@@ -110,6 +110,25 @@ jobs:
             Write-Host "$($_.Name) - $([math]::Round($_.Length / 1MB, 1)) MB"
           }
 
+      - name: Smoke test packaged Windows app end to end
+        shell: pwsh
+        run: .\desktop\smoke-test.ps1
+
+      # Upload the diagnostics/world even when the smoke test fails so the
+      # failure can be diagnosed from a phone without access to the runner.
+      - name: Upload Windows smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxel-mapper-windows-smoke-evidence
+          path: desktop/smoke-evidence/**
+          if-no-files-found: warn
+          compression-level: 6
+          retention-days: 14
+
+      # Only publish the EXEs as the release candidate after the packaged app
+      # itself has launched, generated a world, validated it, and the installer
+      # has installed/launched successfully on the fresh Windows runner.
       - name: Upload Windows app
         uses: actions/upload-artifact@v4
         with:
@@ -125,9 +144,14 @@ jobs:
           @'
           ## Voxel Mapper Windows app
 
-          The **voxel-mapper-windows** artifact contains:
-          - an installable Windows `.exe`
-          - a portable Windows `.exe`
+          The Windows release candidate passed the packaged end-to-end gate:
+          - portable `.exe` launched on a fresh Windows runner
+          - Stable health endpoint reported planning disabled
+          - tiny real BBox generation completed through the packaged backend
+          - downloaded `.mcworld` contained Bedrock `level.dat` and LevelDB data
+          - NSIS installer installed successfully
+          - installed `Voxel Mapper.exe` launched and reported healthy
 
-          Stable mode keeps planning data disabled. 3D buildings remain an in-app toggle.
+          The **voxel-mapper-windows** artifact contains the installable and portable executables.
+          The **voxel-mapper-windows-smoke-evidence** artifact contains the generated test world and validation evidence.
           '@ | Add-Content $env:GITHUB_STEP_SUMMARY
