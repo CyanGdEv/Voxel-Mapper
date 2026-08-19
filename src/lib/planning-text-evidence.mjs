@@ -1,23 +1,6 @@
 import { enrichPlanningObjectEvidence } from "./planning-object-extractor.mjs";
-
-const MATERIAL_PATTERNS = [
-  ["weathered_asphalt", /\bweathered[\s_-]*(?:asphalt|tarmac|bitmac)\b/i],
-  ["fresh_black_asphalt", /\b(?:new|fresh|black)(?:[\s_-]*black)?[\s_-]*(?:asphalt|tarmac|bitmac)\b/i],
-  ["red_tarmac", /\bred[\s_-]*(?:tarmac|asphalt|bitmac)\b/i],
-  ["resin_bound_beige", /\b(?:beige|buff)[\s_-]*resin(?:[\s_-]*bound)?\b|\bresin(?:[\s_-]*bound)?[\s_-]*(?:beige|buff)\b/i],
-  ["resin_bound_grey", /\bgr(?:e|a)y[\s_-]*resin(?:[\s_-]*bound)?\b|\bresin(?:[\s_-]*bound)?[\s_-]*gr(?:e|a)y\b/i],
-  ["concrete", /\bconcrete\b/i],
-  ["brick", /\bbrick(?:work|[\s_-]*paving|[\s_-]*pavers?)?\b/i],
-  ["stone", /\b(?:natural[\s_-]*)?stone\b|\bgranite\b/i],
-  ["timber", /\btimber\b|\bwood(?:en)?\b/i],
-  ["steel", /\bsteel\b/i],
-  ["glass", /\bglass\b|\bglazing\b/i],
-  ["slate_roof", /\bslate(?:[\s_-]*roof)?\b/i],
-  ["clay_tile_roof", /\bclay[\s_-]*tiles?\b|\broof[\s_-]*tiles?\b/i],
-  ["metal_roof", /\b(?:metal|zinc|aluminium|aluminum)[\s_-]*(?:roof|cladding|sheet)\b/i],
-  ["gravel", /\bgravel\b|\bchippings\b/i],
-  ["grass", /\bgrass\b|\bturf\b/i]
-];
+import { enrichPlanningPedestrianEvidence } from "./planning-pedestrian-enrichment.mjs";
+import { extractPlanningMaterialObservations } from "./planning-material-normalizer.mjs";
 
 const TITLE_STATUS_PATTERNS = [
   ["as-built", /\b(?:status|purpose(?:\s+of\s+issue)?)\s*[:#-]?\s*(?:as[- ]?built|record)\b|\bas[- ]?built\b/i],
@@ -50,6 +33,11 @@ export function enrichPlanningTextEvidence(extraction, options = {}) {
   const additions = [];
   const metadata = [];
   for (const page of extraction.pages) {
+    // Use the single canonical planning-material normalizer here too. The old
+    // text-enrichment pass had a second, weaker regex table that could emit a
+    // generic material (for example stone/concrete/asphalt) beside the more
+    // specific canonical result (paving stones/old concrete/light asphalt),
+    // making downstream path material association ambiguous or wrong.
     const found = extractMaterialObservationsAcrossRuns(
       page.text?.items || [],
       page.pageNumber,
@@ -66,6 +54,12 @@ export function enrichPlanningTextEvidence(extraction, options = {}) {
   }
   extraction.normalizedEvidence.materialObservations = dedupeMaterials(additions);
   extraction.normalizedEvidence.drawingMetadata = metadata;
+
+  // Pedestrian/plaza semantics require raw page text + vector bounds. Run this
+  // before compactPlanningExtraction drops those heavy PDF working arrays, so
+  // the sharded production bundle retains the semantic result without retaining
+  // raw text/vector payloads.
+  enrichPlanningPedestrianEvidence(extraction, options);
 
   // The universal object pass consumes the final page-local text/material/level
   // evidence while raw PDF coordinates are still available. It only annotates
@@ -94,39 +88,13 @@ export function enrichDrawingLifecycleMetadata(existing, textItems, pageNumber =
   };
 }
 
+/**
+ * Compatibility export retained for callers/tests. Material recognition is now
+ * delegated to the canonical normalizer so every extraction path uses the same
+ * specificity, deduplication and confidence policy.
+ */
 export function extractMaterialObservationsAcrossRuns(textItems, pageNumber = 1, contentHash = null, options = {}) {
-  const maxWindow = clampInt(options.materialTextWindow ?? 5, 2, 12);
-  const maxLineDeltaPt = Number(options.materialLineDeltaPt ?? 4);
-  const items = (textItems || []).filter((item) => String(item?.text || "").trim());
-  const observations = [];
-
-  for (let start = 0; start < items.length; start += 1) {
-    let phrase = "";
-    const anchor = items[start];
-    for (let end = start; end < Math.min(items.length, start + maxWindow); end += 1) {
-      const current = items[end];
-      if (end > start && !sameLogicalLine(anchor, current, maxLineDeltaPt)) break;
-      phrase = `${phrase} ${String(current.text || "").trim()}`.trim().replace(/\s+/g, " ");
-      if (!phrase) continue;
-      for (const [material, pattern] of MATERIAL_PATTERNS) {
-        if (!pattern.test(phrase)) continue;
-        observations.push({
-          contentHash,
-          pageNumber,
-          xPt: finiteOrNull(anchor.xPt),
-          yPt: finiteOrNull(anchor.yPt),
-          material,
-          raw: phrase,
-          confidence: end === start ? 0.76 : 0.74,
-          source: end === start ? "pdf-text-material-label" : "pdf-text-adjacent-run-material-label",
-          textItemStart: start,
-          textItemEnd: end,
-          georegistrationRequired: true
-        });
-      }
-    }
-  }
-  return dedupeMaterials(observations);
+  return extractPlanningMaterialObservations(textItems, pageNumber, contentHash, options);
 }
 
 function detectDrawingNumber(text) {
@@ -179,15 +147,6 @@ function detectIssueDate(text) {
   const date = new Date(Date.UTC(year, month - 1, day));
   if (!Number.isFinite(date.getTime()) || date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) return null;
   return date.toISOString();
-}
-
-function sameLogicalLine(anchor, current, maxLineDeltaPt) {
-  const ay = Number(anchor?.yPt), cy = Number(current?.yPt);
-  if (!Number.isFinite(ay) || !Number.isFinite(cy)) return true;
-  const anchorFont = Number(anchor?.fontSizePt || anchor?.heightPt || 0);
-  const currentFont = Number(current?.fontSizePt || current?.heightPt || 0);
-  const tolerance = Math.max(maxLineDeltaPt, Math.min(12, Math.max(anchorFont, currentFont) * 0.45));
-  return Math.abs(ay - cy) <= tolerance;
 }
 
 function dedupeMaterials(values) {
