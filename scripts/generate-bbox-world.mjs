@@ -7,10 +7,8 @@ import { writeJson } from "../src/lib/io.mjs";
 
 // The generic compiler defaults to 2.5M 1 m cells, which is appropriate for
 // small/manual builds but too low for complete large theme-park bboxes. The
-// bbox player workflow has 20-way downstream chunk sharding and a controlled
-// hosted-runner environment, so allow a bounded 8M-cell preparation envelope.
-// This is still an explicit safety ceiling: very large/accidental bboxes fail
-// before allocating unbounded raster state.
+// bbox player workflow has bounded downstream chunk handling, so allow an 8M
+// cell preparation envelope while still rejecting accidental huge selections.
 export const BBOX_RASTER_SAFETY_LIMIT = 8_000_000;
 
 export function parseGenerateArgs(argv) {
@@ -18,12 +16,18 @@ export function parseGenerateArgs(argv) {
     out: "out/bbox-world",
     cache: ".tpmap-cache",
     authority: "planning-current-authority-evidence.json",
-    downloadDir: "world-download"
+    downloadDir: "world-download",
+    buildings: "markers",
+    stable: false
   };
   const args = [...argv];
   while (args.length) {
     const token = args.shift();
-    if (!["--bbox", "--out", "--cache", "--authority", "--download-dir"].includes(token)) {
+    if (token === "--stable") {
+      result.stable = true;
+      continue;
+    }
+    if (!["--bbox", "--out", "--cache", "--authority", "--download-dir", "--buildings"].includes(token)) {
       throw new Error(`Unknown option: ${token}`);
     }
     const value = args.shift();
@@ -33,40 +37,72 @@ export function parseGenerateArgs(argv) {
     else if (token === "--cache") result.cache = value;
     else if (token === "--authority") result.authority = value;
     else if (token === "--download-dir") result.downloadDir = value;
+    else if (token === "--buildings") result.buildings = value;
   }
   if (!result.bbox) throw new Error("--bbox is required");
+  if (!["markers", "shells"].includes(result.buildings)) throw new Error("--buildings must be markers or shells");
   return result;
 }
 
 export async function buildBboxWorldOptions(args, exists = fileExists, materializeBoundary = true) {
-  const authorityPath = path.resolve(args.authority);
-  const hasAuthority = await exists(authorityPath);
+  const stable = args.stable === true;
+  const buildings = args.buildings === "shells" ? "shells" : "markers";
+  const authorityPath = path.resolve(args.authority || "planning-current-authority-evidence.json");
+  const hasAuthority = !stable && await exists(authorityPath);
   const boundaryOverridePath = path.resolve(args.cache, "bbox-world-boundary.geojson");
   if (materializeBoundary) await writeBboxBoundaryOverride(args.bbox, boundaryOverridePath);
+
+  const planningDisabled = async () => ({
+    provider: "disabled",
+    providerId: null,
+    status: "disabled-stable-profile",
+    applicationCount: 0,
+    jurisdictionCount: 0,
+    applications: [],
+    jurisdictions: [],
+    acquisitionAttempts: []
+  });
+
   return {
     options: {
       bbox: args.bbox,
       out: path.resolve(args.out),
       cache: path.resolve(args.cache),
-      // The player bbox is the world-generation envelope. OSM/planning park
-      // boundaries remain evidence features inside this verified override and
-      // are not allowed to silently shrink the requested chunk roster.
+      // The player bbox is the world-generation envelope. OSM park boundaries
+      // remain evidence features inside this verified override and cannot shrink
+      // the requested chunk roster.
       override: [boundaryOverridePath],
       maxCells: BBOX_RASTER_SAFETY_LIMIT,
       noAddon: true,
-      buildings: "shells",
+      buildings,
       accuracyMode: "plausible",
       pathGeometryMode: "repair",
       pathEdgeMode: "evidence",
       pathTerrainMode: "conform",
       terrainDetailMode: "plausible",
       rideTerrainMode: "inferred",
-      ...(hasAuthority ? { planningAuthorityEvidence: authorityPath } : {})
+      stableMode: stable,
+      planningMode: stable ? "off" : "auto",
+      ...(stable ? {
+        planning: [],
+        planningAcquirerImpl: planningDisabled,
+        disablePlanItDiscovery: true,
+        planningAuthorityEvidence: undefined,
+        planningAuthorityEvidenceData: undefined
+      } : hasAuthority ? { planningAuthorityEvidence: authorityPath } : {})
     },
     authority: {
       requestedPath: authorityPath,
       available: hasAuthority,
-      mode: hasAuthority ? "current-planning-authority" : "lower-authority-fallback"
+      mode: stable
+        ? "disabled-stable-profile"
+        : hasAuthority ? "current-planning-authority" : "lower-authority-fallback"
+    },
+    featureProfile: {
+      stable,
+      planning: stable ? "disabled" : "automatic",
+      buildings3d: buildings === "shells",
+      buildingMode: buildings
     },
     generationEnvelope: {
       mode: "bbox",
@@ -123,9 +159,13 @@ export function parseBboxText(value) {
 
 export async function generateBboxWorld(args, progress = (message) => console.error(`• ${message}`)) {
   const handoff = await buildBboxWorldOptions(args);
-  progress(handoff.authority.available
-    ? "Using verified-current planning authority produced by the bbox planning pipeline"
-    : "No current planning authority artifact is available; continuing with lower-authority public evidence");
+  if (handoff.featureProfile.stable) {
+    progress(`Stable profile: planning disabled; 3D buildings ${handoff.featureProfile.buildings3d ? "enabled" : "disabled"}`);
+  } else {
+    progress(handoff.authority.available
+      ? "Using verified-current planning authority produced by the bbox planning pipeline"
+      : "No current planning authority artifact is available; continuing with lower-authority public evidence");
+  }
 
   const result = await buildPark(handoff.options, progress);
   if (!result?.paths?.world) throw new Error("BBox generation completed without a .mcworld output");
@@ -136,8 +176,9 @@ export async function generateBboxWorld(args, progress = (message) => console.er
   await copyFile(result.paths.world, downloadPath);
 
   const summary = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     bbox: args.bbox,
+    featureProfile: handoff.featureProfile,
     generationEnvelope: handoff.generationEnvelope,
     authorityHandoff: handoff.authority,
     generatedWorld: downloadPath,
