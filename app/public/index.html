@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Voxel Mapper</title>
+  <link rel="preconnect" href="https://unpkg.com" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css" />
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a0d12;
+      --panel: #10151d;
+      --panel-2: #151c26;
+      --line: #263141;
+      --text: #f4f7fb;
+      --muted: #9eabba;
+      --accent: #74d89c;
+      --accent-2: #a6ffd0;
+      --danger: #ff7979;
+      --radius: 18px;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    button, input { font: inherit; }
+    .shell { min-height: 100vh; display: grid; grid-template-columns: minmax(320px, 420px) 1fr; }
+    .sidebar { padding: 28px; border-right: 1px solid var(--line); background: linear-gradient(180deg, #10151d 0%, #0b1016 100%); overflow-y: auto; }
+    .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 26px; }
+    .logo { width: 42px; height: 42px; border: 1px solid #354559; border-radius: 12px; display: grid; place-items: center; background: #151c26; font-weight: 800; letter-spacing: -0.06em; }
+    .brand h1 { margin: 0; font-size: 21px; letter-spacing: -0.03em; }
+    .brand p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+    .stable { display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; margin-bottom: 20px; border: 1px solid #27513a; border-radius: 999px; color: var(--accent-2); background: #10241a; font-size: 12px; font-weight: 700; }
+    .stable::before { content: ""; width: 7px; height: 7px; background: var(--accent); border-radius: 50%; box-shadow: 0 0 0 4px rgba(116,216,156,.08); }
+    .section { margin: 0 0 22px; padding: 18px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+    .section h2 { margin: 0 0 5px; font-size: 14px; }
+    .section p { margin: 0 0 14px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .label { display: block; margin: 0 0 7px; color: #c7d1dc; font-size: 12px; font-weight: 650; }
+    .search-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+    input { width: 100%; padding: 11px 12px; color: var(--text); background: #0b1118; border: 1px solid #2b3746; border-radius: 11px; outline: none; }
+    input:focus { border-color: #4c765f; box-shadow: 0 0 0 3px rgba(116,216,156,.08); }
+    button { border: 0; cursor: pointer; transition: .15s ease; }
+    button:hover { transform: translateY(-1px); }
+    .secondary { padding: 0 14px; color: #d9e4ef; background: #222d3b; border-radius: 11px; }
+    .results { display: grid; gap: 7px; margin-top: 10px; }
+    .result { text-align: left; padding: 10px 11px; color: #e8eef5; background: #141c25; border: 1px solid #263342; border-radius: 10px; font-size: 12px; line-height: 1.35; }
+    .bbox-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .bbox-grid label { color: var(--muted); font-size: 11px; }
+    .bbox-grid input { margin-top: 5px; }
+    .toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+    .toggle-copy strong { display: block; font-size: 13px; }
+    .toggle-copy span { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; line-height: 1.4; }
+    .switch { position: relative; width: 48px; height: 28px; flex: 0 0 auto; }
+    .switch input { opacity: 0; width: 0; height: 0; }
+    .slider { position: absolute; inset: 0; border-radius: 999px; background: #293544; border: 1px solid #354459; transition: .2s; }
+    .slider::before { content: ""; position: absolute; width: 20px; height: 20px; left: 3px; top: 3px; border-radius: 50%; background: #dce5ee; transition: .2s; }
+    .switch input:checked + .slider { background: #245d3d; border-color: #3d7b57; }
+    .switch input:checked + .slider::before { transform: translateX(20px); background: #c9ffdc; }
+    .generate { width: 100%; padding: 14px 16px; color: #07120b; background: var(--accent); border-radius: 13px; font-weight: 800; }
+    .generate:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+    .status { display: none; margin-top: 16px; padding: 14px; background: #0b1118; border: 1px solid #263342; border-radius: 12px; }
+    .status.visible { display: block; }
+    .status-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .status-title { font-size: 12px; font-weight: 800; }
+    .status-pill { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+    .status-message { margin-top: 8px; color: #c9d4df; font-size: 11px; line-height: 1.45; }
+    .progress { height: 6px; margin-top: 12px; overflow: hidden; border-radius: 999px; background: #1a2430; }
+    .progress > div { height: 100%; width: 28%; background: var(--accent); border-radius: inherit; animation: slide 1.5s ease-in-out infinite alternate; }
+    @keyframes slide { from { transform: translateX(-35%); } to { transform: translateX(280%); } }
+    .download { display: none; width: 100%; margin-top: 12px; padding: 12px; text-align: center; text-decoration: none; color: #07120b; background: var(--accent-2); border-radius: 11px; font-size: 12px; font-weight: 800; }
+    .download.visible { display: block; }
+    .footnote { margin-top: 18px; color: #718092; font-size: 10px; line-height: 1.5; }
+    .map-wrap { position: relative; min-width: 0; }
+    #map { position: absolute; inset: 0; background: #0d131b; }
+    .map-help { position: absolute; left: 18px; bottom: 18px; z-index: 500; max-width: 320px; padding: 10px 12px; color: #d9e2eb; background: rgba(10,13,18,.86); border: 1px solid rgba(80,98,120,.55); border-radius: 12px; backdrop-filter: blur(10px); font-size: 11px; line-height: 1.4; }
+    .leaflet-control-layers, .leaflet-bar a { background: #111822; color: #eaf1f8; border-color: #2a3747; }
+    .leaflet-bar a:hover { background: #1a2531; color: #fff; }
+    @media (max-width: 820px) {
+      .shell { grid-template-columns: 1fr; grid-template-rows: auto 56vh; }
+      .sidebar { border-right: 0; border-bottom: 1px solid var(--line); padding: 20px; }
+      .map-wrap { min-height: 56vh; }
+      #map { position: absolute; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">VM</div>
+        <div><h1>Voxel Mapper</h1><p>Real-world terrain → Minecraft Bedrock</p></div>
+      </div>
+
+      <div class="stable">Stable generation · planning data disabled</div>
+
+      <section class="section">
+        <h2>1. Find an area</h2>
+        <p>Search an address, place or park. Then adjust the selection directly on the map.</p>
+        <label class="label" for="address">Address or place</label>
+        <div class="search-row">
+          <input id="address" placeholder="e.g. Alton Towers Resort" autocomplete="off" />
+          <button class="secondary" id="searchBtn">Search</button>
+        </div>
+        <div class="results" id="results"></div>
+      </section>
+
+      <section class="section">
+        <h2>2. Bounding box</h2>
+        <p>Draw a rectangle on the map or enter coordinates manually.</p>
+        <div class="bbox-grid">
+          <label>South<input id="south" inputmode="decimal" /></label>
+          <label>West<input id="west" inputmode="decimal" /></label>
+          <label>North<input id="north" inputmode="decimal" /></label>
+          <label>East<input id="east" inputmode="decimal" /></label>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>3. World options</h2>
+        <p>The stable profile keeps the current terrain, paths, trees, water, rides and Bedrock export pipeline while planning data stays off.</p>
+        <div class="toggle-row">
+          <div class="toggle-copy">
+            <strong>3D buildings</strong>
+            <span>Off uses footprint markers. On builds available 3D shells/roofs and can take longer.</span>
+          </div>
+          <label class="switch" aria-label="Toggle 3D buildings">
+            <input id="buildings3d" type="checkbox" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </section>
+
+      <button class="generate" id="generateBtn">Generate Bedrock world</button>
+
+      <div class="status" id="statusBox">
+        <div class="status-head">
+          <div class="status-title" id="statusTitle">Preparing generation</div>
+          <div class="status-pill" id="statusPill">queued</div>
+        </div>
+        <div class="status-message" id="statusMessage">Waiting to start…</div>
+        <div class="progress" id="progressBar"><div></div></div>
+        <a class="download" id="downloadBtn">Download .mcworld</a>
+      </div>
+
+      <div class="footnote">Map data © OpenStreetMap contributors. Address lookup uses OpenStreetMap Nominatim. The generated world is 1 block = 1 metre and downloads directly as a Bedrock <code>.mcworld</code> file.</div>
+    </aside>
+
+    <section class="map-wrap">
+      <div id="map"></div>
+      <div class="map-help">Use the rectangle tool in the top-left to select the exact generation area. Drag its handles to resize it.</div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script>
+    const map = L.map('map', { zoomControl: true }).setView([52.985, -1.89], 14);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    const drawnItems = new L.FeatureGroup().addTo(map);
+    const drawControl = new L.Control.Draw({
+      position: 'topleft',
+      draw: { polygon: false, polyline: false, circle: false, circlemarker: false, marker: false, rectangle: { shapeOptions: { color: '#55d98b', weight: 2, fillOpacity: .12 } } },
+      edit: { featureGroup: drawnItems, remove: true }
+    });
+    map.addControl(drawControl);
+
+    let rectangle = null;
+    let pollTimer = null;
+
+    map.on(L.Draw.Event.CREATED, (event) => setRectangle(event.layer.getBounds(), true));
+    map.on(L.Draw.Event.EDITED, (event) => event.layers.eachLayer(layer => updateInputs(layer.getBounds())));
+    map.on(L.Draw.Event.DELETED, () => { rectangle = null; clearInputs(); });
+
+    const ids = name => document.getElementById(name);
+    const address = ids('address');
+    const results = ids('results');
+    const searchBtn = ids('searchBtn');
+    const generateBtn = ids('generateBtn');
+    const statusBox = ids('statusBox');
+    const statusTitle = ids('statusTitle');
+    const statusPill = ids('statusPill');
+    const statusMessage = ids('statusMessage');
+    const progressBar = ids('progressBar');
+    const downloadBtn = ids('downloadBtn');
+
+    function setRectangle(bounds, fit = false) {
+      drawnItems.clearLayers();
+      rectangle = L.rectangle(bounds, { color: '#55d98b', weight: 2, fillOpacity: .12 });
+      drawnItems.addLayer(rectangle);
+      updateInputs(bounds);
+      if (fit) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 17 });
+    }
+
+    function updateInputs(bounds) {
+      ids('south').value = bounds.getSouth().toFixed(7);
+      ids('west').value = bounds.getWest().toFixed(7);
+      ids('north').value = bounds.getNorth().toFixed(7);
+      ids('east').value = bounds.getEast().toFixed(7);
+    }
+
+    function clearInputs() { ['south','west','north','east'].forEach(id => ids(id).value = ''); }
+
+    function bboxText() {
+      const values = ['south','west','north','east'].map(id => Number(ids(id).value));
+      if (!values.every(Number.isFinite)) throw new Error('Select a bounding box first.');
+      const [south, west, north, east] = values;
+      if (!(south < north && west < east)) throw new Error('Bounding box coordinates are reversed or invalid.');
+      return values.join(',');
+    }
+
+    ['south','west','north','east'].forEach(id => ids(id).addEventListener('change', () => {
+      try {
+        const [south, west, north, east] = bboxText().split(',').map(Number);
+        setRectangle(L.latLngBounds([[south, west], [north, east]]), false);
+      } catch (_) {}
+    }));
+
+    async function searchAddress() {
+      const q = address.value.trim();
+      if (q.length < 3) return;
+      searchBtn.disabled = true;
+      results.innerHTML = '<div class="result">Searching…</div>';
+      try {
+        const response = await fetch('/api/geocode?q=' + encodeURIComponent(q));
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Search failed');
+        results.innerHTML = '';
+        if (!data.results.length) results.innerHTML = '<div class="result">No matching places found.</div>';
+        data.results.forEach(item => {
+          const button = document.createElement('button');
+          button.className = 'result';
+          button.textContent = item.displayName;
+          button.onclick = () => {
+            if (item.bbox) setRectangle(L.latLngBounds([[item.bbox.south, item.bbox.west], [item.bbox.north, item.bbox.east]]), true);
+            else map.setView([item.lat, item.lon], 16);
+            results.innerHTML = '';
+          };
+          results.appendChild(button);
+        });
+      } catch (error) {
+        results.innerHTML = '<div class="result">' + escapeHtml(error.message) + '</div>';
+      } finally { searchBtn.disabled = false; }
+    }
+
+    searchBtn.addEventListener('click', searchAddress);
+    address.addEventListener('keydown', event => { if (event.key === 'Enter') searchAddress(); });
+
+    generateBtn.addEventListener('click', async () => {
+      try {
+        const bbox = bboxText();
+        generateBtn.disabled = true;
+        downloadBtn.classList.remove('visible');
+        statusBox.classList.add('visible');
+        statusTitle.textContent = 'Generating Bedrock world';
+        statusPill.textContent = 'queued';
+        statusMessage.textContent = 'Submitting stable generation…';
+        progressBar.style.display = 'block';
+
+        const response = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ bbox, buildings3d: ids('buildings3d').checked })
+        });
+        const job = await response.json();
+        if (!response.ok) throw new Error(job.error || 'Could not start generation.');
+        watchJob(job.id);
+      } catch (error) {
+        generateBtn.disabled = false;
+        statusBox.classList.add('visible');
+        statusTitle.textContent = 'Cannot generate';
+        statusPill.textContent = 'error';
+        statusMessage.textContent = error.message;
+        progressBar.style.display = 'none';
+      }
+    });
+
+    function watchJob(id) {
+      clearInterval(pollTimer);
+      const poll = async () => {
+        try {
+          const response = await fetch('/api/jobs/' + encodeURIComponent(id));
+          const job = await response.json();
+          if (!response.ok) throw new Error(job.error || 'Status check failed.');
+          statusPill.textContent = job.status;
+          statusMessage.textContent = job.progress || 'Working…';
+          if (job.status === 'complete') {
+            clearInterval(pollTimer);
+            progressBar.style.display = 'none';
+            statusTitle.textContent = 'World ready';
+            const details = job.summary ? ` · ${job.summary.chunks || 0} chunks` : '';
+            statusMessage.textContent = 'Bedrock world generated successfully' + details + '.';
+            downloadBtn.href = job.downloadUrl;
+            downloadBtn.classList.add('visible');
+            generateBtn.disabled = false;
+          } else if (job.status === 'failed') {
+            clearInterval(pollTimer);
+            progressBar.style.display = 'none';
+            statusTitle.textContent = 'Generation failed';
+            statusMessage.textContent = job.error || 'The generator stopped unexpectedly.';
+            generateBtn.disabled = false;
+          }
+        } catch (error) {
+          clearInterval(pollTimer);
+          progressBar.style.display = 'none';
+          statusTitle.textContent = 'Connection error';
+          statusMessage.textContent = error.message;
+          generateBtn.disabled = false;
+        }
+      };
+      poll();
+      pollTimer = setInterval(poll, 2500);
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>'"]/g, char => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', "'":'&#39;', '"':'&quot;' }[char]));
+    }
+  </script>
+</body>
+</html>

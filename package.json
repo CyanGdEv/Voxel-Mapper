@@ -8,6 +8,8 @@
   },
   "scripts": {
     "test": "node --test",
+    "app": "node app/server.mjs",
+    "app:stable": "node app/server.mjs",
     "build:fixture": "node src/cli.mjs build --park-name \"Fixture Park\" --osm test/fixtures/mini-park.overpass.json --bbox 51.0000,-0.0020,51.0020,0.0020 --elevation none --out out/fixture",
     "build:orthophoto-demo": "node scripts/build-orthophoto-demo.mjs",
     "build:terrain-demo": "node scripts/build-terrain-detail-demo.mjs",
