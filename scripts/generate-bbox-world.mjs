@@ -17,7 +17,7 @@ export function parseGenerateArgs(argv) {
     cache: ".tpmap-cache",
     authority: "planning-current-authority-evidence.json",
     downloadDir: "world-download",
-    buildings: "markers",
+    buildings: undefined,
     stable: false
   };
   const args = [...argv];
@@ -40,13 +40,17 @@ export function parseGenerateArgs(argv) {
     else if (token === "--buildings") result.buildings = value;
   }
   if (!result.bbox) throw new Error("--bbox is required");
-  if (!["markers", "shells"].includes(result.buildings)) throw new Error("--buildings must be markers or shells");
+  if (result.buildings != null && !["markers", "shells"].includes(result.buildings)) throw new Error("--buildings must be markers or shells");
   return result;
 }
 
 export async function buildBboxWorldOptions(args, exists = fileExists, materializeBoundary = true) {
   const stable = args.stable === true;
-  const buildings = args.buildings === "shells" ? "shells" : "markers";
+  // Preserve the established research/generation default of 3D shells. Stable
+  // app generation deliberately starts with markers unless the user enables the
+  // 3D-building toggle.
+  const buildings = args.buildings || (stable ? "markers" : "shells");
+  if (!["markers", "shells"].includes(buildings)) throw new Error("buildings must be markers or shells");
   const authorityPath = path.resolve(args.authority || "planning-current-authority-evidence.json");
   const hasAuthority = !stable && await exists(authorityPath);
   const boundaryOverridePath = path.resolve(args.cache, "bbox-world-boundary.geojson");
