@@ -73,10 +73,23 @@ export function applyPlanningAuthorityWinners(map) {
   return summary;
 }
 
-async function hydratePlanningAuthorityData(options) {
+/**
+ * The bbox production path supplies planning authority as a file. Hydrate it
+ * once and, when the runtime options object is mutable, retain the loaded data
+ * on that same object so downstream planning consumers (notably 3D ride
+ * structure reconstruction and evidence reporting) see the identical certified
+ * authority bundle instead of silently observing an empty in-memory handoff.
+ * Frozen caller options still receive an immutable clone for the local consumer.
+ */
+export async function hydratePlanningAuthorityData(options = {}) {
   if (options.planningAuthorityEvidenceData || !options.planningAuthorityEvidence) return options;
+  const planningAuthorityEvidenceData = await readJson(path.resolve(options.planningAuthorityEvidence));
+  if (Object.isExtensible(options)) {
+    options.planningAuthorityEvidenceData = planningAuthorityEvidenceData;
+    return options;
+  }
   return {
     ...options,
-    planningAuthorityEvidenceData: await readJson(path.resolve(options.planningAuthorityEvidence))
+    planningAuthorityEvidenceData
   };
 }
