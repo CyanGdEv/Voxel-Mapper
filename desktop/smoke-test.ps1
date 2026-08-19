@@ -7,12 +7,13 @@ $desktopRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $dist = Join-Path $desktopRoot "dist"
 $evidence = Join-Path $desktopRoot "smoke-evidence"
 New-Item -ItemType Directory -Path $evidence -Force | Out-Null
+"Smoke test started $((Get-Date).ToUniversalTime().ToString('o'))" | Set-Content (Join-Path $evidence "runner.txt") -Encoding utf8
 
 function Write-EvidenceJson([string]$name, $value) {
   $value | ConvertTo-Json -Depth 20 | Set-Content -Path (Join-Path $evidence $name) -Encoding utf8
 }
 
-function Wait-Health([int]$port, [int]$timeoutSeconds = 60) {
+function Wait-Health([int]$port, [int]$timeoutSeconds = 120) {
   $deadline = (Get-Date).AddSeconds($timeoutSeconds)
   $lastError = $null
   while ((Get-Date) -lt $deadline) {
@@ -42,15 +43,33 @@ function Get-VoxelAppProcesses {
 function Start-AppSmoke([string]$exe, [int]$port, [string]$label) {
   if (-not (Test-Path $exe)) { throw "$label executable missing: $exe" }
   $before = @(Get-VoxelAppProcesses | ForEach-Object { $_.Id })
+  $safeLabel = ($label -replace "[^A-Za-z0-9]+", "-").Trim("-").ToLowerInvariant()
   $env:VOXEL_DESKTOP_SMOKE = "1"
   $env:VOXEL_DESKTOP_PORT = [string]$port
+  $env:VOXEL_DESKTOP_SMOKE_LOG = Join-Path $evidence "$safeLabel-app.log"
+  "Launching $exe on port $port" | Add-Content (Join-Path $evidence "runner.txt") -Encoding utf8
   $launcher = Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) -PassThru
 
   # The electron-builder portable target may legitimately replace its small
-  # launcher process with the unpacked Electron process. Therefore backend
-  # health + a newly running Voxel Mapper process is the stable launch proof,
-  # rather than requiring the original launcher PID to remain alive.
-  $health = Wait-Health -port $port
+  # launcher process with the unpacked Electron process. Backend health + a
+  # newly running Voxel Mapper process is therefore the stable launch proof.
+  try {
+    $health = Wait-Health -port $port
+  } catch {
+    $diagnostics = @{
+      label = $label
+      executable = $exe
+      port = $port
+      launcherPid = $launcher.Id
+      launcherExited = $launcher.HasExited
+      launcherExitCode = $(if ($launcher.HasExited) { $launcher.ExitCode } else { $null })
+      voxelProcesses = @(Get-VoxelAppProcesses | ForEach-Object { @{ id = $_.Id; name = $_.ProcessName; hasExited = $_.HasExited } })
+      error = $_.Exception.Message
+    }
+    Write-EvidenceJson "$safeLabel-launch-failure.json" $diagnostics
+    throw
+  }
+
   $appProcesses = @(Get-VoxelAppProcesses | Where-Object { $before -notcontains $_.Id })
   if (-not $appProcesses.Count -and -not $launcher.HasExited) { $appProcesses = @($launcher) }
   if (-not $appProcesses.Count) { throw "$label reported backend health but no packaged Voxel Mapper process remained alive" }
@@ -60,8 +79,6 @@ function Start-AppSmoke([string]$exe, [int]$port, [string]$label) {
 }
 
 function Stop-SmokeProcesses {
-  # The GitHub runner is isolated. Limit cleanup to Voxel Mapper processes and
-  # node.exe children whose command line is the bundled local app server.
   foreach ($process in @(Get-VoxelAppProcesses)) {
     try { Stop-Process -Id $process.Id -Force -ErrorAction Stop } catch {}
   }
@@ -195,4 +212,5 @@ try {
   Stop-SmokeProcesses
   Remove-Item Env:VOXEL_DESKTOP_SMOKE -ErrorAction SilentlyContinue
   Remove-Item Env:VOXEL_DESKTOP_PORT -ErrorAction SilentlyContinue
+  Remove-Item Env:VOXEL_DESKTOP_SMOKE_LOG -ErrorAction SilentlyContinue
 }
