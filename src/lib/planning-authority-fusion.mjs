@@ -1,4 +1,6 @@
+import path from "node:path";
 import * as base from "./planning-authority-fusion-base.mjs";
+import { readJson } from "./io.mjs";
 import { summarizeRideProfiles } from "./ride-profile.mjs";
 import {
   attachPlanningRideProfileCandidates,
@@ -17,7 +19,8 @@ export const matchPointObservation = base.matchPointObservation;
  */
 export async function integratePlanningAuthorityEvidence(map, options = {}) {
   const summary = await base.integratePlanningAuthorityEvidence(map, options);
-  const rideVerticalProfiles = attachPlanningRideProfileCandidates(map, options);
+  const rideProfileOptions = await hydratePlanningAuthorityData(options);
+  const rideVerticalProfiles = attachPlanningRideProfileCandidates(map, rideProfileOptions);
   summary.accepted ||= {};
   summary.accepted.verticalProfile = rideVerticalProfiles.acceptedProfiles;
   summary.rideVerticalProfiles = rideVerticalProfiles;
@@ -68,4 +71,12 @@ export function applyPlanningAuthorityWinners(map) {
     else if (map) map.rideProfiles = refreshed;
   }
   return summary;
+}
+
+async function hydratePlanningAuthorityData(options) {
+  if (options.planningAuthorityEvidenceData || !options.planningAuthorityEvidence) return options;
+  return {
+    ...options,
+    planningAuthorityEvidenceData: await readJson(path.resolve(options.planningAuthorityEvidence))
+  };
 }

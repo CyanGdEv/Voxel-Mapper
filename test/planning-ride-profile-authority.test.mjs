@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { buildEvidenceGraph } from "../src/lib/evidence-graph.mjs";
 import {
   applyPlanningAuthorityWinners,
@@ -69,6 +72,28 @@ test("strict current planning AOD anchors become the winning 3D ride profile", a
   assert.equal(map.rideProfiles.rides[0].name, "Galactica");
   assert.equal(map.rideProfiles.rides[0].status, "full-3d-elevation");
   assert.equal(map.rideProfiles.rides[0].verticalCoverage, 1);
+});
+
+test("production planning authority file handoff feeds ride-profile reconstruction", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "voxel-ride-profile-authority-"));
+  const authorityPath = path.join(directory, "planning-current-authority-evidence.json");
+  const authority = {
+    geometryCandidates: [],
+    materialObservations: [],
+    verticalObservations: [observation(0, 100), observation(50, 118), observation(100, 130)]
+  };
+  await writeFile(authorityPath, `${JSON.stringify(authority)}\n`, "utf8");
+
+  try {
+    const feature = rideFeature();
+    const map = { features: [feature] };
+    const integration = await integratePlanningAuthorityEvidence(map, { planningAuthorityEvidence: authorityPath });
+    assert.equal(integration.rideVerticalProfiles.inputObservations, 3);
+    assert.equal(integration.accepted.verticalProfile, 1);
+    assert.equal(feature.planningAuthorityCandidates?.some((candidate) => candidate.attribute === "verticalProfile"), true);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("planning ride profile never extrapolates outside proven anchor span", () => {
