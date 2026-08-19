@@ -1,0 +1,191 @@
+name: Build Voxel Mapper Windows app
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "desktop/**"
+      - "app/**"
+      - "src/**"
+      - "scripts/**"
+      - "assets/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/build-windows-app.yml"
+  push:
+    branches: [main]
+    paths:
+      - "desktop/**"
+      - "app/**"
+      - "src/**"
+      - "scripts/**"
+      - "assets/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/build-windows-app.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  windows-app:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      # The generation engine currently targets Node 20. Install its native
+      # dependencies under that exact ABI and copy this runtime into the app.
+      - name: Use generator Node runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Voxel Mapper runtime dependencies
+        run: npm ci
+
+      - name: Assemble self-contained desktop runtime
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $PWD "desktop/runtime"
+          $runtimeDeps = Join-Path $PWD "desktop/runtime-deps"
+          if (Test-Path $runtime) { Remove-Item $runtime -Recurse -Force }
+          if (Test-Path $runtimeDeps) { Remove-Item $runtimeDeps -Recurse -Force }
+          New-Item -ItemType Directory -Path $runtime | Out-Null
+
+          Copy-Item src (Join-Path $runtime "src") -Recurse
+          Copy-Item scripts (Join-Path $runtime "scripts") -Recurse
+          Copy-Item app (Join-Path $runtime "app") -Recurse
+          if (Test-Path assets) { Copy-Item assets (Join-Path $runtime "assets") -Recurse }
+          Copy-Item node_modules (Join-Path $runtime "node_modules") -Recurse
+          Copy-Item node_modules $runtimeDeps -Recurse
+          Copy-Item package.json (Join-Path $runtime "package.json")
+
+          # Keep the generator on the exact Node runtime/ABI used by npm ci.
+          # Electron is only the desktop shell and never loads LevelDB/native
+          # generation dependencies in its own Node process.
+          $nodeExe = (Get-Command node).Source
+          Copy-Item $nodeExe (Join-Path $runtime "node.exe")
+
+          if (-not (Test-Path (Join-Path $runtime "node.exe"))) { throw "Bundled Node runtime missing" }
+          if (-not (Test-Path (Join-Path $runtime "app/server.mjs"))) { throw "Stable app backend missing" }
+          if (-not (Test-Path (Join-Path $runtime "scripts/generate-bbox-world.mjs"))) { throw "BBox generator missing" }
+          if (-not (Test-Path (Join-Path $runtime "node_modules/geotiff/package.json"))) { throw "geotiff runtime dependency missing before packaging" }
+          if (-not (Test-Path (Join-Path $runtimeDeps "geotiff/package.json"))) { throw "Packager dependency payload missing geotiff" }
+
+      - name: Validate bundled Windows generator runtime
+        shell: pwsh
+        run: |
+          Push-Location desktop/runtime
+          try {
+            .\node.exe src/cli.mjs doctor
+            if ($LASTEXITCODE -ne 0) { throw "Bundled generator runtime doctor failed" }
+            .\node.exe --input-type=module --eval "await import('./scripts/generate-bbox-world.mjs'); console.log('Generator import graph: OK')"
+            if ($LASTEXITCODE -ne 0) { throw "Generator import graph validation failed" }
+          } finally {
+            Pop-Location
+          }
+
+      # electron-builder treats any nested folder literally named node_modules
+      # as an application dependency tree and prunes packages not declared by
+      # the Electron shell package. Move the already-validated generator modules
+      # out of that path before packaging; desktop/package.json maps this neutral
+      # source directory back to resources/runtime/node_modules verbatim.
+      - name: Prepare generator dependency payload for packaging
+        shell: pwsh
+        run: |
+          Remove-Item desktop/runtime/node_modules -Recurse -Force
+          if (Test-Path desktop/runtime/node_modules) { throw "Runtime node_modules staging directory was not removed" }
+          if (-not (Test-Path desktop/runtime-deps/geotiff/package.json)) { throw "Generator dependency payload is incomplete" }
+
+      # Electron 43's packaging toolchain requires Node >=22.12. Switch only
+      # after the Node-20 generator runtime has been fully validated.
+      - name: Use desktop packaging Node runtime
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install desktop packager
+        working-directory: desktop
+        run: npm install --no-audit --no-fund
+
+      - name: Build installer and portable EXE
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run dist:win
+
+      - name: Validate packaged generator dependency graph
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $PWD "desktop/dist/win-unpacked/resources/runtime"
+          if (-not (Test-Path (Join-Path $runtime "node.exe"))) { throw "Packaged Node runtime missing" }
+          if (-not (Test-Path (Join-Path $runtime "node_modules/geotiff/package.json"))) { throw "Packaged geotiff dependency missing" }
+          Push-Location $runtime
+          try {
+            .\node.exe --input-type=module --eval "await import('./scripts/generate-bbox-world.mjs'); console.log('Packaged generator import graph: OK')"
+            if ($LASTEXITCODE -ne 0) { throw "Packaged generator import graph failed" }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Verify Windows artifacts
+        shell: pwsh
+        run: |
+          $files = Get-ChildItem desktop/dist -Filter *.exe
+          if ($files.Count -lt 2) {
+            Get-ChildItem desktop/dist -Recurse | Format-Table FullName, Length
+            throw "Expected both installer and portable Voxel Mapper executables"
+          }
+          $files | ForEach-Object {
+            if ($_.Length -lt 10MB) { throw "Unexpectedly small executable: $($_.Name)" }
+            Write-Host "$($_.Name) - $([math]::Round($_.Length / 1MB, 1)) MB"
+          }
+
+      - name: Smoke test packaged Windows app end to end
+        shell: pwsh
+        run: .\desktop\smoke-test.ps1
+
+      # Upload the diagnostics/world even when the smoke test fails so the
+      # failure can be diagnosed from a phone without access to the runner.
+      - name: Upload Windows smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxel-mapper-windows-smoke-evidence
+          path: desktop/smoke-evidence/**
+          if-no-files-found: warn
+          compression-level: 6
+          retention-days: 14
+
+      # Only publish the EXEs as the release candidate after the packaged app
+      # itself has launched, generated a world, validated it, and the installer
+      # has installed/launched successfully on the fresh Windows runner.
+      - name: Upload Windows app
+        uses: actions/upload-artifact@v4
+        with:
+          name: voxel-mapper-windows
+          path: desktop/dist/*.exe
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Summary
+        shell: pwsh
+        run: |
+          @'
+          ## Voxel Mapper Windows app
+
+          The Windows release candidate passed the packaged end-to-end gate:
+          - packaged generator dependency/import graph validated
+          - portable `.exe` launched on a fresh Windows runner
+          - Stable health endpoint reported planning disabled
+          - tiny real BBox generation completed through the packaged backend
+          - downloaded `.mcworld` contained Bedrock `level.dat` and LevelDB data
+          - NSIS installer installed successfully
+          - installed `Voxel Mapper.exe` launched and reported healthy
+
+          The **voxel-mapper-windows** artifact contains the installable and portable executables.
+          The **voxel-mapper-windows-smoke-evidence** artifact contains the generated test world and validation evidence.
+          '@ | Add-Content $env:GITHUB_STEP_SUMMARY
