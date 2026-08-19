@@ -8,9 +8,6 @@ $dist = Join-Path $desktopRoot "dist"
 $evidence = Join-Path $desktopRoot "smoke-evidence"
 New-Item -ItemType Directory -Path $evidence -Force | Out-Null
 
-$script:portableProcess = $null
-$script:installedProcess = $null
-
 function Write-EvidenceJson([string]$name, $value) {
   $value | ConvertTo-Json -Depth 20 | Set-Content -Path (Join-Path $evidence $name) -Encoding utf8
 }
@@ -36,28 +33,46 @@ function Wait-Health([int]$port, [int]$timeoutSeconds = 60) {
   throw "Timed out waiting for packaged app health on port $port. Last error: $lastError"
 }
 
-function Start-AppSmoke([string]$exe, [int]$port, [string]$label) {
-  if (-not (Test-Path $exe)) { throw "$label executable missing: $exe" }
-  $env:VOXEL_DESKTOP_SMOKE = "1"
-  $env:VOXEL_DESKTOP_PORT = [string]$port
-  $process = Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) -PassThru
-  Start-Sleep -Milliseconds 500
-  if ($process.HasExited) { throw "$label exited before its backend became healthy (exit=$($process.ExitCode))" }
-  $health = Wait-Health -port $port
-  if ($process.HasExited) { throw "$label exited immediately after reporting health (exit=$($process.ExitCode))" }
-  Write-Host "$label launched successfully (pid=$($process.Id), port=$port)"
-  return @{ process = $process; health = $health }
+function Get-VoxelAppProcesses {
+  return @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
+    $_.ProcessName -like "Voxel Mapper*" -or $_.ProcessName -like "VoxelMapper*"
+  })
 }
 
-function Stop-AppTree($process) {
-  if ($null -eq $process) { return }
-  try {
-    if (-not $process.HasExited) {
-      & taskkill.exe /PID $process.Id /T /F | Out-Host
-    }
-  } catch {
-    Write-Warning "Could not terminate smoke-test process tree: $_"
+function Start-AppSmoke([string]$exe, [int]$port, [string]$label) {
+  if (-not (Test-Path $exe)) { throw "$label executable missing: $exe" }
+  $before = @(Get-VoxelAppProcesses | ForEach-Object { $_.Id })
+  $env:VOXEL_DESKTOP_SMOKE = "1"
+  $env:VOXEL_DESKTOP_PORT = [string]$port
+  $launcher = Start-Process -FilePath $exe -WorkingDirectory (Split-Path -Parent $exe) -PassThru
+
+  # The electron-builder portable target may legitimately replace its small
+  # launcher process with the unpacked Electron process. Therefore backend
+  # health + a newly running Voxel Mapper process is the stable launch proof,
+  # rather than requiring the original launcher PID to remain alive.
+  $health = Wait-Health -port $port
+  $appProcesses = @(Get-VoxelAppProcesses | Where-Object { $before -notcontains $_.Id })
+  if (-not $appProcesses.Count -and -not $launcher.HasExited) { $appProcesses = @($launcher) }
+  if (-not $appProcesses.Count) { throw "$label reported backend health but no packaged Voxel Mapper process remained alive" }
+
+  Write-Host "$label launched successfully (port=$port, pids=$($appProcesses.Id -join ','))"
+  return @{ launcher = $launcher; appProcesses = $appProcesses; health = $health }
+}
+
+function Stop-SmokeProcesses {
+  # The GitHub runner is isolated. Limit cleanup to Voxel Mapper processes and
+  # node.exe children whose command line is the bundled local app server.
+  foreach ($process in @(Get-VoxelAppProcesses)) {
+    try { Stop-Process -Id $process.Id -Force -ErrorAction Stop } catch {}
   }
+  try {
+    $nodes = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue | Where-Object {
+      $_.CommandLine -match "app[\\/]server\.mjs" -and $_.CommandLine -match "Voxel|runtime|resources"
+    }
+    foreach ($node in @($nodes)) {
+      try { Stop-Process -Id $node.ProcessId -Force -ErrorAction Stop } catch {}
+    }
+  } catch {}
 }
 
 function Generate-TinyWorld([int]$port) {
@@ -138,33 +153,29 @@ function Install-And-Smoke([string]$installer) {
   }
 
   $started = Start-AppSmoke -exe $installedExe.FullName -port 4200 -label "Installed Voxel Mapper"
-  $script:installedProcess = $started.process
   Write-EvidenceJson "installed-health.json" $started.health
-
-  if ($started.process.HasExited) { throw "Installed Voxel Mapper did not stay running" }
+  if (-not $started.appProcesses.Count) { throw "Installed Voxel Mapper did not stay running" }
   Write-Host "Installed application smoke test passed"
 }
 
 try {
+  Stop-SmokeProcesses
   $executables = @(Get-ChildItem $dist -Filter "*.exe" -File)
   if ($executables.Count -lt 2) { throw "Expected installer and portable executables before smoke testing" }
   $installer = $executables | Where-Object { $_.Name -match "Setup" } | Select-Object -First 1
-  $portable = $executables | Where-Object { $_.FullName -ne $installer.FullName } | Select-Object -First 1
   if (-not $installer) { throw "Could not identify NSIS installer (expected filename containing 'Setup')" }
+  $portable = $executables | Where-Object { $_.FullName -ne $installer.FullName } | Select-Object -First 1
   if (-not $portable) { throw "Could not identify portable executable" }
 
   Write-Host "Portable: $($portable.FullName)"
   Write-Host "Installer:  $($installer.FullName)"
 
   $started = Start-AppSmoke -exe $portable.FullName -port 4199 -label "Portable Voxel Mapper"
-  $script:portableProcess = $started.process
   Write-EvidenceJson "portable-health.json" $started.health
   $generated = Generate-TinyWorld -port 4199
 
-  Stop-AppTree $script:portableProcess
-  $script:portableProcess = $null
+  Stop-SmokeProcesses
   Start-Sleep -Seconds 2
-
   Install-And-Smoke -installer $installer.FullName
 
   Write-EvidenceJson "smoke-result.json" @{
@@ -173,6 +184,7 @@ try {
     installerExe = $installer.Name
     portableStableHealth = $true
     planningDisabled = $true
+    buildingToggleModesAdvertised = $true
     markerGenerationCompleted = $true
     mcworldValidated = $true
     installerLaunchCompleted = $true
@@ -180,8 +192,7 @@ try {
   }
   Write-Host "Packaged Windows end-to-end smoke test PASSED"
 } finally {
-  Stop-AppTree $script:portableProcess
-  Stop-AppTree $script:installedProcess
+  Stop-SmokeProcesses
   Remove-Item Env:VOXEL_DESKTOP_SMOKE -ErrorAction SilentlyContinue
   Remove-Item Env:VOXEL_DESKTOP_PORT -ErrorAction SilentlyContinue
 }
