@@ -6,29 +6,34 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const APP_ID = "dev.cyangdev.voxelmapper";
+const SMOKE_MODE = process.env.VOXEL_DESKTOP_SMOKE === "1";
 let backend = null;
 let mainWindow = null;
 let backendUrl = null;
 let quitting = false;
 
 app.setAppUserModelId(APP_ID);
+if (SMOKE_MODE) app.commandLine.appendSwitch("disable-gpu");
 
 app.whenReady().then(async () => {
   try {
-    const port = await findFreePort();
+    const port = await resolveBackendPort();
     backendUrl = `http://127.0.0.1:${port}`;
     backend = startBackend(port);
     await waitForHealth(`${backendUrl}/api/health`, 30_000);
     mainWindow = createWindow();
-    mainWindow.once("ready-to-show", () => mainWindow?.show());
+    if (!SMOKE_MODE) mainWindow.once("ready-to-show", () => mainWindow?.show());
     await mainWindow.loadURL(backendUrl);
   } catch (error) {
-    await dialog.showMessageBox({
-      type: "error",
-      title: "Voxel Mapper could not start",
-      message: "The Voxel Mapper generation service failed to start.",
-      detail: error?.stack || error?.message || String(error)
-    });
+    if (!SMOKE_MODE) {
+      await dialog.showMessageBox({
+        type: "error",
+        title: "Voxel Mapper could not start",
+        message: "The Voxel Mapper generation service failed to start.",
+        detail: error?.stack || error?.message || String(error)
+      });
+    }
+    console.error(error?.stack || error);
     app.quit();
   }
 });
@@ -103,7 +108,7 @@ function startBackend(port) {
   child.on("exit", (code, signal) => {
     if (quitting) return;
     console.error(`Voxel Mapper backend exited unexpectedly (code=${code}, signal=${signal})`);
-    if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow && !mainWindow.isDestroyed() && !SMOKE_MODE) {
       dialog.showMessageBox(mainWindow, {
         type: "error",
         title: "Generation service stopped",
@@ -119,6 +124,26 @@ function stopBackend() {
   if (!backend || backend.killed) return;
   try { backend.kill(); } catch {}
   backend = null;
+}
+
+async function resolveBackendPort() {
+  const requested = Number(process.env.VOXEL_DESKTOP_PORT || 0);
+  if (Number.isInteger(requested) && requested > 0 && requested <= 65535) {
+    await ensurePortAvailable(requested);
+    return requested;
+  }
+  return findFreePort();
+}
+
+function ensurePortAvailable(port) {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port }, () => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  });
 }
 
 function findFreePort() {
