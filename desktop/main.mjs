@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, session } from "electron";
+import { app, BrowserWindow, dialog } from "electron";
 import { spawn } from "node:child_process";
 import net from "node:net";
 import path from "node:path";
@@ -20,9 +20,8 @@ app.whenReady().then(async () => {
     backend = startBackend(port);
     await waitForHealth(`${backendUrl}/api/health`, 30_000);
     mainWindow = createWindow();
-    installDownloadHandler(mainWindow);
-    await mainWindow.loadURL(backendUrl);
     mainWindow.once("ready-to-show", () => mainWindow?.show());
+    await mainWindow.loadURL(backendUrl);
   } catch (error) {
     await dialog.showMessageBox({
       type: "error",
@@ -67,6 +66,9 @@ function createWindow() {
     }
   });
 
+  // The UI may load OSM/Leaflet assets, but it is not allowed to create a
+  // second browser-style application window. World downloads stay in this app
+  // and use Electron's standard Windows download behavior.
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   win.on("closed", () => {
     mainWindow = null;
@@ -124,32 +126,6 @@ function stopBackend() {
   if (!backend || backend.killed) return;
   try { backend.kill(); } catch {}
   backend = null;
-}
-
-function installDownloadHandler(win) {
-  const ses = session.defaultSession;
-  ses.on("will-download", async (event, item) => {
-    if (!item.getFilename().toLowerCase().endsWith(".mcworld")) return;
-    event.preventDefault();
-    const save = await dialog.showSaveDialog(win, {
-      title: "Save Minecraft Bedrock world",
-      defaultPath: path.join(app.getPath("downloads"), item.getFilename()),
-      filters: [{ name: "Minecraft Bedrock World", extensions: ["mcworld"] }]
-    });
-    if (save.canceled || !save.filePath) return;
-
-    const download = ses.createInterruptedDownload({
-      path: save.filePath,
-      urlChain: [item.getURL()],
-      mimeType: item.getMimeType(),
-      offset: 0,
-      length: item.getTotalBytes(),
-      lastModified: "",
-      eTag: "",
-      startTime: Date.now()
-    });
-    download.resume();
-  });
 }
 
 function findFreePort() {
