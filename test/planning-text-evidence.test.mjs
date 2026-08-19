@@ -14,7 +14,11 @@ test("material evidence spans adjacent PDF text items on one drawing line", () =
   const red = observations.find((entry) => entry.material === "red_tarmac");
   assert.ok(red);
   assert.equal(red.pageNumber, 2);
-  assert.equal(red.source, "pdf-text-adjacent-run-material-label");
+  // planning-text-evidence now delegates to the canonical material normalizer,
+  // so adjacent-run evidence uses the canonical window provenance rather than
+  // the retired duplicate classifier's source label.
+  assert.equal(red.source, "pdf-text-material-window");
+  assert.ok(red.evidenceItems >= 2);
   assert.equal(red.georegistrationRequired, true);
 });
 
