@@ -49,7 +49,9 @@ jobs:
         shell: pwsh
         run: |
           $runtime = Join-Path $PWD "desktop/runtime"
+          $runtimeDeps = Join-Path $PWD "desktop/runtime-deps"
           if (Test-Path $runtime) { Remove-Item $runtime -Recurse -Force }
+          if (Test-Path $runtimeDeps) { Remove-Item $runtimeDeps -Recurse -Force }
           New-Item -ItemType Directory -Path $runtime | Out-Null
 
           Copy-Item src (Join-Path $runtime "src") -Recurse
@@ -57,6 +59,7 @@ jobs:
           Copy-Item app (Join-Path $runtime "app") -Recurse
           if (Test-Path assets) { Copy-Item assets (Join-Path $runtime "assets") -Recurse }
           Copy-Item node_modules (Join-Path $runtime "node_modules") -Recurse
+          Copy-Item node_modules $runtimeDeps -Recurse
           Copy-Item package.json (Join-Path $runtime "package.json")
 
           # Keep the generator on the exact Node runtime/ABI used by npm ci.
@@ -68,6 +71,8 @@ jobs:
           if (-not (Test-Path (Join-Path $runtime "node.exe"))) { throw "Bundled Node runtime missing" }
           if (-not (Test-Path (Join-Path $runtime "app/server.mjs"))) { throw "Stable app backend missing" }
           if (-not (Test-Path (Join-Path $runtime "scripts/generate-bbox-world.mjs"))) { throw "BBox generator missing" }
+          if (-not (Test-Path (Join-Path $runtime "node_modules/geotiff/package.json"))) { throw "geotiff runtime dependency missing before packaging" }
+          if (-not (Test-Path (Join-Path $runtimeDeps "geotiff/package.json"))) { throw "Packager dependency payload missing geotiff" }
 
       - name: Validate bundled Windows generator runtime
         shell: pwsh
@@ -76,12 +81,26 @@ jobs:
           try {
             .\node.exe src/cli.mjs doctor
             if ($LASTEXITCODE -ne 0) { throw "Bundled generator runtime doctor failed" }
+            .\node.exe --input-type=module --eval "await import('./scripts/generate-bbox-world.mjs'); console.log('Generator import graph: OK')"
+            if ($LASTEXITCODE -ne 0) { throw "Generator import graph validation failed" }
           } finally {
             Pop-Location
           }
 
+      # electron-builder treats any nested folder literally named node_modules
+      # as an application dependency tree and prunes packages not declared by
+      # the Electron shell package. Move the already-validated generator modules
+      # out of that path before packaging; desktop/package.json maps this neutral
+      # source directory back to resources/runtime/node_modules verbatim.
+      - name: Prepare generator dependency payload for packaging
+        shell: pwsh
+        run: |
+          Remove-Item desktop/runtime/node_modules -Recurse -Force
+          if (Test-Path desktop/runtime/node_modules) { throw "Runtime node_modules staging directory was not removed" }
+          if (-not (Test-Path desktop/runtime-deps/geotiff/package.json)) { throw "Generator dependency payload is incomplete" }
+
       # Electron 43's packaging toolchain requires Node >=22.12. Switch only
-      # after the Node-20 generator runtime has been fully assembled.
+      # after the Node-20 generator runtime has been fully validated.
       - name: Use desktop packaging Node runtime
         uses: actions/setup-node@v4
         with:
@@ -96,6 +115,20 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         run: npm run dist:win
+
+      - name: Validate packaged generator dependency graph
+        shell: pwsh
+        run: |
+          $runtime = Join-Path $PWD "desktop/dist/win-unpacked/resources/runtime"
+          if (-not (Test-Path (Join-Path $runtime "node.exe"))) { throw "Packaged Node runtime missing" }
+          if (-not (Test-Path (Join-Path $runtime "node_modules/geotiff/package.json"))) { throw "Packaged geotiff dependency missing" }
+          Push-Location $runtime
+          try {
+            .\node.exe --input-type=module --eval "await import('./scripts/generate-bbox-world.mjs'); console.log('Packaged generator import graph: OK')"
+            if ($LASTEXITCODE -ne 0) { throw "Packaged generator import graph failed" }
+          } finally {
+            Pop-Location
+          }
 
       - name: Verify Windows artifacts
         shell: pwsh
@@ -145,6 +178,7 @@ jobs:
           ## Voxel Mapper Windows app
 
           The Windows release candidate passed the packaged end-to-end gate:
+          - packaged generator dependency/import graph validated
           - portable `.exe` launched on a fresh Windows runner
           - Stable health endpoint reported planning disabled
           - tiny real BBox generation completed through the packaged backend
