@@ -3,7 +3,6 @@ import path from "node:path";
 import { cp, mkdir, readFile, rm, stat } from "node:fs/promises";
 import { readJson, writeJson } from "../src/lib/io.mjs";
 import { extractPlanningShardToBundle } from "../src/lib/planning-evidence-bundle.mjs";
-import { enrichPlanningPedestrianBundle } from "../src/lib/planning-pedestrian-bundle-enrichment.mjs";
 import {
   buildPlanningExtractionImplementationFingerprint,
   buildPlanningExtractionShardCacheKey
@@ -50,12 +49,6 @@ if (await exists(path.join(cacheDir, "manifest.json"))) {
   manifest = extracted.manifest;
 }
 
-// Production extraction previously retained page text and vector bounds but
-// never ran the pedestrian/plaza semantic pass before the bundle moved on to
-// georegistration. Apply it to both fresh and cache-restored bundles so labelled
-// plazas (for example ride entrance plazas) survive as path-area candidates.
-const pedestrianExtraction = await enrichPlanningPedestrianBundle(out, manifest);
-manifest.pedestrianExtraction = pedestrianExtraction;
 manifest.expectedActiveExtractionShards = [...(catalog.activeExtractionShards || [])]
   .map(Number)
   .filter((entry) => Number.isInteger(entry) && entry >= 0)
@@ -70,9 +63,11 @@ manifest.extractionCache = {
 };
 await writeJson(path.join(out, "manifest.json"), manifest);
 
-// Cache the enriched representation, not the pre-semantic raw bundle. The
-// fingerprint includes the enrichment implementation so future behavior changes
-// cannot reuse an older plaza/path classification.
+// Cache only the final semantically enriched bundle. The pedestrian/plaza pass
+// runs inside enrichPlanningTextEvidence while raw PDF text/vector bounds still
+// exist, before compactPlanningExtraction deliberately discards those heavy
+// working arrays. Including that implementation below invalidates older bundles
+// that were compacted before pedestrian semantics were attached.
 if (!cacheHit) {
   await mkdir(path.dirname(cacheDir), { recursive: true });
   await rm(cacheDir, { recursive: true, force: true });
@@ -90,7 +85,6 @@ console.log(`Evidence pages: ${manifest.pageCount}`);
 console.log(`Geometry candidates: ${manifest.geometryCandidateCount}`);
 console.log(`Vertical observations: ${manifest.verticalObservationCount}`);
 console.log(`Material observations: ${manifest.materialObservationCount}`);
-console.log(`Pedestrian/plaza candidates enriched: ${pedestrianExtraction.enrichedCandidates}`);
 console.log(`Raster fallback pages: ${manifest.rasterFallbackPages}`);
 console.log(`Failures: ${manifest.failedDocuments}`);
 console.log(`Bundle: ${out}`);
@@ -105,8 +99,7 @@ async function extractionImplementationFingerprint() {
     "../src/lib/planning-text-evidence.mjs",
     "../src/lib/planning-document-content-classifier.mjs",
     "../src/lib/planning-legend-enrichment.mjs",
-    "../src/lib/planning-pedestrian-enrichment.mjs",
-    "../src/lib/planning-pedestrian-bundle-enrichment.mjs"
+    "../src/lib/planning-pedestrian-enrichment.mjs"
   ];
   const sources = await Promise.all(files.map(async (relative) => {
     const url = new URL(relative, import.meta.url);
