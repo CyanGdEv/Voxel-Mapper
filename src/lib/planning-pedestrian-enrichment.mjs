@@ -1,4 +1,4 @@
-const ELIGIBLE_CLASSES = new Set(["site_plan", "landscape_plan"]);
+const ELIGIBLE_CLASSES = new Set(["site_plan", "landscape_plan", "ride_layout"]);
 const DEFAULT_LABEL_RADIUS_PT = 55;
 const DEFAULT_MAX_NEARBY_TEXT = 8;
 
@@ -13,7 +13,12 @@ const PARKING_ISLAND = /\b(parking\s+island|car\s+park\s+island|landscape\s+isla
 /**
  * Adds conservative path/plaza/parking semantics while PDF page text and vector
  * bounds are still available. The pass does not grant authority: it only tells
- * the later current-state compiler what a labelled site/landscape shape means.
+ * the later current-state compiler what a labelled shape means.
+ *
+ * Ride-layout sheets are intentionally narrower than site/landscape plans. An
+ * otherwise unclassified CLOSED vector may become a pedestrian plaza only when
+ * a nearby explicit plaza/forecourt/etc label exists. Generic ride linework,
+ * queue wording, track/support geometry and open routes remain untouched.
  */
 export function enrichPlanningPedestrianEvidence(extraction, options = {}) {
   const candidates = extraction?.normalizedEvidence?.geometryCandidates || [];
@@ -33,6 +38,18 @@ export function enrichPlanningPedestrianEvidence(extraction, options = {}) {
     const nearby = nearbyText(candidate, page?.text?.items || [], options);
     if (!nearby.length) { counts.unlabeled += 1; continue; }
     const text = nearby.map((entry) => entry.text).join(" ");
+
+    if (classification === "ride_layout") {
+      if (candidate.closed !== true || !PEDESTRIAN_AREA.test(text)) {
+        counts.unlabeled += 1;
+        continue;
+      }
+      const winner = { kind: "path", subtype: "pedestrian_plaza", semantic: "site-feature", confidence: 0.97, area: true };
+      applyPedestrianSemantic(candidate, winner, nearby, "planning-pdf-explicit-ride-layout-plaza-label");
+      counts.plaza += 1;
+      matches.push(matchRecord(candidate, winner, nearby));
+      continue;
+    }
 
     // Parking-specific labels win over generic words such as "access road" or
     // "hardstanding" when both occur around the same parking geometry.
@@ -63,20 +80,12 @@ export function enrichPlanningPedestrianEvidence(extraction, options = {}) {
     else if (winner.parkingRole === "aisle") counts.parkingAisle += 1;
     else if (winner.parkingRole === "island") counts.parkingIsland += 1;
     else counts[winner.kind === "road" ? "road" : winner.subtype === "pedestrian_plaza" ? "plaza" : "path"] += 1;
-    matches.push({
-      candidateId: candidate.id || null,
-      pageNumber: candidate.pageNumber || 1,
-      kind: winner.kind,
-      subtype: winner.subtype,
-      parkingRole: winner.parkingRole || null,
-      confidence: winner.confidence,
-      nearbyText: nearby.map((entry) => entry.text).slice(0, 5)
-    });
+    matches.push(matchRecord(candidate, winner, nearby));
   }
 
   const enrichedCount = counts.path + counts.plaza + counts.road + counts.parkingArea + counts.parkingBay + counts.parkingAisle + counts.parkingIsland;
   const summary = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     status: enrichedCount ? "enriched" : "no-pedestrian-or-parking-semantics",
     counts,
     matches: matches.slice(0, Math.max(1, Number(options.maxPlanningPedestrianQaMatches || 250))),
@@ -84,6 +93,8 @@ export function enrichPlanningPedestrianEvidence(extraction, options = {}) {
       eligibleClasses: [...ELIGIBLE_CLASSES],
       nearbyLabelRequired: true,
       plazaRequiresClosedGeometry: true,
+      rideLayoutClosedPlazaRequiresExplicitAreaLabel: true,
+      rideLayoutOpenRoutesRetyped: false,
       parkingAreaRequiresClosedGeometry: true,
       parkingBayRequiresClosedGeometry: true,
       parkingBayGridInferenceAllowed: false,
@@ -97,12 +108,17 @@ export function enrichPlanningPedestrianEvidence(extraction, options = {}) {
   return summary;
 }
 
-function applyPedestrianSemantic(candidate, result, nearby) {
+function applyPedestrianSemantic(candidate, result, nearby, sourceOverride = null) {
   const tags = {
     ...(candidate.tags || candidate.properties?.tags || {}),
     "planning:pedestrian_semantic": result.subtype,
     "terrain:geometry_mutable": "no"
   };
+  if (result.kind === "path" && result.subtype === "pedestrian_plaza") {
+    tags.highway = "pedestrian";
+    tags["area:highway"] = "pedestrian";
+    tags.area = "yes";
+  }
   if (result.parkingRole) {
     tags["planning:parking_semantic"] = result.subtype;
     tags["parking:layout_inferred"] = "no";
@@ -125,7 +141,7 @@ function applyPedestrianSemantic(candidate, result, nearby) {
   candidate.confidence = Math.max(Number(candidate.confidence || 0), result.confidence);
   candidate.pedestrianEvidence = {
     schemaVersion: 1,
-    source: result.parkingRole ? "planning-pdf-nearby-parking-label" : "planning-pdf-nearby-pedestrian-label",
+    source: sourceOverride || (result.parkingRole ? "planning-pdf-nearby-parking-label" : "planning-pdf-nearby-pedestrian-label"),
     confidence: result.confidence,
     nearbyText: nearby.map((entry) => entry.text).slice(0, 8),
     worldGeometryAuthority: false,
@@ -148,6 +164,18 @@ function applyPedestrianSemantic(candidate, result, nearby) {
       temporalResolutionRequired: true
     };
   }
+}
+
+function matchRecord(candidate, winner, nearby) {
+  return {
+    candidateId: candidate.id || null,
+    pageNumber: candidate.pageNumber || 1,
+    kind: winner.kind,
+    subtype: winner.subtype,
+    parkingRole: winner.parkingRole || null,
+    confidence: winner.confidence,
+    nearbyText: nearby.map((entry) => entry.text).slice(0, 5)
+  };
 }
 
 function nearbyText(candidate, items, options) {

@@ -47,9 +47,6 @@ if (await exists(path.join(cacheDir, "manifest.json"))) {
     strictPlanningExtraction: args.includes("--strict")
   });
   manifest = extracted.manifest;
-  await mkdir(path.dirname(cacheDir), { recursive: true });
-  await rm(cacheDir, { recursive: true, force: true });
-  await cp(out, cacheDir, { recursive: true });
 }
 
 manifest.expectedActiveExtractionShards = [...(catalog.activeExtractionShards || [])]
@@ -65,6 +62,17 @@ manifest.extractionCache = {
   implementationFingerprint
 };
 await writeJson(path.join(out, "manifest.json"), manifest);
+
+// Cache only the final semantically enriched bundle. The pedestrian/plaza pass
+// runs inside enrichPlanningTextEvidence while raw PDF text/vector bounds still
+// exist, before compactPlanningExtraction deliberately discards those heavy
+// working arrays. Including that implementation below invalidates older bundles
+// that were compacted before pedestrian semantics were attached.
+if (!cacheHit) {
+  await mkdir(path.dirname(cacheDir), { recursive: true });
+  await rm(cacheDir, { recursive: true, force: true });
+  await cp(out, cacheDir, { recursive: true });
+}
 
 console.log(`Shard: ${manifest.selectedShard}`);
 console.log(`Extraction cache: ${cacheHit ? "hit" : "miss"}`);
@@ -90,7 +98,8 @@ async function extractionImplementationFingerprint() {
     "../src/lib/planning-ride-structure-enrichment.mjs",
     "../src/lib/planning-text-evidence.mjs",
     "../src/lib/planning-document-content-classifier.mjs",
-    "../src/lib/planning-legend-enrichment.mjs"
+    "../src/lib/planning-legend-enrichment.mjs",
+    "../src/lib/planning-pedestrian-enrichment.mjs"
   ];
   const sources = await Promise.all(files.map(async (relative) => {
     const url = new URL(relative, import.meta.url);
